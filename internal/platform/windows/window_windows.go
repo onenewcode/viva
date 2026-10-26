@@ -71,6 +71,7 @@ type windowState struct {
 	window                                 uintptr
 	ready, tracking, sizing                bool
 	minimized                              bool
+	maximized                              bool
 	lastFrame                              ui.Rect
 	scale                                  float32
 	scaleFixed                             bool // VIVA_SCALE set it: the display's own scale is ignored
@@ -143,7 +144,7 @@ type nativeWindow struct {
 // reportFrame tells the application where its content area is now, in logical
 // pixels of the window's display. It reports only changes.
 func (state *windowState) reportFrame() {
-	if !state.ready || state.config.OnFrameChange == nil || state.window == 0 {
+	if !state.ready || state.config.OnFrameChange == nil || state.window == 0 || state.zoomed() {
 		return
 	}
 	var client rect
@@ -532,6 +533,13 @@ func windowProc(window, kind, first, second uintptr) (result uintptr) {
 			state.minimized = false
 			if state.ready && state.config.OnMinimize != nil {
 				state.config.OnMinimize(false)
+			}
+		}
+		zoomed := first == 2 // SIZE_MAXIMIZED
+		if state.maximized != zoomed && first != 1 {
+			state.maximized = zoomed
+			if state.ready && state.config.OnMaximize != nil {
+				state.config.OnMaximize(zoomed)
 			}
 		}
 		if state.sizing {

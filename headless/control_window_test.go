@@ -15,11 +15,13 @@ import (
 func TestControlWindowMoveMinimizeAndTitle(t *testing.T) {
 	var frames []ui.Rect
 	var minimizes []bool
+	var maximizes []bool
 	origin := ui.Point{X: 10, Y: 20}
 	config := app.Config{
 		Title: "main", Width: 300, Height: 200, Origin: &origin,
 		OnFrameChange: func(frame ui.Rect) { frames = append(frames, frame) },
 		OnMinimize:    func(minimized bool) { minimizes = append(minimizes, minimized) },
+		OnMaximize:    func(maximized bool) { maximizes = append(maximizes, maximized) },
 	}
 	session, err := Open(config, nil, Options{})
 	if err != nil {
@@ -45,5 +47,17 @@ func TestControlWindowMoveMinimizeAndTitle(t *testing.T) {
 	}
 	if got := reply("minimize sideways"); !strings.HasPrefix(got, "error ") {
 		t.Fatalf("minimize sideways = %s", got)
+	}
+	if got := reply("maximize on"); !strings.HasPrefix(got, "ok") {
+		t.Fatalf("maximize on: %s", got)
+	}
+	if got := reply("maximize off"); !strings.HasPrefix(got, "ok") {
+		t.Fatalf("maximize off: %s", got)
+	}
+	if len(maximizes) != 2 || !maximizes[0] || maximizes[1] {
+		t.Fatalf("maximize changes = %v", maximizes)
+	}
+	if got := reply("maximize sideways"); !strings.HasPrefix(got, "error ") {
+		t.Fatalf("maximize sideways = %s", got)
 	}
 }

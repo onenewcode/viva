@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/vivaui/viva/internal/platform"
+	"github.com/vivaui/viva/ui"
 )
 
 func openFramedWindow(t *testing.T, config platform.Config) (*linuxApplication, *nativeWindow) {
@@ -124,5 +125,311 @@ func TestFramedWindowKeepsItsContentWhenTheScaleChanges(t *testing.T) {
 	}
 	if size := win.logicalSize(); size.Scale != 2 {
 		t.Fatalf("scale %v", size.Scale)
+	}
+}
+
+func TestFramedWindowSuppressesFrameChangeWhileMaximized(t *testing.T) {
+	var frames []ui.Rect
+	var maximizes []bool
+	_, window := openFramedWindow(t, platform.Config{
+		Title: "framed", Width: 300, Height: 200, WindowMode: platform.WindowCustomTitlebar, Actions: &platform.WindowActions{},
+		OnFrameChange: func(frame ui.Rect) { frames = append(frames, frame) },
+		OnMaximize:    func(maximized bool) { maximizes = append(maximizes, maximized) },
+	})
+	state := window.state
+	win := state.win
+	state.reportFrame()
+	if len(frames) != 1 {
+		t.Fatalf("initial frames reported = %d, want 1", len(frames))
+	}
+	initialFrame := frames[0]
+	if initialFrame.Width != 300 || initialFrame.Height != 200 {
+		t.Fatalf("initial frame = %+v, want 300x200", initialFrame)
+	}
+
+	// When maximized, reportFrame must not overwrite the unmaximized frame geometry.
+	win.frame.maximized = true
+	win.width, win.height = 2048, 1236
+	win.margin = 0
+	state.reportFrame()
+	if len(frames) != 1 {
+		t.Fatalf("frames reported while maximized = %d, want OnFrameChange suppressed", len(frames))
+	}
+
+	// When restored, reportFrame reports the restored frame.
+	win.frame.maximized = false
+	scale := win.displayScale()
+	win.margin = frameMargin(scale)
+	win.width = deviceLength(300, scale) + 2*win.margin
+	win.height = deviceLength(200, scale) + 2*win.margin
+	// Simulate move to a different position
+	win.lastFrame = ui.Rect{}
+	state.reportFrame()
+	if len(frames) != 2 {
+		t.Fatalf("frames reported after restore = %d, want 2", len(frames))
+	}
+}
+
+func TestConfigureNotifySynchronizesMarginAndGeometry(t *testing.T) {
+	var resizes []platform.Size
+	var maximizes []bool
+	_, window := openFramedWindow(t, platform.Config{
+		Title: "framed", Width: 300, Height: 200, WindowMode: platform.WindowCustomTitlebar, Actions: &platform.WindowActions{},
+		OnResize: func(size platform.Size) (platform.Frame, error) {
+			resizes = append(resizes, size)
+			return platform.Frame{}, nil
+		},
+		OnMaximize: func(maximized bool) { maximizes = append(maximizes, maximized) },
+	})
+	state := window.state
+	win := state.win
+	scale := win.displayScale()
+
+	// Set _NET_WM_STATE to maximized on the X server, simulating what the WM does
+	states := [2]uint32{win.frame.maximizedVertical, win.frame.maximizedHorizontal}
+	win.api.changeProperty(win.connection, xcbPropertyReplace, win.id, win.frame.stateAtom, xcbAtomAtom, 32, 2, unsafe.Pointer(&states[0]))
+	win.api.flush(win.connection)
+
+	configure := xcbConfigureEvent{
+		ResponseType: xcbConfigureNotify,
+		Width:        2048,
+		Height:       1236,
+	}
+	closeWin, err := state.handleEvent(unsafe.Pointer(&configure))
+	if closeWin || err != nil {
+		t.Fatalf("handleEvent configure: close=%v, err=%v", closeWin, err)
+	}
+
+	// Verify margin was atomically set to 0 and logicalSize computed without margin
+	if win.margin != 0 {
+		t.Fatalf("win.margin = %d, want 0 when maximized", win.margin)
+	}
+	if !win.frame.maximized {
+		t.Fatal("win.frame.maximized = false, want true")
+	}
+	if len(maximizes) != 1 || !maximizes[0] {
+		t.Fatalf("maximizes = %v, want [true]", maximizes)
+	}
+	if len(resizes) == 0 {
+		t.Fatal("OnResize was not called")
+	}
+	lastResize := resizes[len(resizes)-1]
+	if wantW := float32(2048) / scale; lastResize.Width != wantW {
+		t.Fatalf("last resize width = %v, want %v (no margin subtracted)", lastResize.Width, wantW)
+	}
+
+	// Now simulate restore: WM clears _NET_WM_STATE and configures window back to floating size
+	empty := [0]uint32{}
+	win.api.changeProperty(win.connection, xcbPropertyReplace, win.id, win.frame.stateAtom, xcbAtomAtom, 32, 0, unsafe.Pointer(&empty))
+	win.api.flush(win.connection)
+
+	resizesCountBeforeRestore := len(resizes)
+	restoreWidth := deviceLength(300, scale) + 2*frameMargin(scale)
+	restoreHeight := deviceLength(200, scale) + 2*frameMargin(scale)
+	restoreConfigure := xcbConfigureEvent{
+		ResponseType: xcbConfigureNotify,
+		Width:        uint16(restoreWidth),
+		Height:       uint16(restoreHeight),
+	}
+	closeWin, err = state.handleEvent(unsafe.Pointer(&restoreConfigure))
+	if closeWin || err != nil {
+		t.Fatalf("handleEvent restore configure: close=%v, err=%v", closeWin, err)
+	}
+
+	if win.margin != frameMargin(scale) {
+		t.Fatalf("win.margin = %d, want %d after restore", win.margin, frameMargin(scale))
+	}
+	if win.frame.maximized {
+		t.Fatal("win.frame.maximized = true, want false")
+	}
+	if len(maximizes) != 2 || maximizes[1] {
+		t.Fatalf("maximizes = %v, want [true, false]", maximizes)
+	}
+	if len(resizes) != resizesCountBeforeRestore+1 {
+		t.Fatalf("resizes on restore = %d, want exactly 1 resize", len(resizes)-resizesCountBeforeRestore)
+	}
+	restoreResize := resizes[len(resizes)-1]
+	if restoreResize.Width != 300 || restoreResize.Height != 200 {
+		t.Fatalf("restored size = %vx%v, want 300x200", restoreResize.Width, restoreResize.Height)
+	}
+}
+
+func TestPropertyNotifyBeforeConfigureNotifyDoesNotGlitch(t *testing.T) {
+	var resizes []platform.Size
+	var frames []ui.Rect
+	var maximizes []bool
+	_, window := openFramedWindow(t, platform.Config{
+		Title: "framed", Width: 300, Height: 200, WindowMode: platform.WindowCustomTitlebar, Actions: &platform.WindowActions{},
+		OnResize: func(size platform.Size) (platform.Frame, error) {
+			resizes = append(resizes, size)
+			return platform.Frame{}, nil
+		},
+		OnFrameChange: func(frame ui.Rect) { frames = append(frames, frame) },
+		OnMaximize:    func(maximized bool) { maximizes = append(maximizes, maximized) },
+	})
+	state := window.state
+	win := state.win
+	scale := win.displayScale()
+
+	// Maximize first
+	states := [2]uint32{win.frame.maximizedVertical, win.frame.maximizedHorizontal}
+	win.api.changeProperty(win.connection, xcbPropertyReplace, win.id, win.frame.stateAtom, xcbAtomAtom, 32, 2, unsafe.Pointer(&states[0]))
+	win.api.flush(win.connection)
+
+	configure := xcbConfigureEvent{
+		ResponseType: xcbConfigureNotify,
+		Width:        2048,
+		Height:       1236,
+	}
+	state.handleEvent(unsafe.Pointer(&configure))
+
+	initialFramesCount := len(frames)
+
+	// Now simulate restore: WM clears _NET_WM_STATE on X server
+	empty := [0]uint32{}
+	win.api.changeProperty(win.connection, xcbPropertyReplace, win.id, win.frame.stateAtom, xcbAtomAtom, 32, 0, unsafe.Pointer(&empty))
+	win.api.flush(win.connection)
+
+	// Deliver PropertyNotify first
+	propEvent := xcbPropertyEvent{
+		ResponseType: xcbPropertyNotify,
+		Window:       win.id,
+		Atom:         win.frame.stateAtom,
+	}
+	closeWin, err := state.handleEvent(unsafe.Pointer(&propEvent))
+	if closeWin || err != nil {
+		t.Fatalf("handleEvent property: close=%v, err=%v", closeWin, err)
+	}
+
+	// Now deliver ConfigureNotify
+	restoreWidth := deviceLength(300, scale) + 2*frameMargin(scale)
+	restoreHeight := deviceLength(200, scale) + 2*frameMargin(scale)
+	restoreConfigure := xcbConfigureEvent{
+		ResponseType: xcbConfigureNotify,
+		Width:        uint16(restoreWidth),
+		Height:       uint16(restoreHeight),
+	}
+	closeWin, err = state.handleEvent(unsafe.Pointer(&restoreConfigure))
+	if closeWin || err != nil {
+		t.Fatalf("handleEvent configure: close=%v, err=%v", closeWin, err)
+	}
+
+	// Final check: restored size is 300x200
+	restoreResize := resizes[len(resizes)-1]
+	if restoreResize.Width != 300 || restoreResize.Height != 200 {
+		t.Fatalf("restored size = %vx%v, want 300x200", restoreResize.Width, restoreResize.Height)
+	}
+	// And OnFrameChange must NOT have been called with maximized 2048x1236 dimensions
+	for _, f := range frames[initialFramesCount:] {
+		if f.Width > 1000 || f.Height > 1000 {
+			t.Fatalf("OnFrameChange emitted maximized frame: %+v", f)
+		}
+	}
+}
+
+func TestConfigureNotifyBeforePropertyNotifySynchronizesMargin(t *testing.T) {
+	var resizes []platform.Size
+	var maximizes []bool
+	_, window := openFramedWindow(t, platform.Config{
+		Title: "framed", Width: 300, Height: 200, WindowMode: platform.WindowCustomTitlebar, Actions: &platform.WindowActions{},
+		OnResize: func(size platform.Size) (platform.Frame, error) {
+			resizes = append(resizes, size)
+			return platform.Frame{}, nil
+		},
+		OnMaximize: func(maximized bool) { maximizes = append(maximizes, maximized) },
+	})
+	state := window.state
+	win := state.win
+	scale := win.displayScale()
+
+	// Step 1: WM sends ConfigureNotify with maximized dimensions FIRST,
+	// while _NET_WM_STATE is not yet set on the X server.
+	configure := xcbConfigureEvent{
+		ResponseType: xcbConfigureNotify,
+		Width:        2048,
+		Height:       1236,
+	}
+	closeWin, err := state.handleEvent(unsafe.Pointer(&configure))
+	if closeWin || err != nil {
+		t.Fatalf("handleEvent configure: close=%v, err=%v", closeWin, err)
+	}
+
+	// At this point, PropertyNotify has not arrived, so frame.maximized is still false
+	if win.frame.maximized {
+		t.Fatal("win.frame.maximized = true before PropertyNotify")
+	}
+
+	// Step 2: WM now sets _NET_WM_STATE to maximized on X server and sends PropertyNotify SECOND
+	states := [2]uint32{win.frame.maximizedVertical, win.frame.maximizedHorizontal}
+	win.api.changeProperty(win.connection, xcbPropertyReplace, win.id, win.frame.stateAtom, xcbAtomAtom, 32, 2, unsafe.Pointer(&states[0]))
+	win.api.flush(win.connection)
+
+	propEvent := xcbPropertyEvent{
+		ResponseType: xcbPropertyNotify,
+		Window:       win.id,
+		Atom:         win.frame.stateAtom,
+	}
+	closeWin, err = state.handleEvent(unsafe.Pointer(&propEvent))
+	if closeWin || err != nil {
+		t.Fatalf("handleEvent property: close=%v, err=%v", closeWin, err)
+	}
+
+	// PropertyNotify must have zeroed the margin and resized with margin = 0
+	if win.margin != 0 {
+		t.Fatalf("win.margin = %d, want 0 when PropertyNotify arrives", win.margin)
+	}
+	if !win.frame.maximized {
+		t.Fatal("win.frame.maximized = false, want true")
+	}
+	if len(maximizes) != 1 || !maximizes[0] {
+		t.Fatalf("maximizes = %v, want [true]", maximizes)
+	}
+	lastResize := resizes[len(resizes)-1]
+	if wantW := float32(2048) / scale; lastResize.Width != wantW {
+		t.Fatalf("last resize width = %v, want %v (no margin subtracted)", lastResize.Width, wantW)
+	}
+
+	// Now test restore with ConfigureNotify FIRST, PropertyNotify SECOND:
+	restoreWidth := deviceLength(300, scale) + 2*frameMargin(scale)
+	restoreHeight := deviceLength(200, scale) + 2*frameMargin(scale)
+	restoreConfigure := xcbConfigureEvent{
+		ResponseType: xcbConfigureNotify,
+		Width:        uint16(restoreWidth),
+		Height:       uint16(restoreHeight),
+	}
+	// WM sends restore ConfigureNotify before clearing _NET_WM_STATE
+	closeWin, err = state.handleEvent(unsafe.Pointer(&restoreConfigure))
+	if closeWin || err != nil {
+		t.Fatalf("handleEvent restore configure: close=%v, err=%v", closeWin, err)
+	}
+
+	// Now WM clears _NET_WM_STATE on X server and sends PropertyNotify
+	empty := [0]uint32{}
+	win.api.changeProperty(win.connection, xcbPropertyReplace, win.id, win.frame.stateAtom, xcbAtomAtom, 32, 0, unsafe.Pointer(&empty))
+	win.api.flush(win.connection)
+
+	restorePropEvent := xcbPropertyEvent{
+		ResponseType: xcbPropertyNotify,
+		Window:       win.id,
+		Atom:         win.frame.stateAtom,
+	}
+	closeWin, err = state.handleEvent(unsafe.Pointer(&restorePropEvent))
+	if closeWin || err != nil {
+		t.Fatalf("handleEvent restore property: close=%v, err=%v", closeWin, err)
+	}
+
+	// Verify margin was restored and final size is 300x200
+	if win.margin != frameMargin(scale) {
+		t.Fatalf("win.margin = %d, want %d after restore", win.margin, frameMargin(scale))
+	}
+	if win.frame.maximized {
+		t.Fatal("win.frame.maximized = true, want false after restore")
+	}
+	if len(maximizes) != 2 || maximizes[1] {
+		t.Fatalf("maximizes = %v, want [true, false]", maximizes)
+	}
+	restoreResize := resizes[len(resizes)-1]
+	if restoreResize.Width != 300 || restoreResize.Height != 200 {
+		t.Fatalf("restored size = %vx%v, want 300x200", restoreResize.Width, restoreResize.Height)
 	}
 }

@@ -13,11 +13,13 @@ import (
 func TestDriverReportsWindowFrameAndMinimizeState(t *testing.T) {
 	var frames []ui.Rect
 	var minimizes []bool
+	var maximizes []bool
 	origin := ui.Point{X: 10, Y: 20}
 	driver, err := NewDriver(Config{
 		Title: "main", Width: 200, Height: 100, Origin: &origin,
 		OnFrameChange: func(frame ui.Rect) { frames = append(frames, frame) },
 		OnMinimize:    func(minimized bool) { minimizes = append(minimizes, minimized) },
+		OnMaximize:    func(maximized bool) { maximizes = append(maximizes, maximized) },
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -61,5 +63,24 @@ func TestDriverReportsWindowFrameAndMinimizeState(t *testing.T) {
 	}
 	if len(minimizes) != 2 || !minimizes[0] || minimizes[1] {
 		t.Fatalf("minimize changes = %v", minimizes)
+	}
+
+	if err := driver.SetMaximized(true); err != nil {
+		t.Fatal(err)
+	}
+	if !driver.Maximized() {
+		t.Fatal("Maximized did not follow SetMaximized")
+	}
+	if err := driver.SetMaximized(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.SetMaximized(false); err != nil {
+		t.Fatal(err)
+	}
+	if driver.Maximized() {
+		t.Fatal("Maximized did not follow the restore")
+	}
+	if len(maximizes) != 2 || !maximizes[0] || maximizes[1] {
+		t.Fatalf("maximize changes = %v", maximizes)
 	}
 }

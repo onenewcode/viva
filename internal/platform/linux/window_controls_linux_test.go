@@ -40,3 +40,44 @@ func TestADoubleClickNeedsTwoClosePressesInTime(t *testing.T) {
 		t.Fatal("presses far apart in space made a double click")
 	}
 }
+
+func TestDragSlopScalesWithDisplay(t *testing.T) {
+	var win window
+	if slop := win.dragSlop(); slop != 4 {
+		t.Fatalf("dragSlop at 1x = %d, want 4", slop)
+	}
+	if slop := win.doubleClickSlop(); slop != 4 {
+		t.Fatalf("doubleClickSlop at 1x = %d, want 4", slop)
+	}
+
+	win.storeScale(1.25)
+	if slop := win.dragSlop(); slop != 5 {
+		t.Fatalf("dragSlop at 1.25x = %d, want 5", slop)
+	}
+	if slop := win.doubleClickSlop(); slop != 5 {
+		t.Fatalf("doubleClickSlop at 1.25x = %d, want 5", slop)
+	}
+
+	win.storeScale(2)
+	if slop := win.dragSlop(); slop != 8 {
+		t.Fatalf("dragSlop at 2x = %d, want 8", slop)
+	}
+	if slop := win.doubleClickSlop(); slop != 8 {
+		t.Fatalf("doubleClickSlop at 2x = %d, want 8", slop)
+	}
+}
+
+func TestTitlebarDoubleClickSlopTolerantToJitter(t *testing.T) {
+	var win window
+	win.storeScale(2)
+	press := func(time uint32, x, y int16) bool {
+		return win.doubleClick(&xcbInputEvent{Time: time, EventX: x, EventY: y})
+	}
+	if press(1000, 100, 10) {
+		t.Fatal("the first press is not a double click")
+	}
+	// At 2x scale, slop is 8px. A 5px jitter between clicks is tolerated.
+	if !press(1200, 105, 13) {
+		t.Fatal("two presses with small cursor jitter should make a double click on HiDPI")
+	}
+}

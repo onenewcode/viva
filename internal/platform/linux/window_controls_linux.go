@@ -3,6 +3,7 @@ package linux
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"unsafe"
 
 	"github.com/vivaui/viva/internal/platform"
@@ -28,10 +29,9 @@ const (
 	iconicState      = 3
 	sourceApp        = 1
 
-	// doubleClickMillis and doubleClickSlop bound two presses on the strip that
+	// doubleClickMillis bounds two presses on the strip that
 	// make a double click.
 	doubleClickMillis = 400
-	doubleClickSlop   = 4
 )
 
 type xcbPropertyEvent struct {
@@ -178,6 +178,9 @@ func (win *window) propertyChanged(event *xcbPropertyEvent) (bool, error) {
 		return false, err
 	}
 	win.frame.maximized = maximized
+	if win.maximizeHandler != nil {
+		win.maximizeHandler(maximized)
+	}
 	return true, nil
 }
 
@@ -254,9 +257,25 @@ func (win *window) beginWindowMove(config platform.Config, event *xcbInputEvent)
 	return true
 }
 
-// dragSlop is how far the pointer moves with the button down before a press on
-// the frame becomes a move or resize, in pixels.
-const dragSlop = 4
+// defaultDragSlop is the base distance in logical pixels before motion on
+// the frame becomes a window manager drag or resize.
+const defaultDragSlop = 4
+
+func (win *window) dragSlop() int16 {
+	scale := float32(1)
+	if win != nil {
+		scale = max(win.displayScale(), 1)
+	}
+	return int16(math.Round(float64(defaultDragSlop * scale)))
+}
+
+func (win *window) doubleClickSlop() int16 {
+	scale := float32(1)
+	if win != nil {
+		scale = max(win.displayScale(), 1)
+	}
+	return int16(math.Round(float64(defaultDragSlop * scale)))
+}
 
 // dragMotion starts the move or resize a press on the frame asked for once the
 // pointer has dragged. consumed reports that a press was waiting and the motion
@@ -271,8 +290,9 @@ func (win *window) dragMotion(event *xcbInputEvent) (consumed, cancelled bool) {
 		frame.pending = false
 		return false, false
 	}
+	slop := win.dragSlop()
 	dx, dy := event.RootX-frame.pendingRootX, event.RootY-frame.pendingRootY
-	if dx > -dragSlop && dx < dragSlop && dy > -dragSlop && dy < dragSlop {
+	if dx > -slop && dx < slop && dy > -slop && dy < slop {
 		return !frame.delivered, false
 	}
 	frame.pending = false
@@ -288,7 +308,8 @@ func (win *window) endPress() { win.frame.pending = false }
 // double click.
 func (win *window) doubleClick(event *xcbInputEvent) bool {
 	frame := &win.frame
-	near := func(a, b int16) bool { return a-b <= doubleClickSlop && b-a <= doubleClickSlop }
+	slop := win.doubleClickSlop()
+	near := func(a, b int16) bool { return a-b <= slop && b-a <= slop }
 	double := frame.pressed && event.Time-frame.lastPress <= doubleClickMillis && near(event.EventX, frame.lastPressX) && near(event.EventY, frame.lastPressY)
 	frame.pressed, frame.lastPress, frame.lastPressX, frame.lastPressY = !double, event.Time, event.EventX, event.EventY
 	return double

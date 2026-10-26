@@ -160,6 +160,10 @@ func (win *window) setFrameExtents(margin uint32) {
 // The extension is optional; without it the whole window takes input.
 func (win *window) updateInputRegion() {
 	if win.margin == 0 {
+		if win.shapeRectangles != nil {
+			rectangle := [4]uint16{0, 0, uint16(win.width), uint16(win.height)}
+			win.shapeRectangles(win.connection, shapeSet, shapeInput, 0, win.id, 0, 0, 1, unsafe.Pointer(&rectangle[0]))
+		}
 		return
 	}
 	if win.shapeRectangles == nil {
@@ -213,25 +217,24 @@ func (win *window) shiftPointer(kind uint8, event unsafe.Pointer) {
 	}
 }
 
-// maximizedMargin gives a maximized window no margin, which the window manager
-// is told, and gives it back when the window is restored. Its content then fills
-// what the window manager grants.
-func (state *linuxWindowState) maximizedMargin() error {
+// syncMargin updates win.margin to match the window's maximized state.
+// When maximized, a window has no margin so its content fills what the
+// window manager grants.
+func (state *linuxWindowState) syncMargin() (bool, error) {
 	win := state.win
 	if !win.frameWanted {
-		return nil
+		return false, nil
 	}
-	margin := frameMargin(win.displayScale())
-	if win.frame.maximized {
-		margin = 0
+	margin := uint32(0)
+	if !win.frame.maximized {
+		margin = frameMargin(win.displayScale())
 	}
 	if margin == win.margin {
-		return nil
+		return false, nil
 	}
 	win.setMargin(margin)
 	if err := state.renderer.setFrameMargin(margin); err != nil {
-		return err
+		return false, err
 	}
-	win.updateInputRegion()
-	return state.resized()
+	return true, nil
 }

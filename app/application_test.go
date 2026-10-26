@@ -157,6 +157,37 @@ func TestWindowTracksTheMinimizeThePlatformReports(t *testing.T) {
 	}
 }
 
+func TestWindowFollowsPlatformMaximize(t *testing.T) {
+	host := &fakeHost{}
+	useHost(t, host)
+	var window *Window
+	var reported []bool
+	if err := RunApplication(func(application *Application) error {
+		var err error
+		window, err = application.OpenWindow(Config{Title: "main", OnMaximize: func(maximized bool) {
+			reported = append(reported, maximized)
+		}}, nil)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if window.Maximized() {
+		t.Fatal("a new window is maximized")
+	}
+	// The platform reports a maximize through the config it was opened with.
+	host.windows[0].config.OnMaximize(true)
+	if !window.Maximized() {
+		t.Fatal("Maximized did not follow the platform")
+	}
+	host.windows[0].config.OnMaximize(false)
+	if window.Maximized() {
+		t.Fatal("Maximized did not follow the restore")
+	}
+	if len(reported) != 2 || !reported[0] || reported[1] {
+		t.Fatalf("OnMaximize calls = %v", reported)
+	}
+}
+
 func TestHiddenWindowStaysOpenAndShowBringsItBack(t *testing.T) {
 	host := &fakeHost{}
 	useHost(t, host)

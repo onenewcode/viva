@@ -45,6 +45,7 @@ type Driver struct {
 	// as a window manager would.
 	origin    ui.Point
 	minimized bool
+	maximized bool
 
 	now       time.Duration
 	animating bool
@@ -281,6 +282,25 @@ func (driver *Driver) SetMinimized(minimized bool) error {
 
 // Minimized reports the state SetMinimized last reported.
 func (driver *Driver) Minimized() bool { return driver.minimized }
+
+// SetMaximized reports the window as maximized or restored, as the window
+// manager would, and calls OnMaximize.
+func (driver *Driver) SetMaximized(maximized bool) error {
+	if err := driver.Pump(); err != nil {
+		return err
+	}
+	if driver.maximized == maximized {
+		return nil
+	}
+	driver.maximized = maximized
+	if driver.config.OnMaximize != nil {
+		driver.config.OnMaximize(maximized)
+	}
+	return nil
+}
+
+// Maximized reports the state SetMaximized last reported.
+func (driver *Driver) Maximized() bool { return driver.maximized }
 
 // HitTest returns the front-most enabled interaction target at a logical-pixel
 // point. It applies the same focus-scope and blocking-region rules as pointer

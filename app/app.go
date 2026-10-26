@@ -131,7 +131,9 @@ type Config struct {
 	// Window.Frame reports at that moment. OnResize still runs first on a
 	// size change, for layout. An application saves this rectangle, together
 	// with the window's current size, to open its next window where this one
-	// was; a live drag reports every intermediate position.
+	// was; a live drag reports every intermediate position. On Linux and
+	// Windows, reports are suppressed while the window is maximized so the
+	// saved rectangle preserves the floating geometry for the next launch.
 	OnFrameChange func(frame ui.Rect)
 	// OnMinimize runs on the window thread when the window is minimized or
 	// restored, including by the system (the Dock, the taskbar, a window
@@ -139,6 +141,12 @@ type Config struct {
 	// application stop work nobody can see, such as a remote desktop stream.
 	// Hide is the application's own request and is not reported here.
 	OnMinimize func(minimized bool)
+	// OnMaximize runs on the window thread when the window is maximized or
+	// restored on Windows and Linux, including by the system (the window
+	// manager, the taskbar, or a keyboard shortcut), not only by Viva's own
+	// window controls. On macOS, windows zoom or enter full screen instead,
+	// and this callback is not invoked.
+	OnMaximize func(maximized bool)
 	// TextInput resolves the currently focused text-field hit into one
 	// application-owned native editor. Returning nil disables native editing.
 	// The callback runs on the window thread after painting.

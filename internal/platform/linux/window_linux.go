@@ -58,6 +58,8 @@ type window struct {
 	minimized   bool
 	// minimizeHandler is the application's callback, run on the loop.
 	minimizeHandler platform.MinimizeHandler
+	// maximizeHandler is the application's callback, run on the loop.
+	maximizeHandler platform.MaximizeHandler
 	// lastFrame is the content rectangle last reported to OnFrameChange.
 	lastFrame ui.Rect
 	// pingAtom and syncRequestAtom are the WM_PROTOCOLS messages the window
@@ -418,6 +420,21 @@ func (state *linuxWindowState) takeHeld() unsafe.Pointer {
 	return event
 }
 
+// syncMaximized reads the window's maximized state from the window manager
+// and notifies the application if it changed.
+func (state *linuxWindowState) syncMaximized() (bool, error) {
+	win := state.win
+	maximized, err := win.readMaximized()
+	if err != nil || maximized == win.frame.maximized {
+		return false, err
+	}
+	win.frame.maximized = maximized
+	if win.maximizeHandler != nil {
+		win.maximizeHandler(maximized)
+	}
+	return true, nil
+}
+
 func (application *linuxApplication) contains(target *linuxWindowState) bool {
 	for _, state := range application.windows {
 		if state == target {
@@ -459,6 +476,10 @@ func (application *linuxApplication) closeWindow(target *linuxWindowState) {
 		target.router.ime.close()
 	}
 	application.atspiClosed(target)
+	if target.held != nil && target.win.api != nil {
+		target.win.api.free(target.held)
+		target.held = nil
+	}
 	target.win.saveClipboardToManager()
 	target.renderer.close()
 	target.text.close()
@@ -492,7 +513,7 @@ func (application *linuxApplication) fail(err error) {
 // window manager may have put it in, and reports only changes.
 func (state *linuxWindowState) reportFrame() {
 	win, config := state.win, state.config
-	if config.OnFrameChange == nil {
+	if config.OnFrameChange == nil || win.frame.maximized {
 		return
 	}
 	x, y := win.contentOrigin()
@@ -563,22 +584,58 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 			return false, state.refreshScale(true)
 		}
 		changed, err := win.propertyChanged((*xcbPropertyEvent)(event))
-		if err == nil && changed {
-			// A maximized window fills its screen: no margin to hold a shadow.
-			err = state.maximizedMargin()
+		if err != nil {
+			return false, err
 		}
-		if err == nil && changed && config.OnRedraw != nil {
-			// The buttons show whether the window is maximized.
-			var frame platform.Frame
-			if frame, err = config.OnRedraw(); err == nil {
-				err = router.present(frame)
+		if changed {
+			marginChanged := false
+			if win.frameWanted {
+				marginChanged, err = state.syncMargin()
+				if err != nil {
+					return false, err
+				}
+			}
+			resized := false
+			if marginChanged {
+				if err := renderer.resize(win.width, win.height); err != nil {
+					return false, err
+				}
+				if err := state.resized(); err != nil {
+					return false, err
+				}
+				win.updateInputRegion()
+				resized = true
+			}
+			if !resized && config.OnRedraw != nil {
+				// The buttons show whether the window is maximized.
+				var frame platform.Frame
+				if frame, err = config.OnRedraw(); err == nil {
+					err = router.present(frame)
+				}
 			}
 		}
 		return false, err
 	case xcbConfigureNotify:
 		configure := (*xcbConfigureEvent)(event)
 		width, height := uint32(configure.Width), uint32(configure.Height)
-		if width > 0 && height > 0 && (width != win.width || height != win.height) {
+		marginChanged := false
+		maximizedChanged := false
+		if win.frameWanted || win.maximizeHandler != nil {
+			var err error
+			maximizedChanged, err = state.syncMaximized()
+			if err != nil {
+				return false, err
+			}
+		}
+		if win.frameWanted {
+			var err error
+			marginChanged, err = state.syncMargin()
+			if err != nil {
+				return false, err
+			}
+		}
+		resized := false
+		if width > 0 && height > 0 && (width != win.width || height != win.height || marginChanged) {
 			win.width, win.height = width, height
 			if err := renderer.resize(width, height); err != nil {
 				return false, err
@@ -587,6 +644,12 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 				return false, err
 			}
 			win.updateInputRegion()
+			resized = true
+		}
+		if !resized && maximizedChanged && config.OnRedraw != nil {
+			if frame, err := config.OnRedraw(); err == nil {
+				_ = router.present(frame)
+			}
 		}
 		if win.tracker != nil && win.tracker.followsPosition() {
 			// A window dragged to another monitor may be on another scale.
@@ -846,7 +909,7 @@ func openWindow(config platform.Config) (*window, error) {
 	// keyboard is its own, and gaining it is when a desktop that does not
 	// announce its light or dark switch is asked again which it is.
 	eventMask |= xcbEventFocusChange
-	if config.WindowMode == platform.WindowCustomTitlebar || config.OnMinimize != nil {
+	if config.WindowMode == platform.WindowCustomTitlebar || config.OnMinimize != nil || config.OnMaximize != nil {
 		eventMask |= xcbEventPropertyChange
 	}
 	if config.OnPointer != nil {
@@ -876,7 +939,7 @@ func openWindow(config platform.Config) (*window, error) {
 		hints := [5]uint32{2, 0, 0, 0, 0}
 		api.changeProperty(connection, xcbPropertyReplace, win.id, motifHints, motifHints, 32, uint32(len(hints)), unsafe.Pointer(&hints[0]))
 	}
-	if config.WindowMode == platform.WindowCustomTitlebar {
+	if config.WindowMode == platform.WindowCustomTitlebar || config.OnMaximize != nil {
 		win.moveResizeAtom, err = api.atom(connection, "_NET_WM_MOVERESIZE")
 		if err == nil {
 			err = win.openFrame()
@@ -885,7 +948,12 @@ func openWindow(config platform.Config) (*window, error) {
 			win.close()
 			return nil, err
 		}
-		win.installActions(config.Actions)
+		if config.WindowMode == platform.WindowCustomTitlebar {
+			win.installActions(config.Actions)
+		}
+	}
+	if config.OnMaximize != nil {
+		win.maximizeHandler = config.OnMaximize
 	}
 	if config.OnMinimize != nil {
 		win.wmStateAtom, err = api.atom(connection, "WM_STATE")

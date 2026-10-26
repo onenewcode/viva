@@ -48,6 +48,8 @@ type Window struct {
 	hidden    atomic.Bool
 	// minimized mirrors what the platform last reported through OnMinimize.
 	minimized atomic.Bool
+	// maximized mirrors what the platform last reported through OnMaximize.
+	maximized atomic.Bool
 }
 
 // Close requests that the native window close. Closing the final window ends
@@ -112,6 +114,15 @@ func (window *Window) Minimized() bool {
 	return window != nil && window.minimized.Load()
 }
 
+// Maximized reports whether the window manager has the window maximized.
+// It follows the state the platform last reported to OnMaximize on Windows
+// and Linux, so it changes while the window is hidden too. On platforms
+// without a maximization state (such as macOS), it reports false. It may
+// be called from any goroutine.
+func (window *Window) Maximized() bool {
+	return window != nil && window.maximized.Load()
+}
+
 // Closed reports whether the platform has finished closing the window.
 func (window *Window) Closed() bool {
 	return window == nil || window.closed.Load()
@@ -158,6 +169,13 @@ func (application *Application) OpenWindow(config Config, canvas *ui.Canvas) (*W
 		window.minimized.Store(minimized)
 		if onMinimize != nil {
 			onMinimize(minimized)
+		}
+	}
+	onMaximize := config.OnMaximize
+	config.OnMaximize = func(maximized bool) {
+		window.maximized.Store(maximized)
+		if onMaximize != nil {
+			onMaximize(maximized)
 		}
 	}
 	setReopenHandler(&config, window)

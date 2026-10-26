@@ -104,6 +104,7 @@ func RunCanvas(config Config, canvas *ui.Canvas) error {
 		OnResize:         resizeHandler,
 		OnFrameChange:    frameChangeHandler(normalized.OnFrameChange),
 		OnMinimize:       minimizeHandler(normalized.OnMinimize),
+		OnMaximize:       maximizeHandler(normalized.OnMaximize),
 		OnPointer:        pointerHandler,
 		PressAt:          painter.pressAt,
 		OnKey:            keyHandler,
@@ -135,6 +136,15 @@ func minimizeHandler(callback func(bool)) platform.MinimizeHandler {
 		return nil
 	}
 	return platform.MinimizeHandler(callback)
+}
+
+// maximizeHandler adapts the application's maximize callback to the platform's.
+// OpenWindow always installs one, so the runtime's own state stays current.
+func maximizeHandler(callback func(bool)) platform.MaximizeHandler {
+	if callback == nil {
+		return nil
+	}
+	return platform.MaximizeHandler(callback)
 }
 
 func prepareNativeWindow(config Config, canvas *ui.Canvas) (platform.Config, func(), error) {
@@ -224,6 +234,7 @@ func prepareNativeWindow(config Config, canvas *ui.Canvas) (platform.Config, fun
 		Accessibility: painter.accessibility, OnResize: resizeHandler,
 		OnFrameChange: frameChangeHandler(normalized.OnFrameChange),
 		OnMinimize:    minimizeHandler(normalized.OnMinimize),
+		OnMaximize:    maximizeHandler(normalized.OnMaximize),
 		OnReopen:      normalized.onReopen,
 		OnPointer:     pointerHandler, PressAt: painter.pressAt,
 		OnKey: keyHandler, OnShortcut: painter.shortcutHandler(&normalized), OnAccessibility: painter.accessibilityHandler(&normalized), OnFocusLost: painter.focusLostHandler(), OnScroll: scrollHandler, OnFileDrop: dropHandler, OnRedraw: redrawHandler,

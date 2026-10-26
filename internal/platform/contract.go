@@ -58,6 +58,9 @@ type Config struct {
 	// OnMinimize, when set, runs on the window thread when the window is
 	// minimized or restored. It is the platform's own state, not Hide.
 	OnMinimize MinimizeHandler
+	// OnMaximize, when set, runs on the window thread when the window is
+	// maximized or restored.
+	OnMaximize MaximizeHandler
 	// OnReopen handles a native reopen request, such as a macOS Dock click.
 	// When set, it must show the window; otherwise the adapter shows it directly.
 	OnReopen   func()
@@ -442,6 +445,10 @@ type FrameChangeHandler func(ui.Rect)
 // MinimizeHandler reports that the window was minimized or restored. It runs
 // on the window thread.
 type MinimizeHandler func(minimized bool)
+
+// MaximizeHandler reports that the window was maximized or restored. It runs
+// on the window thread.
+type MaximizeHandler func(maximized bool)
 
 // KeyHandler applies one keyboard event and returns an optional repaint.
 type KeyHandler func(KeyEvent) (Frame, error)

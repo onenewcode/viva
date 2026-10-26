@@ -47,6 +47,8 @@ import (
 //	                          of the window would, and report its new frame to OnFrameChange
 //	minimize on|off           report the window as minimized or restored, as the window
 //	                          manager would, and call OnMinimize
+//	maximize on|off           report the window as maximized or restored, as the window
+//	                          manager would, and call OnMaximize
 //	wait MS                    advance the animation clock
 //	settle [MS]                apply background work until quiet for MS (default 100)
 //	waitfor "text" [MS]        wait up to MS (default 5000) real ms for text on screen;
@@ -336,6 +338,15 @@ func execute(session *Session, line string) (reply string, quit bool) {
 			return finish(session.driver.SetMinimized(false), "")
 		default:
 			return finish(fmt.Errorf("minimize takes on or off"), "")
+		}
+	case "maximize":
+		switch rest {
+		case "on":
+			return finish(session.driver.SetMaximized(true), "")
+		case "off":
+			return finish(session.driver.SetMaximized(false), "")
+		default:
+			return finish(fmt.Errorf("maximize takes on or off"), "")
 		}
 	case "wait":
 		milliseconds, err := numbers(1)
