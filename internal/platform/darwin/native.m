@@ -4308,6 +4308,7 @@ static void viva_set_secure_event_input(BOOL on) {
 - (void)reopenWindow;
 - (BOOL)isPanel;
 - (BOOL)isHidden;
+- (BOOL)isMiniaturized;
 - (void)requestRedraw:(uintptr_t)callbackHandle;
 - (BOOL)isRunning;
 - (int)nativeStatus;
@@ -4773,6 +4774,10 @@ static void viva_set_secure_event_input(BOOL on) {
     return _window != nil && !_window.isVisible && !_window.isMiniaturized;
 }
 
+- (BOOL)isMiniaturized {
+    return _window != nil && _window.isMiniaturized;
+}
+
 - (void)hideWindow {
     [_window orderOut:nil];
 }
@@ -4955,7 +4960,7 @@ static void viva_reset_profile_counters(void) {
     (void)sender;
     (void)flag;
     for (VivaAppDelegate *delegate in viva_application_windows) {
-        if (![delegate isPanel] && [delegate isHidden]) {
+        if (![delegate isPanel] && ([delegate isHidden] || [delegate isMiniaturized])) {
             [delegate reopenWindow];
         }
     }

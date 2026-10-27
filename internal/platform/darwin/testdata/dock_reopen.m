@@ -33,11 +33,14 @@ void vivaTextInput(uintptr_t handle, void *view, int kind, const unsigned char *
 
 @interface DockTestWindow : NSWindow {
     BOOL _testVisible;
+    BOOL _testMiniaturized;
 }
 @end
 @implementation DockTestWindow
 - (BOOL)isVisible { return _testVisible; }
-- (BOOL)isMiniaturized { return NO; }
+- (BOOL)isMiniaturized { return _testMiniaturized; }
+- (void)miniaturize:(id)sender { _testVisible = NO; _testMiniaturized = YES; }
+- (void)deminiaturize:(id)sender { _testVisible = YES; _testMiniaturized = NO; }
 - (void)makeKeyAndOrderFront:(id)sender { _testVisible = YES; }
 - (void)orderOut:(id)sender { _testVisible = NO; }
 @end
@@ -105,6 +108,32 @@ int main(void) {
         [application applicationShouldHandleReopen:NSApp hasVisibleWindows:NO];
         assert(reopenRequests == 2);
         assert([mainWindow isHidden]);
+
+        // Miniaturized windows must be reopened just like hidden windows.
+        hasReopenHandler = YES;
+        VivaAppDelegate *minWindow = windowDelegate(VIVA_WINDOW_TITLED, 1);
+        DockTestWindow *rawWin = (DockTestWindow *)[minWindow valueForKey:@"_window"];
+        [rawWin miniaturize:nil];
+        assert([minWindow isMiniaturized]);
+        assert(![minWindow isHidden]);
+        [viva_application_windows addObject:minWindow];
+        [application applicationShouldHandleReopen:NSApp hasVisibleWindows:YES];
+        assert(reopenRequests == 3);
+        [viva_application_windows removeObject:minWindow];
+        [minWindow release];
+
+        // Miniaturized windows without an owner handler use native fallback deminiaturization.
+        hasReopenHandler = NO;
+        VivaAppDelegate *fallbackMinWindow = windowDelegate(VIVA_WINDOW_TITLED, 1);
+        DockTestWindow *fallbackRawWin = (DockTestWindow *)[fallbackMinWindow valueForKey:@"_window"];
+        [fallbackRawWin miniaturize:nil];
+        assert([fallbackMinWindow isMiniaturized]);
+        [viva_application_windows addObject:fallbackMinWindow];
+        [application applicationShouldHandleReopen:NSApp hasVisibleWindows:YES];
+        assert(reopenRequests == 4);
+        assert(![fallbackMinWindow isMiniaturized]);
+        [viva_application_windows removeObject:fallbackMinWindow];
+        [fallbackMinWindow release];
 
         [viva_application_windows release];
         viva_application_windows = nil;
