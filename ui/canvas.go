@@ -423,6 +423,8 @@ type HitOptions struct {
 	// for a search field, combobox or command palette with a dropdown.
 	// Cursor placement, selection, Home/End, word navigation and
 	// input-method composition remain native.
+	// Honored by the macOS text system and app.Driver; the other platform
+	// backends do not consult it yet.
 	NavigationKeys bool
 	// Placement is set by a text field that lays its text out in rows itself
 	// (a wrapping Textarea). The runtime then puts the caret where a press or

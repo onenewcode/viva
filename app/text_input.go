@@ -154,6 +154,8 @@ type TextInput struct {
 	// Cursor placement, selection, Home/End, word navigation and
 	// input-method composition remain native. Defaults to the component's
 	// declaration (see TextInputContext.NavigationKeys).
+	// Honored by the macOS text system and app.Driver; the other platform
+	// backends do not consult it yet.
 	NavigationKeys bool
 	// Editor connects the native text service straight to a text.Editor: the
 	// runtime mirrors the editor into the platform and applies every native
