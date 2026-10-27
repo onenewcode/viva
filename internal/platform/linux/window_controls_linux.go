@@ -51,6 +51,8 @@ type frameState struct {
 	maximizedHorizontal        uint32
 	fullscreen                 uint32
 	maximized                  bool
+	maximizePending            bool
+	maximizeTarget             bool
 	lastPress                  uint32
 	lastPressX, lastPressY     int16
 	pressed                    bool
@@ -117,7 +119,20 @@ func (win *window) minimize() {
 }
 
 func (win *window) toggleMaximize() {
+	win.frame.maximizePending = true
+	win.frame.maximizeTarget = !win.frame.maximized
 	win.sendToRoot(win.frame.stateAtom, [5]uint32{netWMStateToggle, win.frame.maximizedVertical, win.frame.maximizedHorizontal, sourceApp})
+}
+
+func (win *window) setMaximized(maximized bool) bool {
+	if maximized == win.frame.maximized {
+		return false
+	}
+	win.frame.maximized = maximized
+	if win.maximizeHandler != nil {
+		win.maximizeHandler(maximized)
+	}
+	return true
 }
 
 // readMaximized reports whether the window manager lists the window as
@@ -174,14 +189,11 @@ func (win *window) propertyChanged(event *xcbPropertyEvent) (bool, error) {
 		return false, nil
 	}
 	maximized, err := win.readMaximized()
-	if err != nil || maximized == win.frame.maximized {
+	if err != nil {
 		return false, err
 	}
-	win.frame.maximized = maximized
-	if win.maximizeHandler != nil {
-		win.maximizeHandler(maximized)
-	}
-	return true, nil
+	win.frame.maximizePending = false
+	return win.setMaximized(maximized), nil
 }
 
 // readMinimized reports whether WM_STATE says the window is iconic. A manager

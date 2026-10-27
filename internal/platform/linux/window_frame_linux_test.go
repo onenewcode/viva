@@ -284,6 +284,7 @@ func TestPropertyNotifyBeforeConfigureNotifyDoesNotGlitch(t *testing.T) {
 	state.handleEvent(unsafe.Pointer(&configure))
 
 	initialFramesCount := len(frames)
+	resizesBeforeRestore := len(resizes)
 
 	// Now simulate restore: WM clears _NET_WM_STATE on X server
 	empty := [0]uint32{}
@@ -299,6 +300,9 @@ func TestPropertyNotifyBeforeConfigureNotifyDoesNotGlitch(t *testing.T) {
 	closeWin, err := state.handleEvent(unsafe.Pointer(&propEvent))
 	if closeWin || err != nil {
 		t.Fatalf("handleEvent property: close=%v, err=%v", closeWin, err)
+	}
+	if len(resizes) != resizesBeforeRestore {
+		t.Fatalf("PropertyNotify resized before final geometry: got %d resize events", len(resizes)-resizesBeforeRestore)
 	}
 
 	// Now deliver ConfigureNotify
@@ -319,6 +323,9 @@ func TestPropertyNotifyBeforeConfigureNotifyDoesNotGlitch(t *testing.T) {
 	if restoreResize.Width != 300 || restoreResize.Height != 200 {
 		t.Fatalf("restored size = %vx%v, want 300x200", restoreResize.Width, restoreResize.Height)
 	}
+	if len(resizes) != resizesBeforeRestore+1 {
+		t.Fatalf("resizes on property-first restore = %d, want exactly 1", len(resizes)-resizesBeforeRestore)
+	}
 	// And OnFrameChange must NOT have been called with maximized 2048x1236 dimensions
 	for _, f := range frames[initialFramesCount:] {
 		if f.Width > 1000 || f.Height > 1000 {
@@ -329,6 +336,7 @@ func TestPropertyNotifyBeforeConfigureNotifyDoesNotGlitch(t *testing.T) {
 
 func TestConfigureNotifyBeforePropertyNotifySynchronizesMargin(t *testing.T) {
 	var resizes []platform.Size
+	var frames []ui.Rect
 	var maximizes []bool
 	_, window := openFramedWindow(t, platform.Config{
 		Title: "framed", Width: 300, Height: 200, WindowMode: platform.WindowCustomTitlebar, Actions: &platform.WindowActions{},
@@ -336,11 +344,16 @@ func TestConfigureNotifyBeforePropertyNotifySynchronizesMargin(t *testing.T) {
 			resizes = append(resizes, size)
 			return platform.Frame{}, nil
 		},
-		OnMaximize: func(maximized bool) { maximizes = append(maximizes, maximized) },
+		OnFrameChange: func(frame ui.Rect) { frames = append(frames, frame) },
+		OnMaximize:    func(maximized bool) { maximizes = append(maximizes, maximized) },
 	})
 	state := window.state
 	win := state.win
 	scale := win.displayScale()
+
+	win.toggleMaximize()
+	resizesBeforeMaximize := len(resizes)
+	framesBeforeMaximize := len(frames)
 
 	// Step 1: WM sends ConfigureNotify with maximized dimensions FIRST,
 	// while _NET_WM_STATE is not yet set on the X server.
@@ -354,9 +367,16 @@ func TestConfigureNotifyBeforePropertyNotifySynchronizesMargin(t *testing.T) {
 		t.Fatalf("handleEvent configure: close=%v, err=%v", closeWin, err)
 	}
 
-	// At this point, PropertyNotify has not arrived, so frame.maximized is still false
-	if win.frame.maximized {
-		t.Fatal("win.frame.maximized = true before PropertyNotify")
+	// The request target supplies the state until PropertyNotify confirms it, so
+	// geometry, margin and application callbacks are committed together.
+	if !win.frame.maximized {
+		t.Fatal("win.frame.maximized = false after requested maximize ConfigureNotify")
+	}
+	if len(resizes) != resizesBeforeMaximize+1 {
+		t.Fatalf("resizes on configure-first maximize = %d, want exactly 1", len(resizes)-resizesBeforeMaximize)
+	}
+	if len(frames) != framesBeforeMaximize {
+		t.Fatalf("OnFrameChange emitted maximized geometry: %v", frames[framesBeforeMaximize:])
 	}
 
 	// Step 2: WM now sets _NET_WM_STATE to maximized on X server and sends PropertyNotify SECOND
@@ -372,6 +392,9 @@ func TestConfigureNotifyBeforePropertyNotifySynchronizesMargin(t *testing.T) {
 	closeWin, err = state.handleEvent(unsafe.Pointer(&propEvent))
 	if closeWin || err != nil {
 		t.Fatalf("handleEvent property: close=%v, err=%v", closeWin, err)
+	}
+	if len(resizes) != resizesBeforeMaximize+1 {
+		t.Fatalf("PropertyNotify caused a second maximize resize: %d", len(resizes)-resizesBeforeMaximize)
 	}
 
 	// PropertyNotify must have zeroed the margin and resized with margin = 0
@@ -390,6 +413,8 @@ func TestConfigureNotifyBeforePropertyNotifySynchronizesMargin(t *testing.T) {
 	}
 
 	// Now test restore with ConfigureNotify FIRST, PropertyNotify SECOND:
+	win.toggleMaximize()
+	resizesBeforeRestore := len(resizes)
 	restoreWidth := deviceLength(300, scale) + 2*frameMargin(scale)
 	restoreHeight := deviceLength(200, scale) + 2*frameMargin(scale)
 	restoreConfigure := xcbConfigureEvent{
@@ -401,6 +426,9 @@ func TestConfigureNotifyBeforePropertyNotifySynchronizesMargin(t *testing.T) {
 	closeWin, err = state.handleEvent(unsafe.Pointer(&restoreConfigure))
 	if closeWin || err != nil {
 		t.Fatalf("handleEvent restore configure: close=%v, err=%v", closeWin, err)
+	}
+	if len(resizes) != resizesBeforeRestore+1 {
+		t.Fatalf("resizes on configure-first restore = %d, want exactly 1", len(resizes)-resizesBeforeRestore)
 	}
 
 	// Now WM clears _NET_WM_STATE on X server and sends PropertyNotify
@@ -416,6 +444,9 @@ func TestConfigureNotifyBeforePropertyNotifySynchronizesMargin(t *testing.T) {
 	closeWin, err = state.handleEvent(unsafe.Pointer(&restorePropEvent))
 	if closeWin || err != nil {
 		t.Fatalf("handleEvent restore property: close=%v, err=%v", closeWin, err)
+	}
+	if len(resizes) != resizesBeforeRestore+1 {
+		t.Fatalf("PropertyNotify caused a second restore resize: %d", len(resizes)-resizesBeforeRestore)
 	}
 
 	// Verify margin was restored and final size is 300x200

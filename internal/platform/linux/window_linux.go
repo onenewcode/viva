@@ -121,6 +121,9 @@ type linuxWindowState struct {
 	resizeEvents uint64
 	profile      bool
 	started      time.Time
+	// frameGeometryDirty means a maximization property changed the client-side
+	// margin before its matching ConfigureNotify supplied the final dimensions.
+	frameGeometryDirty bool
 	// hidden is set by Hide: a compositor drops the contents of an unmapped
 	// window, so the first Expose after the window is shown again presents once.
 	// The same goes for the first one after the window opened: what was drawn
@@ -425,14 +428,17 @@ func (state *linuxWindowState) takeHeld() unsafe.Pointer {
 func (state *linuxWindowState) syncMaximized() (bool, error) {
 	win := state.win
 	maximized, err := win.readMaximized()
-	if err != nil || maximized == win.frame.maximized {
+	if err != nil {
 		return false, err
 	}
-	win.frame.maximized = maximized
-	if win.maximizeHandler != nil {
-		win.maximizeHandler(maximized)
+	if win.frame.maximizePending {
+		if maximized == win.frame.maximizeTarget {
+			win.frame.maximizePending = false
+		} else {
+			maximized = win.frame.maximizeTarget
+		}
 	}
-	return true, nil
+	return win.setMaximized(maximized), nil
 }
 
 func (application *linuxApplication) contains(target *linuxWindowState) bool {
@@ -594,19 +600,9 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 				if err != nil {
 					return false, err
 				}
+				state.frameGeometryDirty = state.frameGeometryDirty || marginChanged
 			}
-			resized := false
-			if marginChanged {
-				if err := renderer.resize(win.width, win.height); err != nil {
-					return false, err
-				}
-				if err := state.resized(); err != nil {
-					return false, err
-				}
-				win.updateInputRegion()
-				resized = true
-			}
-			if !resized && config.OnRedraw != nil {
+			if !marginChanged && config.OnRedraw != nil {
 				// The buttons show whether the window is maximized.
 				var frame platform.Frame
 				if frame, err = config.OnRedraw(); err == nil {
@@ -635,7 +631,7 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 			}
 		}
 		resized := false
-		if width > 0 && height > 0 && (width != win.width || height != win.height || marginChanged) {
+		if width > 0 && height > 0 && (width != win.width || height != win.height || marginChanged || state.frameGeometryDirty) {
 			win.width, win.height = width, height
 			if err := renderer.resize(width, height); err != nil {
 				return false, err
@@ -644,6 +640,7 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 				return false, err
 			}
 			win.updateInputRegion()
+			state.frameGeometryDirty = false
 			resized = true
 		}
 		if !resized && maximizedChanged && config.OnRedraw != nil {
