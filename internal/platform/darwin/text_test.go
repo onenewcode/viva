@@ -223,6 +223,25 @@ func TestNativeRowKeysReachThePlacedFieldRaw(t *testing.T) {
 	}
 }
 
+func TestNativeNavigationKeysReachTheFieldRaw(t *testing.T) {
+	for _, key := range []input.Key{input.KeyUp, input.KeyDown, input.KeyPageUp, input.KeyPageDown} {
+		if !nativeTextInputNavigationKeyIsRaw(true, false, int(key)) {
+			t.Errorf("%v did not reach a field requesting navigation keys raw", key)
+		}
+		if nativeTextInputNavigationKeyIsRaw(false, false, int(key)) {
+			t.Errorf("%v was taken from an ordinary field", key)
+		}
+		if nativeTextInputNavigationKeyIsRaw(true, true, int(key)) {
+			t.Errorf("%v was taken from an input method that is composing", key)
+		}
+	}
+	for _, key := range []input.Key{input.KeyHome, input.KeyEnd, input.KeyLeft, input.KeyRight} {
+		if nativeTextInputNavigationKeyIsRaw(true, false, int(key)) {
+			t.Errorf("%v must stay with the native text system", key)
+		}
+	}
+}
+
 func BenchmarkMeasureTextMixed(b *testing.B) {
 	b.ReportAllocs()
 	for range b.N {

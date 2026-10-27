@@ -615,6 +615,10 @@ type TextInput struct {
 	// input method consumed them), and a release for each press. Release
 	// events carry the Code of their press.
 	KeyReleases bool
+	// NavigationKeys asks Up, Down, PageUp and PageDown to reach the
+	// application as raw key events while the field is focused, while
+	// cursor placement, selection, Home/End and IME remain native.
+	NavigationKeys bool
 	// Placed says the field lays its rows out itself (ui.TextPlacement): the
 	// application places the caret from the pointer, so the platform editor must
 	// not (it knows one line only), and the keys that move between rows (Up,

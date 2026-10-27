@@ -108,6 +108,7 @@ type InputGroupSnapshot struct {
 	Focused          bool
 	Multiline        bool
 	NativeEditing    bool
+	NavigationKeys   bool
 	ShowCaret        bool
 	Caret            int
 	SelectionStart   int
@@ -215,7 +216,8 @@ func PaintInputGroup(canvas *ui.Canvas, theme ui.Theme, bounds ui.Rect, snapshot
 		canvas.HitWithOptions(snapshot.ID, layout.Control, snapshot.Label, ui.HitOptions{
 			Role: ui.RoleTextField, Value: snapshot.Value, Hint: snapshot.Hint,
 			Disabled: snapshot.Disabled, ReadOnly: snapshot.ReadOnly, Multiline: snapshot.Multiline, Secure: snapshot.Secure,
-			TextBounds: content, TextSize: theme.Metrics.FontSizeM, TextColor: theme.Foreground,
+			NavigationKeys: snapshot.NavigationKeys,
+			TextBounds:     content, TextSize: theme.Metrics.FontSizeM, TextColor: theme.Foreground,
 		})
 	}
 	return layout

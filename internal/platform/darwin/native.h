@@ -84,6 +84,8 @@ typedef struct {
     int alt_sends_escape;
     // Presses and releases of every key, modifier keys included.
     int key_releases;
+    // Navigation keys (Up, Down, PageUp, PageDown) reach the application raw.
+    int navigation_keys;
     // The field lays its rows out itself: the pointer places its caret, row
     // movement keys reach the application raw, and input-method windows go to
     // the caret rectangle (top-left origin, like x and y).
@@ -414,6 +416,10 @@ int viva_text_input_should_interpret_key(int enabled, int multiline, int key);
 // to the text system, which knows one line: the keys that move between rows, and
 // Command with Left and Right, which move to the ends of the row.
 int viva_text_input_row_key_is_raw(int placed, int composing, int key, int command);
+// viva_text_input_navigation_key_is_raw says whether a key typed into a field
+// that asked for navigation keys reaches the application as a raw key event
+// (1): Up, Down, PageUp and PageDown.
+int viva_text_input_navigation_key_is_raw(int navigation_keys, int composing, int key);
 // viva_terminal_key_routes_raw says whether a key typed into a terminal goes to
 // the application as a raw key event (1) or to the text system (0).
 int viva_terminal_key_routes_raw(

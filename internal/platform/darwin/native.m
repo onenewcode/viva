@@ -723,6 +723,20 @@ int viva_text_input_row_key_is_raw(int placed, int composing, int key, int comma
     return 0;
 }
 
+int viva_text_input_navigation_key_is_raw(int navigation_keys, int composing, int key) {
+    if (navigation_keys == 0 || composing != 0) {
+        return 0;
+    }
+    switch (key) {
+        case VIVA_KEY_UP:
+        case VIVA_KEY_DOWN:
+        case VIVA_KEY_PAGE_UP:
+        case VIVA_KEY_PAGE_DOWN:
+            return 1;
+    }
+    return 0;
+}
+
 int viva_text_input_should_interpret_key(int enabled, int multiline, int key) {
     if (enabled == 0 || key == VIVA_KEY_TAB || key == VIVA_KEY_ESCAPE) {
         return 0;
@@ -2430,6 +2444,7 @@ static void viva_encode_scene(
     BOOL _textInputEnabled;
     BOOL _textInputMultiline;
     BOOL _textPlaced;
+    BOOL _textNavigationKeys;
     NSRect _textCaretFrame;
     BOOL _textSecure;
     BOOL _textTerminal;
@@ -2582,6 +2597,7 @@ static void viva_encode_scene(
         _textInputEnabled = textInput.enabled != 0;
         _textInputMultiline = textInput.multiline != 0;
         _textPlaced = textInput.placed != 0;
+        _textNavigationKeys = textInput.navigation_keys != 0;
         _textLayer = textInput.layer;
         _textCaretFrame = NSMakeRect(textInput.caret_x, textInput.caret_y, textInput.caret_width, textInput.caret_height);
         _textSecure = textInput.secure != 0;
@@ -3126,6 +3142,7 @@ static void viva_encode_scene(
     }
     int key = characters.length == 0 ? 0 : viva_key_code([characters characterAtIndex:0]);
     if (!viva_text_input_row_key_is_raw(_textInputEnabled && _textPlaced, _hasMarkedText, key, command) &&
+        !viva_text_input_navigation_key_is_raw(_textInputEnabled && _textNavigationKeys, _hasMarkedText, key) &&
         viva_text_input_should_interpret_key(_textInputEnabled, _textInputMultiline, key)) {
         [self interpretKeyEvents:@[event]];
         return;
@@ -3833,6 +3850,7 @@ static void viva_set_secure_event_input(BOOL on) {
         _markedRange = NSMakeRange(0, 0);
         _textInputMultiline = NO;
         _textPlaced = NO;
+        _textNavigationKeys = NO;
         _textLayer = 0;
         _textCaretFrame = NSZeroRect;
         _caretVisible = NO;
@@ -3856,6 +3874,7 @@ static void viva_set_secure_event_input(BOOL on) {
     _hasMarkedText = textInput.has_marked_text != 0;
     _textInputMultiline = textInput.multiline != 0;
     _textPlaced = textInput.placed != 0;
+    _textNavigationKeys = textInput.navigation_keys != 0;
     _textLayer = textInput.layer;
     _textCaretFrame = NSMakeRect(textInput.caret_x, textInput.caret_y, textInput.caret_width, textInput.caret_height);
     _textSecure = textInput.secure != 0;

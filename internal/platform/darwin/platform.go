@@ -766,6 +766,7 @@ func makeNativeTextInput(input TextInput, value unsafe.Pointer) C.viva_text_inpu
 		mono_face:        C.int(input.MonoFace),
 		alt_sends_escape: C.int(boolInt(input.AltSendsEscape)),
 		key_releases:     C.int(boolInt(input.KeyReleases)),
+		navigation_keys:  C.int(boolInt(input.NavigationKeys)),
 		placed:           C.int(boolInt(input.Placed)),
 		layer:            C.uint16_t(input.Layer),
 		caret_x:          C.float(input.CaretX),
@@ -779,6 +780,12 @@ func makeNativeTextInput(input TextInput, value unsafe.Pointer) C.viva_text_inpu
 func nativeTextInputRowKeyIsRaw(placed, composing bool, key int, command bool) bool {
 	return C.viva_text_input_row_key_is_raw(
 		C.int(boolInt(placed)), C.int(boolInt(composing)), C.int(key), C.int(boolInt(command)),
+	) != 0
+}
+
+func nativeTextInputNavigationKeyIsRaw(navigationKeys, composing bool, key int) bool {
+	return C.viva_text_input_navigation_key_is_raw(
+		C.int(boolInt(navigationKeys)), C.int(boolInt(composing)), C.int(key),
 	) != 0
 }
 

@@ -97,6 +97,9 @@ type TextInputContext struct {
 	Multiline bool
 	ReadOnly  bool
 	Secure    bool
+	// NavigationKeys reports a field that asked for Up, Down, PageUp and
+	// PageDown to be delivered to the application as raw ui.KeyEvents.
+	NavigationKeys bool
 	// Terminal reports a RoleTerminal hit. The native editor then is a
 	// preedit surface in the fixed-pitch font: it draws only the text being
 	// composed, with no caret or selection, and Bounds should be the cursor
@@ -144,6 +147,14 @@ type TextInput struct {
 	// first. Committed text from an input method still arrives as text events.
 	// Implemented on macOS, Windows and X11, and by app.Driver.
 	KeyReleases bool
+	// NavigationKeys asks Up, Down, PageUp and PageDown to reach the
+	// application as raw ui.KeyEvents while the field is focused, instead
+	// of being consumed by the text system or moving its caret. Use it
+	// for a search field, combobox or command palette with a dropdown.
+	// Cursor placement, selection, Home/End, word navigation and
+	// input-method composition remain native. Defaults to the component's
+	// declaration (see TextInputContext.NavigationKeys).
+	NavigationKeys bool
 	// Editor connects the native text service straight to a text.Editor: the
 	// runtime mirrors the editor into the platform and applies every native
 	// event to it, so State and OnEvent are ignored. Leave it nil to own the

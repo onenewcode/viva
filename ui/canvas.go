@@ -417,6 +417,13 @@ type HitOptions struct {
 	TextBounds Rect
 	TextSize   float32
 	TextColor  Color
+	// NavigationKeys asks Up, Down, PageUp and PageDown to reach the
+	// application as raw ui.KeyEvents while the field is focused, instead
+	// of being consumed by the text system or moving its caret. Use it
+	// for a search field, combobox or command palette with a dropdown.
+	// Cursor placement, selection, Home/End, word navigation and
+	// input-method composition remain native.
+	NavigationKeys bool
 	// Placement is set by a text field that lays its text out in rows itself
 	// (a wrapping Textarea). The runtime then puts the caret where a press or
 	// drag lands according to it, rather than the platform editor, which knows
@@ -497,6 +504,8 @@ type Hit struct {
 	TextBounds Rect
 	TextSize   float32
 	TextColor  Color
+	// NavigationKeys is HitOptions.NavigationKeys.
+	NavigationKeys bool
 	// Placement is HitOptions.Placement.
 	Placement TextPlacement
 }
@@ -1182,7 +1191,8 @@ func (canvas *Canvas) HitWithOptions(id ID, bounds Rect, label string, options H
 		Focusable: focusable, SkipTab: focusable && options.SkipTab, Autofocus: options.Autofocus && focusable, IsLabel: options.label, Backdrop: options.Backdrop,
 		PassSecondary: options.Backdrop && options.PassSecondary, PassPrimary: options.Backdrop && options.PassPrimary,
 		TextBounds: options.TextBounds, TextSize: options.TextSize, TextColor: options.TextColor,
-		Placement: options.Placement,
+		NavigationKeys: options.NavigationKeys,
+		Placement:      options.Placement,
 	})
 }
 

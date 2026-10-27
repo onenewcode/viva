@@ -4,6 +4,7 @@ package app
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -230,6 +231,85 @@ func TestDriverEditsAFocusedTextFieldThroughTheTextSystem(t *testing.T) {
 	}
 	if snapshot := driver.Snapshot(); snapshot.Editor == nil || !snapshot.Editor.Secure {
 		t.Fatalf("the password overlay is not marked secure: %+v", snapshot.Editor)
+	}
+}
+
+// NavigationKeys delivers Up, Down, PageUp and PageDown to the application's key
+// handler while typing, Home/End, selection and pointer placement remain native.
+func TestDriverNavigationKeysPassToApplicationWhileTextEditingRemainsNative(t *testing.T) {
+	theme := ui.DarkTheme()
+	editor := text.NewEditor("")
+	var appKeys []ui.Key
+	config := Config{Title: "nav-keys", Width: 300, Height: 100}
+	config.Paint = func(canvas *ui.Canvas, size ui.Size) {
+		components.PaintInput(canvas, theme, ui.Rect{X: 10, Y: 10, Width: 200, Height: 30}, components.InputSnapshot{
+			ID: ui.Item(1), Label: "Search", Value: editor.String(),
+			PlatformEditing: canvas.Focused() == ui.Item(1) && editor.String() != "",
+			NavigationKeys:  true,
+		})
+	}
+	config.TextInput = func(context TextInputContext) *TextInput {
+		if context.ID != ui.Item(1) {
+			return nil
+		}
+		if !context.NavigationKeys {
+			t.Fatal("TextInputContext.NavigationKeys was not set from the component snapshot")
+		}
+		return &TextInput{Editor: editor}
+	}
+	config.OnKey = func(event ui.KeyEvent) ui.EventResult {
+		appKeys = append(appKeys, event.Key)
+		return ui.EventResult{Handled: true}
+	}
+	driver, err := NewDriver(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+
+	if err := driver.Click(50, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Type("abcdef"); err != nil {
+		t.Fatal(err)
+	}
+	if editor.String() != "abcdef" {
+		t.Fatalf("editor = %q, want abcdef", editor.String())
+	}
+
+	// Home moves the caret to the beginning of the field via the native text system.
+	if err := driver.Key(ui.KeyHome, 0); err != nil {
+		t.Fatal(err)
+	}
+	if editor.Selection() != (text.Range{Start: 0, End: 0}) {
+		t.Fatalf("after Home: caret = %+v, want 0", editor.Selection())
+	}
+	// Typing at Home inserts at index 0.
+	if err := driver.Type("z"); err != nil {
+		t.Fatal(err)
+	}
+	if editor.String() != "zabcdef" {
+		t.Fatalf("editor after Home+insert = %q, want zabcdef", editor.String())
+	}
+
+	// End moves the caret to the end of the field natively.
+	if err := driver.Key(ui.KeyEnd, 0); err != nil {
+		t.Fatal(err)
+	}
+	if editor.Selection() != (text.Range{Start: 7, End: 7}) {
+		t.Fatalf("after End: caret = %+v, want 7", editor.Selection())
+	}
+
+	// Navigation keys (Down, Up, PageDown, PageUp) reach the application.
+	appKeys = nil
+	for _, key := range []ui.Key{ui.KeyDown, ui.KeyUp, ui.KeyPageDown, ui.KeyPageUp} {
+		if err := driver.Key(key, 0); err != nil {
+			t.Fatalf("delivering %v: %v", key, err)
+		}
+	}
+	wantKeys := []ui.Key{ui.KeyDown, ui.KeyUp, ui.KeyPageDown, ui.KeyPageUp}
+	if !slices.Equal(appKeys, wantKeys) {
+		t.Fatalf("app keys = %v, want %v", appKeys, wantKeys)
 	}
 }
 

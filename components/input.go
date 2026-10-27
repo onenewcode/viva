@@ -24,6 +24,7 @@ type InputSnapshot struct {
 	Secure           bool
 	Focused          bool
 	PlatformEditing  bool
+	NavigationKeys   bool
 	ShowCaret        bool
 	Caret            int
 	SelectionStart   int
@@ -54,7 +55,8 @@ func PaintInput(canvas *ui.Canvas, theme ui.Theme, bounds ui.Rect, snapshot Inpu
 		canvas.HitWithOptions(snapshot.ID, bounds, snapshot.Label, ui.HitOptions{
 			Role: ui.RoleTextField, Value: snapshot.Value, Hint: snapshot.Hint,
 			Disabled: snapshot.Disabled, ReadOnly: snapshot.ReadOnly, Secure: snapshot.Secure,
-			TextBounds: content, TextSize: theme.Metrics.FontSizeM, TextColor: theme.Foreground,
+			NavigationKeys: snapshot.NavigationKeys,
+			TextBounds:     content, TextSize: theme.Metrics.FontSizeM, TextColor: theme.Foreground,
 		})
 	}
 	return bounds

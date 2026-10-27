@@ -553,7 +553,7 @@ func (driver *Driver) Key(key ui.Key, modifiers ui.Modifiers) error {
 		return driver.terminalKey(key, modifiers, "")
 	}
 	if driver.editing() && key != ui.KeyTab && key != ui.KeyEscape && (key != ui.KeyEnter || driver.painter.nativeText.Multiline) {
-		if driver.rowKey(key, modifiers) {
+		if driver.navigationKey(key) || driver.rowKey(key, modifiers) {
 			_, err := driver.painter.key(platform.KeyEvent{Key: key, Modifiers: modifiers})
 			return err
 		}
@@ -561,6 +561,21 @@ func (driver *Driver) Key(key ui.Key, modifiers ui.Modifiers) error {
 	}
 	_, err := driver.painter.key(platform.KeyEvent{Key: key, Modifiers: modifiers})
 	return err
+}
+
+// navigationKey reports whether a key moves between choices outside the focused
+// field (such as a dropdown, autocomplete list or command palette) when the field
+// requested NavigationKeys.
+func (driver *Driver) navigationKey(key ui.Key) bool {
+	text := &driver.painter.nativeText
+	if !text.NavigationKeys || text.State.Composing {
+		return false
+	}
+	switch key {
+	case ui.KeyUp, ui.KeyDown, ui.KeyPageUp, ui.KeyPageDown:
+		return true
+	}
+	return false
 }
 
 // rowKey reports whether a key moves between the rows of the focused field,
