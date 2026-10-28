@@ -66,7 +66,7 @@ flowchart LR
 - **阶段目标**：
   在纯 Go 环境（零 CGO）下，通过 `purego` 成功动态加载 `libwayland-client.so.0`，建立 UNIX Socket 通信，完成全局注册表（Registry）的枚举绑定，并跑通基于 `poll` 的单线程事件循环。
 - **改动范围与涉及文件**：
-  - [ ] **Task 2.1**：新建 `internal/platform/linux/wayland_client.go`：
+  - [x] **Task 2.1**：新建 `internal/platform/linux/wayland_client.go`：
     - 通过 `purego.Dlopen("libwayland-client.so.0", purego.RTLD_NOW|purego.RTLD_LOCAL)` 动态加载；
     - 绑定核心函数：`wl_display_connect`, `wl_display_disconnect`, `wl_display_get_fd`, `wl_display_dispatch`, `wl_display_dispatch_pending`, `wl_display_flush`, `wl_display_roundtrip`, `wl_proxy_marshal_flags`, `wl_proxy_add_listener`, `wl_proxy_destroy`。
   - [ ] **Task 2.2**：新建 `internal/platform/linux/wayland_abi.go`：

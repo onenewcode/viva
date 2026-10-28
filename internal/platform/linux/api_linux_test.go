@@ -595,3 +595,18 @@ func TestSuboptimalDoesNotRecreateInFrame(t *testing.T) {
 		t.Fatal("expected swapchainSuboptimal flag to be set to true")
 	}
 }
+
+func TestWaylandClientPureGoLoad(t *testing.T) {
+	api, err := loadWaylandClient()
+	if err != nil {
+		t.Logf("libwayland-client.so.0 not available: %v", err)
+		return
+	}
+	defer api.close()
+	if api.displayConnect == nil || api.displayDisconnect == nil || api.displayGetFd == nil ||
+		api.displayDispatch == nil || api.displayDispatchPending == nil || api.displayFlush == nil ||
+		api.displayRoundtrip == nil || api.proxyMarshalFlags == nil || api.proxyAddListener == nil ||
+		api.proxyDestroy == nil {
+		t.Fatal("one or more waylandAPI function pointers were not bound")
+	}
+}
