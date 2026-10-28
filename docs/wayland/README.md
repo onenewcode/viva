@@ -49,7 +49,7 @@ Viva 作为以“Go 优先、GPU 原生、无 WebView、零多余捆绑、直通
 | :---: | :--- | :---: | :---: |
 | **Phase 1** | Vulkan 表面解耦与交换链平滑过渡 | 已完成 | PASS (Subagent Review 已通过) |
 | **Phase 2** | PureGo Wayland 动态加载器与协议基座 | 已完成 | PASS (Subagent Review 已通过) |
-| **Phase 3** | XDG-Shell 窗口控制器与首帧渲染 | 进行中 | 待完成 |
-| **Phase 4** | 完整输入、分数缩放与光标支持 | 未开始 | 待完成 |
-| **Phase 5** | 调度器整合、自动化后备与 Conformance 验证 | 未开始 | 待完成 |
+| **Phase 3** | XDG-Shell 窗口控制器与首帧渲染 | 已完成 | PASS (Subagent Review 已通过) |
+| **Phase 4** | 完整输入、分数缩放与光标支持 | 已完成 | PASS (Subagent Review 已通过) |
+| **Phase 5** | 调度器整合、自动化后备与 Conformance 验证 | 已完成 | PASS (Subagent Review 已通过) |
 

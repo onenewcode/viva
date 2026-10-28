@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -78,6 +79,9 @@ func initKeyboardListeners() {
 		// 0: keymap(format, fd, size)
 		rawKeyboardListener[0] = purego.NewCallback(func(data unsafe.Pointer, keyboard uintptr, format uint32, fd int32, size uint32) {
 			if data == nil {
+				if fd >= 0 {
+					_ = syscall.Close(int(fd))
+				}
 				return
 			}
 			app := (*waylandApplication)(data)
@@ -103,7 +107,9 @@ func initKeyboardListeners() {
 			app.stopKeyRepeat()
 			if app.keyboardFocus != nil && app.keyboardFocus.state != nil && app.keyboardFocus.state.config.OnFocusLost != nil {
 				if frame, err := app.keyboardFocus.state.config.OnFocusLost(); err == nil {
-					_ = app.keyboardFocus.state.router.present(frame)
+					if app.keyboardFocus.state.router.present != nil {
+						_ = app.keyboardFocus.state.router.present(frame)
+					}
 				}
 			}
 			app.keyboardFocus = nil
@@ -192,6 +198,8 @@ func (app *waylandApplication) handleKeymap(format uint32, fd int32, size uint32
 	defer func() {
 		if app.libc != nil && app.libc.close != nil && fd >= 0 {
 			app.libc.close(fd)
+		} else if fd >= 0 {
+			_ = syscall.Close(int(fd))
 		}
 	}()
 
@@ -199,6 +207,7 @@ func (app *waylandApplication) handleKeymap(format uint32, fd int32, size uint32
 		return
 	}
 
+	_, _ = syscall.Seek(int(fd), 0, 0)
 	data := make([]byte, size+1)
 	totalRead := 0
 	for totalRead < int(size) {

@@ -26,6 +26,7 @@ func TestWaylandCursorSetCursorMock(t *testing.T) {
 	}
 	var marshaled []marshalCall
 
+	var destroyedProxies []uintptr
 	api := &waylandAPI{
 		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
 			marshaled = append(marshaled, marshalCall{proxy, opcode, args})
@@ -33,6 +34,9 @@ func TestWaylandCursorSetCursorMock(t *testing.T) {
 				return 1001 // return dummy cursor surface
 			}
 			return 0
+		},
+		proxyDestroy: func(proxy uintptr) {
+			destroyedProxies = append(destroyedProxies, proxy)
 		},
 	}
 

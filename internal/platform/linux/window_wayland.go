@@ -228,13 +228,23 @@ func (win *waylandWindow) updateInputRegion() {
 
 // renderFrame presents the current content atomically to the Wayland surface.
 func (win *waylandWindow) renderFrame() {
-	if win.closed.Load() || win.hidden || win.surface == 0 || win.state == nil {
+	if win.closed.Load() || win.surface == 0 || win.state == nil {
+		return
+	}
+	if win.hidden {
+		win.needsRedraw = false
+		if win.state.config.OnRedraw != nil {
+			if frame, err := win.state.config.OnRedraw(); err == nil && win.state.router.present != nil {
+				_ = win.state.router.present(frame)
+			}
+		}
 		return
 	}
 	if win.framePending {
 		win.needsRedraw = true
 		return
 	}
+	win.needsRedraw = false
 
 	if win.pendingSerial != 0 {
 		win.app.api.xdgSurfaceAckConfigure(win.xdgSurface, win.pendingSerial)
@@ -253,7 +263,9 @@ func (win *waylandWindow) renderFrame() {
 	if win.state.renderer != nil {
 		if win.state.config.OnRedraw != nil {
 			if frame, err := win.state.config.OnRedraw(); err == nil {
-				_ = win.state.router.present(frame)
+				if win.state.router.present != nil {
+					_ = win.state.router.present(frame)
+				}
 			} else {
 				_ = win.state.renderer.present()
 			}
@@ -262,8 +274,12 @@ func (win *waylandWindow) renderFrame() {
 		}
 	}
 
-	win.app.api.surfaceCommit(win.surface)
-	win.app.api.displayFlush(win.app.display)
+	if win.app != nil && win.app.api != nil {
+		win.app.api.surfaceCommit(win.surface)
+		if win.app.api.displayFlush != nil && win.app.display != 0 {
+			win.app.api.displayFlush(win.app.display)
+		}
+	}
 }
 
 func (win *waylandWindow) handleXdgToplevelConfigure(width, height int32, states *wlArray) {
@@ -298,7 +314,9 @@ func (win *waylandWindow) handleXdgToplevelConfigure(width, height int32, states
 			}
 			if win.state != nil && win.state.config.OnFocusLost != nil {
 				if frame, err := win.state.config.OnFocusLost(); err == nil {
-					_ = win.state.router.present(frame)
+					if win.state.router.present != nil {
+						_ = win.state.router.present(frame)
+					}
 				}
 			}
 		}
@@ -361,7 +379,9 @@ func (win *waylandWindow) handleXdgSurfaceConfigure(serial uint32) {
 		_ = win.state.renderer.resize(win.width, win.height)
 		if win.state.config.OnResize != nil {
 			if frame, err := win.state.config.OnResize(win.logicalSize()); err == nil {
-				_ = win.state.router.present(frame)
+				if win.state.router.present != nil {
+					_ = win.state.router.present(frame)
+				}
 			}
 		}
 		win.reportFrame()
@@ -445,18 +465,19 @@ func (win *waylandWindow) startResize(serial uint32, edge platform.WindowEdge) {
 	}
 }
 
+const (
+	xdgToplevelResizeEdgeNone        uint32 = 0
+	xdgToplevelResizeEdgeTop         uint32 = 1
+	xdgToplevelResizeEdgeBottom      uint32 = 2
+	xdgToplevelResizeEdgeLeft        uint32 = 4
+	xdgToplevelResizeEdgeTopLeft     uint32 = 5
+	xdgToplevelResizeEdgeBottomLeft  uint32 = 6
+	xdgToplevelResizeEdgeRight       uint32 = 8
+	xdgToplevelResizeEdgeTopRight    uint32 = 9
+	xdgToplevelResizeEdgeBottomRight uint32 = 10
+)
+
 func xdgResizeEdge(edge platform.WindowEdge) uint32 {
-	const (
-		xdgToplevelResizeEdgeNone        uint32 = 0
-		xdgToplevelResizeEdgeTop         uint32 = 1
-		xdgToplevelResizeEdgeBottom      uint32 = 2
-		xdgToplevelResizeEdgeLeft        uint32 = 4
-		xdgToplevelResizeEdgeTopLeft     uint32 = 5
-		xdgToplevelResizeEdgeBottomLeft  uint32 = 6
-		xdgToplevelResizeEdgeRight       uint32 = 8
-		xdgToplevelResizeEdgeTopRight    uint32 = 9
-		xdgToplevelResizeEdgeBottomRight uint32 = 10
-	)
 	switch edge {
 	case platform.EdgeTop:
 		return xdgToplevelResizeEdgeTop
@@ -530,6 +551,16 @@ func (win *waylandWindow) destroy() {
 			win.state.text = nil
 		}
 		if win.app != nil {
+			if win.app.pointerFocus == win {
+				win.app.pointerFocus = nil
+			}
+			if win.app.keyboardFocus == win {
+				win.app.stopKeyRepeat()
+				win.app.keyboardFocus = nil
+			}
+			if win.app.dragState != nil && win.app.dragState.win == win {
+				win.app.dragState = nil
+			}
 			win.app.removeWindow(win.state)
 		}
 		if win.state.config.OnClosed != nil {

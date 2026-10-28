@@ -7,10 +7,12 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unsafe"
 
+	"github.com/ebitengine/purego"
 	"github.com/vivaui/viva/internal/platform"
 )
 
@@ -119,12 +121,23 @@ func TestWaylandClipboardSetAndAsyncSend(t *testing.T) {
 }
 
 func TestWaylandClipboardPasteTimeout(t *testing.T) {
+	var holdWriter *os.File
 	api := &waylandAPI{
 		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
-			// Deliberately do not write anything to fd
+			if opcode == wlDataOfferReceiveOpcode && len(args) >= 2 {
+				fd := args[1].(int32)
+				if dupFd, err := syscall.Dup(int(fd)); err == nil {
+					holdWriter = os.NewFile(uintptr(dupFd), "mock_peer_writer")
+				}
+			}
 			return 0
 		},
 	}
+	defer func() {
+		if holdWriter != nil {
+			_ = holdWriter.Close()
+		}
+	}()
 	app := &waylandApplication{
 		api: api,
 		clipboardOffer: &waylandDataOffer{
@@ -150,11 +163,15 @@ func TestWaylandClipboardPasteSuccess(t *testing.T) {
 		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
 			if proxy == 502 && opcode == wlDataOfferReceiveOpcode && len(args) >= 2 {
 				fd := args[1].(int32)
-				go func(wFd int32) {
+				dupFd, err := syscall.Dup(int(fd))
+				if err != nil {
+					t.Fatalf("dup failed: %v", err)
+				}
+				go func(wFd int) {
 					f := os.NewFile(uintptr(wFd), "simulated_writer")
 					defer f.Close()
 					_, _ = f.Write([]byte("Wayland Hello World!"))
-				}(fd)
+				}(dupFd)
 			}
 			return 0
 		},
@@ -177,6 +194,7 @@ func TestWaylandClipboardPasteSuccess(t *testing.T) {
 }
 
 func TestWaylandFileDropInteraction(t *testing.T) {
+	var mu sync.Mutex
 	var dropPhases []platform.FileDropPhase
 	var droppedPaths []string
 
@@ -187,10 +205,12 @@ func TestWaylandFileDropInteraction(t *testing.T) {
 		win: win,
 		config: platform.Config{
 			OnFileDrop: func(event platform.FileDropEvent) (platform.Frame, bool, error) {
+				mu.Lock()
 				dropPhases = append(dropPhases, event.Phase)
 				if event.Phase == platform.FileDropDrop {
 					droppedPaths = event.Paths
 				}
+				mu.Unlock()
 				return platform.Frame{}, true, nil
 			},
 		},
@@ -200,11 +220,15 @@ func TestWaylandFileDropInteraction(t *testing.T) {
 		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
 			if proxy == 601 && opcode == wlDataOfferReceiveOpcode && len(args) >= 2 {
 				fd := args[1].(int32)
-				go func(wFd int32) {
+				dupFd, err := syscall.Dup(int(fd))
+				if err != nil {
+					return 0
+				}
+				go func(wFd int) {
 					f := os.NewFile(uintptr(wFd), "simulated_drop_writer")
 					defer f.Close()
 					_, _ = f.Write([]byte("file:///home/user/document.pdf\r\nfile:///home/user/image.png\r\n"))
-				}(fd)
+				}(dupFd)
 			}
 			return 0
 		},
@@ -235,7 +259,19 @@ func TestWaylandFileDropInteraction(t *testing.T) {
 	puregoInvokeCallback2(rawDataDeviceListener[4], unsafe.Pointer(app), 300)
 
 	// Allow pipe reading goroutine in drop to complete
-	time.Sleep(50 * time.Millisecond)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		count := len(dropPhases)
+		mu.Unlock()
+		if count >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
 
 	if len(dropPhases) != 3 {
 		t.Fatalf("expected 3 drop phases (Over, Over, Drop), got %v", dropPhases)
@@ -327,27 +363,21 @@ func TestWaylandDataOfferFinishVersionGuard(t *testing.T) {
 }
 
 func puregoInvokeCallback3(fn uintptr, a1 unsafe.Pointer, a2 uintptr, a3 uintptr) {
-	f := *(*func(unsafe.Pointer, uintptr, uintptr))(unsafe.Pointer(&fn))
-	f(a1, a2, a3)
+	purego.SyscallN(fn, uintptr(a1), a2, a3)
 }
 
-// Helpers to invoke raw PureGo callbacks in testing
 func puregoInvokeCallback2(fn uintptr, a1 unsafe.Pointer, a2 uintptr) {
-	f := *(*func(unsafe.Pointer, uintptr))(unsafe.Pointer(&fn))
-	f(a1, a2)
+	purego.SyscallN(fn, uintptr(a1), a2)
 }
 
 func puregoInvokeCallback4(fn uintptr, a1 unsafe.Pointer, a2 uintptr, a3 uintptr, a4 uintptr) {
-	f := *(*func(unsafe.Pointer, uintptr, uintptr, uintptr))(unsafe.Pointer(&fn))
-	f(a1, a2, a3, a4)
+	purego.SyscallN(fn, uintptr(a1), a2, a3, a4)
 }
 
 func puregoInvokeCallback5(fn uintptr, a1 unsafe.Pointer, a2 uintptr, a3 uint32, a4 wlFixed, a5 wlFixed) {
-	f := *(*func(unsafe.Pointer, uintptr, uint32, wlFixed, wlFixed))(unsafe.Pointer(&fn))
-	f(a1, a2, a3, a4, a5)
+	purego.SyscallN(fn, uintptr(a1), a2, uintptr(a3), uintptr(a4), uintptr(a5))
 }
 
 func puregoInvokeCallback7(fn uintptr, a1 unsafe.Pointer, a2 uintptr, a3 uint32, a4 uintptr, a5 wlFixed, a6 wlFixed, a7 uintptr) {
-	f := *(*func(unsafe.Pointer, uintptr, uint32, uintptr, wlFixed, wlFixed, uintptr))(unsafe.Pointer(&fn))
-	f(a1, a2, a3, a4, a5, a6, a7)
+	purego.SyscallN(fn, uintptr(a1), a2, uintptr(a3), a4, uintptr(a5), uintptr(a6), a7)
 }

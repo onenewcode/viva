@@ -17,7 +17,7 @@ var (
 	pinnerScale                runtime.Pinner
 
 	surfaceListenerOnce sync.Once
-	rawSurfaceListener  [2]uintptr
+	rawSurfaceListener  [4]uintptr
 	pinnerSurface       runtime.Pinner
 )
 
@@ -55,6 +55,22 @@ func initSurfaceListeners() {
 			}
 			win := (*waylandWindow)(data)
 			win.handleSurfaceLeave(output)
+		})
+
+		// 2: preferred_buffer_scale(surface, factor)
+		rawSurfaceListener[2] = purego.NewCallback(func(data unsafe.Pointer, surface uintptr, factor int32) {
+			if data == nil {
+				return
+			}
+			win := (*waylandWindow)(data)
+			if win.fractionalScale == 0 && factor > 0 {
+				win.applyScale(float32(factor))
+			}
+		})
+
+		// 3: preferred_buffer_transform(surface, transform)
+		rawSurfaceListener[3] = purego.NewCallback(func(data unsafe.Pointer, surface uintptr, transform uint32) {
+			// No-op for now
 		})
 
 		pinnerSurface.Pin(&rawSurfaceListener)
@@ -174,7 +190,9 @@ func (win *waylandWindow) applyScale(scale float32) {
 
 	if win.state != nil && win.state.config.OnResize != nil {
 		if frame, err := win.state.config.OnResize(win.logicalSize()); err == nil {
-			_ = win.state.router.present(frame)
+			if win.state.router.present != nil {
+				_ = win.state.router.present(frame)
+			}
 		}
 	}
 	win.reportFrame()

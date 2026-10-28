@@ -265,7 +265,10 @@ func (router eventRouter) presentFrame(frame platform.Frame, err error) error {
 	if err != nil {
 		return err
 	}
-	return router.present(frame)
+	if router.present != nil {
+		return router.present(frame)
+	}
+	return nil
 }
 
 func (win *window) reloadKeymap() error {

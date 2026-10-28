@@ -269,11 +269,19 @@ var (
 		{Name: &[]byte("set_buffer_scale\x00")[0], Signature: &sigI[0]},
 		{Name: &[]byte("damage_buffer\x00")[0], Signature: &sigIIII[0]},
 	}
+	wlSurfaceEvents = [4]wlMessage{
+		{Name: &[]byte("enter\x00")[0], Signature: &sigO[0]},
+		{Name: &[]byte("leave\x00")[0], Signature: &sigO[0]},
+		{Name: &[]byte("preferred_buffer_scale\x00")[0], Signature: &sigI[0]},
+		{Name: &[]byte("preferred_buffer_transform\x00")[0], Signature: &sigU[0]},
+	}
 	wlSurfaceInterface = wlInterface{
 		Name:        &strWlSurface[0],
-		Version:     4,
+		Version:     6,
 		MethodCount: 10,
 		Methods:     &wlSurfaceRequests[0],
+		EventCount:  4,
+		Events:      &wlSurfaceEvents[0],
 	}
 
 	wlRegionRequests = [3]wlMessage{
@@ -785,8 +793,14 @@ func (api *waylandAPI) createSurface(compositor uintptr) uintptr {
 	if api == nil || compositor == 0 {
 		return 0
 	}
+	ver := uint32(4)
+	if api.proxyGetVersion != nil {
+		if v := api.proxyGetVersion(compositor); v > 0 {
+			ver = v
+		}
+	}
 	iface := api.getInterface("wl_surface_interface", &wlSurfaceInterface)
-	return api.proxyMarshalFlags(compositor, wlCompositorCreateSurfaceOpcode, iface, 4, 0, uintptr(0))
+	return api.proxyMarshalFlags(compositor, wlCompositorCreateSurfaceOpcode, iface, ver, 0, uintptr(0))
 }
 
 func (api *waylandAPI) createRegion(compositor uintptr) uintptr {
@@ -812,14 +826,18 @@ func (api *waylandAPI) regionSubtract(region uintptr, x, y, width, height int32)
 func (api *waylandAPI) destroyRegion(region uintptr) {
 	if api != nil && region != 0 {
 		api.proxyMarshalFlags(region, wlRegionDestroyOpcode, 0, 1, 0)
-		api.proxyDestroy(region)
+		if api.proxyDestroy != nil {
+			api.proxyDestroy(region)
+		}
 	}
 }
 
 func (api *waylandAPI) surfaceDestroy(surface uintptr) {
 	if api != nil && surface != 0 {
 		api.proxyMarshalFlags(surface, wlSurfaceDestroyOpcode, 0, 1, 0)
-		api.proxyDestroy(surface)
+		if api.proxyDestroy != nil {
+			api.proxyDestroy(surface)
+		}
 	}
 }
 
@@ -878,7 +896,9 @@ func (api *waylandAPI) getXdgSurface(xdgWmBase uintptr, surface uintptr) uintptr
 func (api *waylandAPI) xdgSurfaceDestroy(xdgSurface uintptr) {
 	if api != nil && xdgSurface != 0 {
 		api.proxyMarshalFlags(xdgSurface, xdgSurfaceDestroyOpcode, 0, 1, 0)
-		api.proxyDestroy(xdgSurface)
+		if api.proxyDestroy != nil {
+			api.proxyDestroy(xdgSurface)
+		}
 	}
 }
 
@@ -905,7 +925,9 @@ func (api *waylandAPI) xdgSurfaceAckConfigure(xdgSurface uintptr, serial uint32)
 func (api *waylandAPI) xdgToplevelDestroy(xdgToplevel uintptr) {
 	if api != nil && xdgToplevel != 0 {
 		api.proxyMarshalFlags(xdgToplevel, xdgToplevelDestroyOpcode, 0, 1, 0)
-		api.proxyDestroy(xdgToplevel)
+		if api.proxyDestroy != nil {
+			api.proxyDestroy(xdgToplevel)
+		}
 	}
 }
 
@@ -992,7 +1014,9 @@ func (api *waylandAPI) setDecorationMode(decoration uintptr, mode uint32) {
 func (api *waylandAPI) decorationDestroy(decoration uintptr) {
 	if api != nil && decoration != 0 {
 		api.proxyMarshalFlags(decoration, zxdgToplevelDecorationV1DestroyOpcode, 0, 1, 0)
-		api.proxyDestroy(decoration)
+		if api.proxyDestroy != nil {
+			api.proxyDestroy(decoration)
+		}
 	}
 }
 
@@ -1013,7 +1037,9 @@ func (api *waylandAPI) pointerSetCursor(pointer uintptr, serial uint32, surface 
 func (api *waylandAPI) pointerRelease(pointer uintptr) {
 	if api != nil && pointer != 0 {
 		api.proxyMarshalFlags(pointer, wlPointerReleaseOpcode, 0, 1, 0)
-		api.proxyDestroy(pointer)
+		if api.proxyDestroy != nil {
+			api.proxyDestroy(pointer)
+		}
 	}
 }
 
@@ -1028,7 +1054,9 @@ func (api *waylandAPI) seatGetKeyboard(seat uintptr) uintptr {
 func (api *waylandAPI) keyboardRelease(keyboard uintptr) {
 	if api != nil && keyboard != 0 {
 		api.proxyMarshalFlags(keyboard, wlKeyboardReleaseOpcode, 0, 1, 0)
-		api.proxyDestroy(keyboard)
+		if api.proxyDestroy != nil {
+			api.proxyDestroy(keyboard)
+		}
 	}
 }
 
@@ -1043,7 +1071,9 @@ func (api *waylandAPI) getFractionalScale(scaleMgr uintptr, surface uintptr) uin
 func (api *waylandAPI) fractionalScaleDestroy(scaleObj uintptr) {
 	if api != nil && scaleObj != 0 {
 		api.proxyMarshalFlags(scaleObj, 0, 0, 1, 0)
-		api.proxyDestroy(scaleObj)
+		if api.proxyDestroy != nil {
+			api.proxyDestroy(scaleObj)
+		}
 	}
 }
 
@@ -1064,7 +1094,9 @@ func (api *waylandAPI) viewportSetDestination(viewport uintptr, width, height in
 func (api *waylandAPI) viewportDestroy(viewport uintptr) {
 	if api != nil && viewport != 0 {
 		api.proxyMarshalFlags(viewport, 0, 0, 1, 0)
-		api.proxyDestroy(viewport)
+		if api.proxyDestroy != nil {
+			api.proxyDestroy(viewport)
+		}
 	}
 }
 
@@ -1093,7 +1125,9 @@ func (api *waylandAPI) dataDeviceSetSelection(device uintptr, source uintptr, se
 func (api *waylandAPI) dataDeviceRelease(device uintptr) {
 	if api != nil && device != 0 {
 		api.proxyMarshalFlags(device, wlDataDeviceReleaseOpcode, 0, 1, 0)
-		api.proxyDestroy(device)
+		if api.proxyDestroy != nil {
+			api.proxyDestroy(device)
+		}
 	}
 }
 
@@ -1107,7 +1141,9 @@ func (api *waylandAPI) dataSourceOffer(source uintptr, mimeType string) {
 func (api *waylandAPI) dataSourceDestroy(source uintptr) {
 	if api != nil && source != 0 {
 		api.proxyMarshalFlags(source, wlDataSourceDestroyOpcode, 0, 1, 0)
-		api.proxyDestroy(source)
+		if api.proxyDestroy != nil {
+			api.proxyDestroy(source)
+		}
 	}
 }
 
@@ -1132,7 +1168,9 @@ func (api *waylandAPI) dataOfferReceive(offer uintptr, mimeType string, fd int32
 func (api *waylandAPI) dataOfferDestroy(offer uintptr) {
 	if api != nil && offer != 0 {
 		api.proxyMarshalFlags(offer, wlDataOfferDestroyOpcode, 0, 1, 0)
-		api.proxyDestroy(offer)
+		if api.proxyDestroy != nil {
+			api.proxyDestroy(offer)
+		}
 	}
 }
 

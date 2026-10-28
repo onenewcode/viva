@@ -29,18 +29,18 @@ func TestWaylandPointerCoordinates(t *testing.T) {
 		t.Errorf("expected (100, 50), got (%g, %g)", x, y)
 	}
 
-	// Scale 2.0, margin 48
+	// Scale 2.0, margin 48 (logical margin = 24)
 	win2 := &waylandWindow{margin: 48}
 	win2.storeScale(2.0)
 
-	// Origin of content box: devX = 48, devY = 48 -> (0, 0)
-	x, y = win2.pointerCoords(float64ToWlFixed(48), float64ToWlFixed(48))
+	// Origin of content box: surfaceX = 24, surfaceY = 24 -> (0, 0)
+	x, y = win2.pointerCoords(float64ToWlFixed(24), float64ToWlFixed(24))
 	if x != 0 || y != 0 {
 		t.Errorf("expected (0, 0) at 2x, got (%g, %g)", x, y)
 	}
 
-	// Inside content box: devX = 248, devY = 148 -> (100, 50)
-	x, y = win2.pointerCoords(float64ToWlFixed(248), float64ToWlFixed(148))
+	// Inside content box: surfaceX = 124, surfaceY = 74 -> (100, 50)
+	x, y = win2.pointerCoords(float64ToWlFixed(124), float64ToWlFixed(74))
 	if x != 100 || y != 50 {
 		t.Errorf("expected (100, 50) at 2x, got (%g, %g)", x, y)
 	}
@@ -70,7 +70,7 @@ func TestWaylandPointerButtonMapping(t *testing.T) {
 func TestWaylandPointerTitlebarInteraction(t *testing.T) {
 	var movedSerial uint32
 	var resizedSerial uint32
-	var resizedEdge platform.WindowEdge
+	var resizedXdgEdge uint32
 	var maximizedToggleCount int
 
 	api := &waylandAPI{
@@ -84,7 +84,7 @@ func TestWaylandPointerTitlebarInteraction(t *testing.T) {
 					resizedSerial = s
 				}
 				if e, ok := args[2].(uint32); ok {
-					resizedEdge = platform.WindowEdge(e)
+					resizedXdgEdge = e
 				}
 			}
 			return 0
@@ -133,8 +133,8 @@ func TestWaylandPointerTitlebarInteraction(t *testing.T) {
 
 	// 2. Press on top edge resize (x=400, y=2) -> should trigger startResize
 	handled = win.beginTitlebarInteraction(1002, 400, 2, 2000)
-	if !handled || resizedSerial != 1002 || resizedEdge != platform.EdgeTop {
-		t.Fatalf("expected edge resize to trigger startResize(1002, EdgeTop), handled=%v, resizedSerial=%d, edge=%v", handled, resizedSerial, resizedEdge)
+	if !handled || resizedSerial != 1002 || resizedXdgEdge != xdgToplevelResizeEdgeTop {
+		t.Fatalf("expected edge resize to trigger startResize(1002, xdgToplevelResizeEdgeTop), handled=%v, resizedSerial=%d, edge=%v", handled, resizedSerial, resizedXdgEdge)
 	}
 
 	// 3. Press on controls area (x=750, y=20) -> should NOT be intercepted by titlebar

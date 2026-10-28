@@ -92,6 +92,9 @@ func TestAFileDragFromAnotherClientIsAcceptedAndDropped(t *testing.T) {
 	if os.Getenv("DISPLAY") == "" {
 		t.Skip("no X server")
 	}
+	t.Setenv("VIVA_LINUX_BACKEND", "x11")
+	activeWindow.Store(nil)
+	t.Cleanup(func() { activeWindow.Store(nil) })
 	events := make(chan platform.FileDropEvent, 8)
 	done := make(chan error, 1)
 	go func() {
@@ -161,8 +164,11 @@ func TestAFileDragFromAnotherClientIsAcceptedAndDropped(t *testing.T) {
 		t.Fatalf("XdndStatus: found %v flags %d: the point should take files", ok, flags)
 	}
 	hover := <-events
-	if hover.Phase != platform.FileDropOver || hover.X < 59 || hover.X > 61 || hover.Y < 29 || hover.Y > 31 || len(hover.Paths) != 0 {
-		t.Fatalf("hover = %+v", hover)
+	scale := target.displayScale()
+	expectedX := float32(60) / scale
+	expectedY := float32(30) / scale
+	if hover.Phase != platform.FileDropOver || hover.X < expectedX-1 || hover.X > expectedX+1 || hover.Y < expectedY-1 || hover.Y > expectedY+1 || len(hover.Paths) != 0 {
+		t.Fatalf("hover = %+v, expected around (%f, %f)", hover, expectedX, expectedY)
 	}
 
 	src.message(target.id, drop, src.id, 0, 0)

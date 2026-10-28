@@ -244,10 +244,28 @@ func initDataListeners() {
 				select {
 				case res := <-ch:
 					if res.err != nil {
+						app.post(func() {
+							app.mu.Lock()
+							isClipboard := (app.clipboardOffer != nil && app.clipboardOffer.proxy == offerProxy)
+							if !isClipboard && app.api != nil {
+								app.api.dataOfferDestroy(offerProxy)
+								delete(app.dataOffers, offerProxy)
+							}
+							app.mu.Unlock()
+						})
 						return
 					}
 					content = res.data
 				case <-time.After(2 * time.Second):
+					app.post(func() {
+						app.mu.Lock()
+						isClipboard := (app.clipboardOffer != nil && app.clipboardOffer.proxy == offerProxy)
+						if !isClipboard && app.api != nil {
+							app.api.dataOfferDestroy(offerProxy)
+							delete(app.dataOffers, offerProxy)
+						}
+						app.mu.Unlock()
+					})
 					return
 				}
 
@@ -271,7 +289,7 @@ func initDataListeners() {
 							Y:     dragY,
 							Paths: paths,
 						})
-						if taken && dropErr == nil {
+						if taken && dropErr == nil && targetWin.state.router.present != nil {
 							_ = targetWin.state.router.present(frame)
 						}
 					}
@@ -340,6 +358,7 @@ func initDataListeners() {
 			go func(pipeFd int32, payload []byte) {
 				f := os.NewFile(uintptr(pipeFd), "wl_data_source_send_pipe")
 				defer f.Close()
+				_ = f.SetWriteDeadline(time.Now().Add(2 * time.Second))
 				_, _ = f.Write(payload)
 			}(fd, toWrite)
 		})
