@@ -186,11 +186,19 @@ func (window *nativeWindow) Close() {
 const errnoINTR = 4
 
 func RunApplication(start platform.ApplicationStart) error {
+	backend, err := selectBackend()
+	if err != nil {
+		return err
+	}
+	return backend.Run(start)
+}
+
+func (application *linuxApplication) Run(start platform.ApplicationStart) error {
 	// errno belongs to the thread; the loop reads it right after poll fails, and
 	// must still be on the thread that failed.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	application := &linuxApplication{}
+	application.quit = false
 	defer application.closeStatus()
 	defer application.atspiClose()
 	defer application.closeDesktop()

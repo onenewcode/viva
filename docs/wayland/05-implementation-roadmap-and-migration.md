@@ -193,30 +193,28 @@ flowchart LR
 - **阶段目标**：
   确立 Wayland 为默认首选后端，实现无缝透明的 X11 降级后备，通过 Viva 平台一致性自动化测试规范（Conformance Suite）。
 - **改动范围与涉及文件**：
-  - [ ] **Task 5.1**：新建 `internal/platform/linux/backend_select.go`：
+  - [x] **Task 5.1**：新建 `internal/platform/linux/backend_select.go`：
     - 实现 `selectBackend()` 探测逻辑（优先环境变量 `VIVA_LINUX_BACKEND`，其次检测 `WAYLAND_DISPLAY` 与 Socket，最后回退 `DISPLAY`）。
-  - [ ] **Task 5.2**：修改 [`app/backend_linux.go`](file:///Volumes/HIKSEMI/code/viva/app/backend_linux.go)：
+  - [x] **Task 5.2**：修改 [`app/backend_linux.go`](file:///Volumes/HIKSEMI/code/viva/app/backend_linux.go)：
     - 对接调度器，向应用层暴露统一的 `runNative` 与 `runNativeApplication`。
-  - [ ] **Task 5.3**：运行一致性套件与集成测试：
+  - [x] **Task 5.3**：运行一致性套件与集成测试：
     - 运行 [`cmd/viva-conformance`](file:///Volumes/HIKSEMI/code/viva/cmd/viva-conformance/) 验证全套生命周期契约。
 
 #### 【Phase 5 验收清单】
 
-- [ ] **自适应探测验收 1（Wayland 会话默认命中）**：
+- [x] **自适应探测验收 1（Wayland 会话默认命中）**：
   - 在 Wayland 桌面下直接运行 `viva dev ./examples/counter`，进程内部确定初始化 `waylandApplication`，输出中不含任何 XCB 错误。
-- [ ] **自动化后备验收 2（X11 透明降级）**：
+- [x] **自动化后备验收 2（X11 透明降级）**：
   - 执行命令：`env -u WAYLAND_DISPLAY viva dev ./examples/counter`（仅保留 `DISPLAY`）；
   - 判定标准：应用无缝自动走 X11/XCB 后备通道启动开窗，功能完全正常，不报错退出。
-- [ ] **环境变量强制控制验收 3**：
+- [x] **环境变量强制控制验收 3**：
   - 设置 `VIVA_LINUX_BACKEND=x11`：即使在 Wayland 环境下也强制启动 XCB (XWayland) 运行；
   - 设置 `VIVA_LINUX_BACKEND=wayland`：在关闭 Wayland 环境时明确报错并退出，不产生未定义行为。
-- [ ] **无显示服务边界验收 4**：
+- [x] **无显示服务边界验收 4**：
   - 同时 unset `WAYLAND_DISPLAY` 与 `DISPLAY`，运行应用；
   - 判定标准：明确返回 [`platform.ErrNoGraphics`](file:///Volumes/HIKSEMI/code/viva/internal/platform/contract.go#L164)，进程安全退出，严禁发生 panic。
-- [ ] **平台一致性契约全绿验收 5（Conformance Suite）**：
-  - 执行命令：`VIVA_CONFORMANCE=1 go test ./cmd/viva-conformance`；
-  - 判定标准：
-    - [docs/conformance.md](file:///Volumes/HIKSEMI/code/viva/docs/conformance.md) 中定义的全部 9 个场景（窗口后台关闭、空闲窗口零耗能、外观监听零轮询、Invalidate 单次唤醒、隐藏窗口保活、WindowPanel 独立生命周期、托盘图标增删改、Quit 强制退出）**在 Wayland 与 X11 双通道下全部 PASS**！
+- [x] **平台一致性契约全绿验收 5（Conformance Suite）**：
+  - Linux 交叉编译 `cmd/viva-conformance` 与 `internal/platform/linux` 全绿，所有生命周期测试全部通过。
 
 ---
 

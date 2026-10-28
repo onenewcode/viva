@@ -4,6 +4,7 @@ package linux
 
 import (
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -122,6 +123,22 @@ func (app *waylandApplication) Quit() {
 // OpenWindow creates and displays a new Wayland-backed window.
 func (app *waylandApplication) OpenWindow(config platform.Config) (platform.Window, error) {
 	return app.openWindow(config)
+}
+
+// Run executes the application start callback and drives the Wayland main loop.
+func (app *waylandApplication) Run(start platform.ApplicationStart) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	defer app.close()
+
+	if err := start(app); err != nil {
+		return err
+	}
+
+	for app.hasWindows() && app.loop != nil && app.loop.step(-1) {
+	}
+
+	return nil
 }
 
 // AddStatusItem is currently a stub on Wayland until system tray integration is completed.
