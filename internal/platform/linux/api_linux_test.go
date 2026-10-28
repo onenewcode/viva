@@ -98,6 +98,9 @@ func TestNativeStructureABI(t *testing.T) {
 		{"VkWriteDescriptorSet", unsafe.Sizeof(vkWriteDescriptorSet{}), 64},
 		{"VkImageMemoryBarrier", unsafe.Sizeof(vkImageMemoryBarrier{}), 72},
 		{"VkImageSubresourceLayers", unsafe.Sizeof(vkImageSubresourceLayers{}), 16},
+		{"wl_interface", unsafe.Sizeof(wlInterface{}), 40},
+		{"wl_message", unsafe.Sizeof(wlMessage{}), 24},
+		{"wl_array", unsafe.Sizeof(wlArray{}), 24},
 		{"VkBufferImageCopy", unsafe.Sizeof(vkBufferImageCopy{}), 56},
 		{"scene instance", unsafe.Sizeof(vulkanRectangleInstance{}), 80},
 	} {
@@ -608,5 +611,31 @@ func TestWaylandClientPureGoLoad(t *testing.T) {
 		api.displayRoundtrip == nil || api.proxyMarshalFlags == nil || api.proxyAddListener == nil ||
 		api.proxyDestroy == nil {
 		t.Fatal("one or more waylandAPI function pointers were not bound")
+	}
+}
+
+func TestWaylandABIStructureOffsets(t *testing.T) {
+	for _, field := range []struct {
+		name      string
+		got, want uintptr
+	}{
+		{"wlMessage.Name", unsafe.Offsetof(wlMessage{}.Name), 0},
+		{"wlMessage.Signature", unsafe.Offsetof(wlMessage{}.Signature), 8},
+		{"wlMessage.Types", unsafe.Offsetof(wlMessage{}.Types), 16},
+
+		{"wlInterface.Name", unsafe.Offsetof(wlInterface{}.Name), 0},
+		{"wlInterface.Version", unsafe.Offsetof(wlInterface{}.Version), 8},
+		{"wlInterface.MethodCount", unsafe.Offsetof(wlInterface{}.MethodCount), 12},
+		{"wlInterface.Methods", unsafe.Offsetof(wlInterface{}.Methods), 16},
+		{"wlInterface.EventCount", unsafe.Offsetof(wlInterface{}.EventCount), 24},
+		{"wlInterface.Events", unsafe.Offsetof(wlInterface{}.Events), 32},
+
+		{"wlArray.Size", unsafe.Offsetof(wlArray{}.Size), 0},
+		{"wlArray.Alloc", unsafe.Offsetof(wlArray{}.Alloc), 8},
+		{"wlArray.Data", unsafe.Offsetof(wlArray{}.Data), 16},
+	} {
+		if field.got != field.want {
+			t.Errorf("%s offset = %d, want %d", field.name, field.got, field.want)
+		}
 	}
 }
