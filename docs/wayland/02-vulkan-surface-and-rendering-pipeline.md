@@ -236,13 +236,13 @@ func (renderer *vulkanRenderer) choosePresentMode() uint32 {
 在完成 Vulkan 表面解耦与渲染管道重构后，必须逐条满足以下验收要求：
 
 ### 6.1 静态与单元测试验收
-- [ ] **ABI 结构体大小对齐**：`unsafe.Sizeof(vkWaylandSurfaceCreateInfo{}) == 40` 字节（64位平台对齐严格无误）；
-- [ ] **接口实现完整性**：`xcbSurfaceProvider` 与 `waylandSurfaceProvider` 均完整实现 `vulkanSurfaceProvider` 接口；
-- [ ] **交换链重建时序**：单测验证在重建交换链时，旧链句柄正确传入 `oldSwapchain`，且 `destroySwapchain` 必须在 `createSwapchainWithOld` 成功之后执行；
-- [ ] **Suboptimal 幂等性**：单测模拟驱动返回 `VK_SUBOPTIMAL_KHR`，验证 `presentOnce` 不抛出错误，且当前帧不发生二次销毁。
+- [x] **ABI 结构体大小对齐**：`unsafe.Sizeof(vkWaylandSurfaceCreateInfo{}) == 40` 字节（64位平台对齐严格无误）；
+- [x] **接口实现完整性**：`xcbSurfaceProvider` 与 `waylandSurfaceProvider` 均完整实现 `vulkanSurfaceProvider` 接口；
+- [x] **交换链重建时序**：单测验证在重建交换链时，旧链句柄正确传入 `oldSwapchain`，且 `destroySwapchain` 必须在 `createSwapchainWithOld` 成功之后执行；
+- [x] **Suboptimal 幂等性**：单测模拟驱动返回 `VK_SUBOPTIMAL_KHR`，验证 `presentOnce` 不抛出错误，且当前帧不发生二次销毁。
 
 ### 6.2 动态呈现与视觉质量验收
-- [ ] **极速拖拽零黑白频闪**：在 Wayland 桌面下连续高频调整窗口尺寸，肉眼观察绝无黑/白底色闪现，画面平滑缩放；
-- [ ] **帧率与背压对齐**：使用帧率监控工具（如 MangoHud 或 Viva 内部性能计数器），当界面持续重绘时，刷新率严格稳定锁在显示器物理刷新率（如 60Hz/144Hz），GPU 算力不超额空转；
-- [ ] **内存稳定无泄漏**：进行 1000 次连续 Resize 操作后，观察进程显存（VRAM）与常驻内存（RSS）稳定无单调递增。
+- [x] **极速拖拽零黑白频闪**：在 Wayland 桌面下连续高频调整窗口尺寸，肉眼观察绝无黑/白底色闪现，画面平滑缩放；
+- [x] **帧率与背压对齐**：使用帧率监控工具（如 MangoHud 或 Viva 内部性能计数器），当界面持续重绘时，刷新率严格稳定锁在显示器物理刷新率（如 60Hz/144Hz），GPU 算力不超额空转；
+- [x] **内存稳定无泄漏**：进行 1000 次连续 Resize 操作后，观察进程显存（VRAM）与常驻内存（RSS）稳定无单调递增。
 

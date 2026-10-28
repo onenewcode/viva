@@ -273,27 +273,27 @@ Viva 支持从托盘点击弹出无边框浮动面板（[platform.Config.Anchor]
 在完成 PureGo Wayland 协议绑定与 XDG-Shell 窗口控制器后，必须逐条满足以下验收要求：
 
 ### 6.1 协议加载与连接验收
-- [ ] **纯 Go 零 CGO 验证**：在未安装 `gcc` 的环境下，`CGO_ENABLED=0 go build ./...` 能够顺利编译通过；
-- [ ] **系统库动态绑定安全**：在缺失 `libwayland-client.so.0` 的系统上，`newWaylandApplication` 返回清晰可辨识的错误，进程不崩溃；
-- [ ] **Registry 发现覆盖率**：成功遍历系统 Globals，完整解析出 `wl_compositor`、`xdg_wm_base`、`wl_shm` 与 `wl_seat`。
+- [x] **纯 Go 零 CGO 验证**：在未安装 `gcc` 的环境下，`CGO_ENABLED=0 go build ./...` 能够顺利编译通过；
+- [x] **系统库动态绑定安全**：在缺失 `libwayland-client.so.0` 的系统上，`newWaylandApplication` 返回清晰可辨识的错误，进程不崩溃；
+- [x] **Registry 发现覆盖率**：成功遍历系统 Globals，完整解析出 `wl_compositor`、`xdg_wm_base`、`wl_shm` 与 `wl_seat`。
 
 ### 6.2 窗口行为与状态机验收
-- [ ] **序列号确认应答（ack_configure）**：截获协议包验证每个由合成器下发的有效 `serial` 都有对应的 `xdg_surface.ack_configure(serial)`；过时的中间序列号被安全丢弃；
-- [ ] **三种窗口模式表现无误**：
+- [x] **序列号确认应答（ack_configure）**：截获协议包验证每个由合成器下发的有效 `serial` 都有对应的 `xdg_surface.ack_configure(serial)`；过时的中间序列号被安全丢弃；
+- [x] **三种窗口模式表现无误**：
   - `WindowTitled`：成功协商出服务端边框，或在无 SSD 支持的桌面（如 GNOME）下优雅回退至客户端阴影边框；
   - `WindowFrameless`：无任何多余系统边距与黑边，纯内容像素对齐；
   - `WindowCustomTitlebar`：标题栏区域按住可直接调用系统原生窗口拖拽；边缘按住可触发原生缩放；
-- [ ] **窗口阴影几何与点击穿透验收**：
+- [x] **窗口阴影几何与点击穿透验收**：
   - 调用 `set_window_geometry` 成功将内容矩形通告给合成器，窗口贴靠与居中均以内容为基准，无 24px 阴影偏移；
   - 调用 `set_input_region` 成功裁剪出 Grip 区域，鼠标在阴影外层点击能够 100% 穿透至底层窗口或桌面；
-- [ ] **最大化 Margin 动态剥离与恢复**：
+- [x] **最大化 Margin 动态剥离与恢复**：
   - 窗口最大化时，`margin` 瞬时平滑归零，无半透明边框暴露，画面贴满屏幕；
   - 窗口还原时，`margin` 自动恢复至 `24 * scale`，阴影与点击穿透区域正确恢复；
-- [ ] **最大化、全屏与还原**：
+- [x] **最大化、全屏与还原**：
 
   - 调用 `toplevel.set_maximized` 与 `toplevel.unset_maximized` 状态迁移平稳，无错帧；
   - 监听 `OnMaximize` 回调能够精确感知窗口管理器的状态变更；
-- [ ] **多窗口并发与退出契约**：
+- [x] **多窗口并发与退出契约**：
   - 同时开启 3 个独立窗口，关闭任意 2 个，剩余 1 个继续正常渲染交互；
   - 关闭最后一个窗口或调用 `Application.Quit()` 时，主事件循环顺畅退出，清理全部 socket 与内存对象。
 
