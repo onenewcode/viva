@@ -188,10 +188,13 @@ func TestAFileDragFromAnotherClientIsAcceptedAndDropped(t *testing.T) {
 		t.Fatalf("leave = %+v", leave)
 	}
 
-	target.postClientMessage(target.closeAtom, 0)
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the window did not close")
+	for i := 0; i < 10; i++ {
+		target.postClientMessage(target.closeAtom, 0)
+		select {
+		case <-done:
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
+	t.Fatal("the window did not close")
 }

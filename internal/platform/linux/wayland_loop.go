@@ -114,9 +114,7 @@ func newWaylandLoop(api *waylandAPI, display uintptr, libc *libcAPI) (*waylandLo
 	return loop, nil
 }
 
-func (l *waylandLoop) rebuildPollFDs() {
-	l.pollMu.Lock()
-	defer l.pollMu.Unlock()
+func (l *waylandLoop) rebuildPollFDsLocked() {
 	total := 2 + len(l.extraFDs)
 	if cap(l.pollFDs) >= total {
 		l.pollFDs = l.pollFDs[:total]
@@ -130,25 +128,37 @@ func (l *waylandLoop) rebuildPollFDs() {
 	}
 }
 
+func (l *waylandLoop) rebuildPollFDs() {
+	l.pollMu.Lock()
+	defer l.pollMu.Unlock()
+	l.rebuildPollFDsLocked()
+}
+
 func (l *waylandLoop) addExtraFD(fd int32, onReady func()) {
 	if fd < 0 {
 		return
 	}
 	l.pollMu.Lock()
+	defer l.pollMu.Unlock()
 	l.extraFDs = append(l.extraFDs, fd)
 	l.extraCBs = append(l.extraCBs, onReady)
-	total := 2 + len(l.extraFDs)
-	if cap(l.pollFDs) >= total {
-		l.pollFDs = l.pollFDs[:total]
-	} else {
-		l.pollFDs = make([]pollFD, total)
+	l.rebuildPollFDsLocked()
+}
+
+func (l *waylandLoop) removeExtraFD(fd int32) {
+	if fd < 0 {
+		return
 	}
-	l.pollFDs[0] = pollFD{FD: l.waylandFD, Events: 1}
-	l.pollFDs[1] = pollFD{FD: l.wakeFD, Events: 1}
+	l.pollMu.Lock()
+	defer l.pollMu.Unlock()
 	for i, f := range l.extraFDs {
-		l.pollFDs[2+i] = pollFD{FD: f, Events: 1}
+		if f == fd {
+			l.extraFDs = append(l.extraFDs[:i], l.extraFDs[i+1:]...)
+			l.extraCBs = append(l.extraCBs[:i], l.extraCBs[i+1:]...)
+			break
+		}
 	}
-	l.pollMu.Unlock()
+	l.rebuildPollFDsLocked()
 }
 
 func (l *waylandLoop) post(cmd waylandCommand) {
@@ -214,27 +224,39 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 		}
 	}
 
+	// 4. Inspect revents under pollMu
 	l.pollMu.Lock()
-	defer l.pollMu.Unlock()
-
-	// 4. Process waker eventfd (POLLIN)
-	if len(l.pollFDs) > 1 && l.pollFDs[1].REvents&1 != 0 {
+	woken := len(l.pollFDs) > 1 && l.pollFDs[1].REvents&1 != 0
+	if woken {
 		var val [8]byte
 		if l.libc != nil && l.libc.read != nil && l.wakeFD >= 0 {
 			l.libc.read(l.wakeFD, unsafe.Pointer(&val[0]), 8)
 		}
-		l.drainCommands()
 	}
 
-	// 5. Process extra registered FDs (e.g. D-Bus)
+	// Snapshot ready extra callbacks
+	var readyCBs []func()
 	for i, cb := range l.extraCBs {
 		if len(l.pollFDs) > 2+i && l.pollFDs[2+i].REvents&1 != 0 && cb != nil {
-			cb()
+			readyCBs = append(readyCBs, cb)
 		}
 	}
 
+	waylandIn := len(l.pollFDs) > 0 && l.pollFDs[0].REvents&1 != 0
+	waylandErr := len(l.pollFDs) > 0 && l.pollFDs[0].REvents&(0x0008|0x0010) != 0
+	l.pollMu.Unlock()
+
+	// 5. Execute commands and extra callbacks with pollMu unlocked!
+	if woken {
+		l.drainCommands()
+	}
+
+	for _, cb := range readyCBs {
+		cb()
+	}
+
 	// 6. Process incoming Wayland socket events
-	if len(l.pollFDs) > 0 && l.pollFDs[0].REvents&1 != 0 {
+	if waylandIn {
 		if l.wayland != nil && l.wayland.displayDispatch != nil {
 			if l.wayland.displayDispatch(l.display) < 0 {
 				l.running.Store(false)
@@ -246,7 +268,7 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 	}
 
 	// 7. Check for hangup / error on Wayland socket
-	if len(l.pollFDs) > 0 && l.pollFDs[0].REvents&(0x0008|0x0010) != 0 {
+	if waylandErr {
 		l.running.Store(false)
 		return false
 	}

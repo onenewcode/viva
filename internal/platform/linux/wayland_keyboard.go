@@ -96,6 +96,12 @@ func initKeyboardListeners() {
 			app := (*waylandApplication)(data)
 			app.lastSerial = serial
 			app.keyboardFocus = app.findWindowBySurface(surface)
+			if app.keyboardFocus != nil && app.keyboardFocus.state != nil {
+				app.atspiActive(app.keyboardFocus.state, true)
+				if app.keyboardFocus.state.router.ime != nil {
+					app.keyboardFocus.state.router.ime.setFocused(true)
+				}
+			}
 		})
 
 		// 2: leave(serial, surface)
@@ -105,10 +111,16 @@ func initKeyboardListeners() {
 			}
 			app := (*waylandApplication)(data)
 			app.stopKeyRepeat()
-			if app.keyboardFocus != nil && app.keyboardFocus.state != nil && app.keyboardFocus.state.config.OnFocusLost != nil {
-				if frame, err := app.keyboardFocus.state.config.OnFocusLost(); err == nil {
-					if app.keyboardFocus.state.router.present != nil {
-						_ = app.keyboardFocus.state.router.present(frame)
+			if app.keyboardFocus != nil && app.keyboardFocus.state != nil {
+				app.atspiActive(app.keyboardFocus.state, false)
+				if app.keyboardFocus.state.router.ime != nil {
+					app.keyboardFocus.state.router.ime.setFocused(false)
+				}
+				if app.keyboardFocus.state.config.OnFocusLost != nil {
+					if frame, err := app.keyboardFocus.state.config.OnFocusLost(); err == nil {
+						if app.keyboardFocus.state.router.present != nil {
+							_ = app.keyboardFocus.state.router.present(frame)
+						}
 					}
 				}
 			}
@@ -290,6 +302,9 @@ func (app *waylandApplication) handleKey(serial, timeMs, scancode, state uint32)
 	}
 
 	if isDown {
+		if win.state.router.ime != nil && win.state.router.ime.processKeyDirect(keysym, scancode, uint32(app.modifiers), keyEvent) {
+			return
+		}
 		app.startKeyRepeat(keyEvent, scancode)
 		_ = win.state.router.dispatchKey(keyEvent)
 	} else {

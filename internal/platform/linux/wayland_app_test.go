@@ -78,6 +78,76 @@ func TestWaylandQuitBypassesCloseRequestAndClosesAllWindows(t *testing.T) {
 	}
 }
 
+func TestWaylandStatusItemDrainRemovals(t *testing.T) {
+	app := &waylandApplication{}
+	notifier := &statusNotifier{
+		items: map[string]*linuxStatusItem{
+			"item1": {name: "item1"},
+			"item2": {name: "item2"},
+		},
+		removals: []string{"item1"},
+	}
+	app.status = notifier
+
+	app.drainStatusRemovals()
+
+	if _, exists := notifier.items["item1"]; exists {
+		t.Error("expected item1 to be removed from notifier")
+	}
+	if _, exists := notifier.items["item2"]; !exists {
+		t.Error("expected item2 to remain in notifier")
+	}
+}
+
+func TestWaylandWindowContentOrigin(t *testing.T) {
+	win := &waylandWindow{
+		margin: 48,
+	}
+	win.storeScale(2.0)
+
+	originX, originY := win.contentOrigin()
+	if originX != 24 || originY != 24 {
+		t.Fatalf("expected content origin (24, 24), got (%d, %d)", originX, originY)
+	}
+
+	win.margin = 0
+	win.storeScale(1.0)
+	originX, originY = win.contentOrigin()
+	if originX != 0 || originY != 0 {
+		t.Fatalf("expected content origin (0, 0), got (%d, %d)", originX, originY)
+	}
+}
+
+func TestWaylandAtspiLifecycle(t *testing.T) {
+	app := &waylandApplication{}
+	win := &waylandWindow{app: app}
+	state := &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			Title: "Wayland Atspi Window",
+			Accessibility: []platform.AccessibilityNode{
+				{Role: platform.A11yRoleButton, Label: "Click me"},
+			},
+		},
+	}
+	win.state = state
+
+	app.atspiOpened(state)
+	if app.atspi != nil {
+		app.atspiFrame(state, []platform.AccessibilityNode{
+			{Role: platform.A11yRoleButton, Label: "Clicked"},
+		})
+		app.atspiActive(state, true)
+		app.atspiActive(state, false)
+		app.atspiClosed(state)
+	}
+	app.atspiClose()
+	if app.atspi != nil {
+		t.Error("expected app.atspi to be nil after atspiClose")
+	}
+}
+
 func TestWaylandRunClosesWindowsOnStartError(t *testing.T) {
 	app := &waylandApplication{}
 

@@ -5,11 +5,15 @@ package linux
 import (
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/vivaui/viva/internal/dbus"
+	"github.com/vivaui/viva/internal/dbusmenu"
+	"github.com/vivaui/viva/internal/ibus"
 	"github.com/vivaui/viva/internal/input"
 	"github.com/vivaui/viva/internal/platform"
 )
@@ -61,6 +65,13 @@ type waylandApplication struct {
 
 	mu      sync.Mutex
 	windows []*waylandWindowState
+
+	status        *statusNotifier
+	desktop       *desktopWatch
+	desktopFailed bool
+	ibus          *ibus.Bus
+	ibusTried     bool
+	atspi         *atspiHost
 }
 
 // newWaylandApplication initializes Wayland display, event loop, and binds registry globals.
@@ -99,6 +110,12 @@ func newWaylandApplication() (*waylandApplication, error) {
 		return nil, err
 	}
 	app.setupDataDevice()
+	platform.SetWatchHook(func() {
+		app.post(func() {
+			app.syncDesktopWatch()
+		})
+	})
+	app.syncDesktopWatch()
 	activeWaylandApp.Store(app)
 	return app, nil
 }
@@ -125,6 +142,8 @@ func (app *waylandApplication) Quit() {
 
 // closeAll closes and destroys all currently open windows, bypassing OnCloseRequest.
 func (app *waylandApplication) closeAll() {
+	app.closeStatus()
+	app.closeDesktop()
 	app.mu.Lock()
 	states := append([]*waylandWindowState(nil), app.windows...)
 	app.mu.Unlock()
@@ -157,9 +176,293 @@ func (app *waylandApplication) Run(start platform.ApplicationStart) error {
 	return nil
 }
 
-// AddStatusItem is currently a stub on Wayland until system tray integration is completed.
+// AddStatusItem registers an icon with the desktop's StatusNotifier host via D-Bus.
 func (app *waylandApplication) AddStatusItem(config platform.StatusItemConfig) (platform.StatusItem, error) {
-	return nil, fmt.Errorf("%w: StatusNotifierItem not supported on Wayland yet", platform.ErrStatusAreaUnavailable)
+	if !config.Icon.Valid() {
+		return nil, fmt.Errorf("%w: status icon pixels do not match its size", platform.ErrStatusAreaUnavailable)
+	}
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.status == nil {
+		conn, err := dbus.DialSession()
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", platform.ErrStatusAreaUnavailable, err)
+		}
+		var match dbus.Encoder
+		match.String("type='signal',sender='" + busName + "',interface='" + busName + "',member='NameOwnerChanged'")
+		if _, err := conn.Call(busName, "/org/freedesktop/DBus", busName, "AddMatch", "s", match.Bytes()); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		app.status = &statusNotifier{
+			conn:  conn,
+			items: make(map[string]*linuxStatusItem),
+			onRemoval: func() {
+				app.post(func() {
+					app.drainStatusRemovals()
+				})
+			},
+		}
+		if app.loop != nil {
+			app.loop.addExtraFD(int32(conn.FD()), app.serveStatus)
+		}
+	}
+	notifier := app.status
+	notifier.nextID++
+	item := &linuxStatusItem{
+		notifier: notifier, tooltip: config.Tooltip, icon: config.Icon, onClick: config.OnClick,
+		name: fmt.Sprintf("org.kde.StatusNotifierItem-%d-%d", os.Getpid(), notifier.nextID),
+	}
+	if config.Menu != nil {
+		item.menu = dbusmenu.New(config.Menu)
+	}
+	var request dbus.Encoder
+	request.String(item.name)
+	request.Uint32(requestDoNotQueue)
+	reply, err := notifier.conn.Call(busName, "/org/freedesktop/DBus", busName, "RequestName", "su", request.Bytes())
+	if err != nil {
+		app.dropStatusIfEmpty()
+		return nil, err
+	}
+	if reply.Args().Uint32() != 1 {
+		app.dropStatusIfEmpty()
+		return nil, fmt.Errorf("linux: the bus name %s is taken", item.name)
+	}
+	notifier.items[item.name] = item
+	if err := notifier.register(item); err != nil {
+		notifier.release(item)
+		delete(notifier.items, item.name)
+		app.dropStatusIfEmpty()
+		return nil, fmt.Errorf("%w: %v", platform.ErrStatusAreaUnavailable, err)
+	}
+	return item, nil
+}
+
+func (app *waylandApplication) dropStatusIfEmpty() {
+	if status := app.status; status != nil && len(status.items) == 0 {
+		app.closeStatus()
+	}
+}
+
+func (app *waylandApplication) closeStatus() {
+	if app.status != nil {
+		if app.loop != nil {
+			app.loop.removeExtraFD(int32(app.status.conn.FD()))
+		}
+		app.status.conn.Close()
+		app.status = nil
+	}
+}
+
+func (app *waylandApplication) drainStatusRemovals() {
+	app.mu.Lock()
+	notifier := app.status
+	if notifier == nil {
+		app.mu.Unlock()
+		return
+	}
+	notifier.mu.Lock()
+	names := notifier.removals
+	notifier.removals = nil
+	notifier.mu.Unlock()
+	for _, name := range names {
+		if item := notifier.items[name]; item != nil {
+			notifier.release(item)
+			delete(notifier.items, name)
+		}
+	}
+	app.dropStatusIfEmpty()
+	app.mu.Unlock()
+}
+
+func (app *waylandApplication) serveStatus() {
+	app.mu.Lock()
+	notifier := app.status
+	app.mu.Unlock()
+	if notifier == nil {
+		return
+	}
+	messages, err := notifier.conn.Receive()
+	if err != nil {
+		app.mu.Lock()
+		app.closeStatus()
+		app.mu.Unlock()
+		return
+	}
+	for _, message := range messages {
+		switch message.Type {
+		case dbus.TypeCall:
+			notifier.handle(message)
+		case dbus.TypeSignal:
+			if message.Member == "NameOwnerChanged" && message.Signature == "sss" {
+				args := message.Args()
+				name, _, owner := args.String(), args.String(), args.String()
+				for _, watcher := range watcherNames {
+					if name == watcher && owner != "" {
+						for _, item := range notifier.items {
+							notifier.register(item)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func (app *waylandApplication) syncDesktopWatch() {
+	wanted := platform.DesktopWatched()
+	switch {
+	case wanted && app.desktop == nil && !app.desktopFailed:
+		app.startDesktopWatch()
+	case !wanted && app.desktop != nil:
+		app.stopDesktopWatch()
+	}
+}
+
+func (app *waylandApplication) startDesktopWatch() {
+	desktopState.Lock()
+	gone := desktopState.portalGone
+	desktopState.Unlock()
+	if gone {
+		app.desktopFailed = true
+		return
+	}
+	conn, err := dbus.DialSession()
+	if err == nil {
+		err = addMatch(conn, settingsMatch)
+	}
+	if err != nil {
+		if conn != nil {
+			conn.Close()
+		}
+		app.desktopFailed = true
+		return
+	}
+	values, missing := readPortalValues(conn)
+	if missing {
+		conn.Close()
+		app.desktopFailed = true
+		desktopState.Lock()
+		desktopState.portalGone = true
+		desktopState.Unlock()
+		return
+	}
+	change := replacePortal(values, os.Getenv)
+	desktopState.Lock()
+	desktopState.watching = true
+	desktopState.Unlock()
+	app.desktop = &desktopWatch{conn: conn}
+	if app.loop != nil {
+		app.loop.addExtraFD(int32(conn.FD()), app.serveDesktop)
+	}
+	app.announce(change)
+}
+
+func (app *waylandApplication) stopDesktopWatch() {
+	if app.desktop == nil {
+		return
+	}
+	if app.loop != nil {
+		app.loop.removeExtraFD(int32(app.desktop.conn.FD()))
+	}
+	app.desktop.conn.Close()
+	app.desktop = nil
+	desktopState.Lock()
+	desktopState.watching = false
+	desktopState.Unlock()
+}
+
+func (app *waylandApplication) serveDesktop() {
+	watch := app.desktop
+	if watch == nil {
+		return
+	}
+	messages, err := watch.conn.Receive()
+	if err != nil {
+		app.stopDesktopWatch()
+		app.desktopFailed = true
+		return
+	}
+	var change settingsChange
+	for _, message := range messages {
+		if message.Type != dbus.TypeSignal || message.Member != "SettingChanged" || message.Signature != "ssv" {
+			continue
+		}
+		if namespace, key, value, ok := parseSettingChanged(message.Body); ok {
+			change |= applyPortal(namespace, key, value, os.Getenv)
+		}
+	}
+	app.announce(change)
+}
+
+func (app *waylandApplication) closeDesktop() {
+	if app.desktop != nil {
+		app.stopDesktopWatch()
+	}
+}
+
+func (app *waylandApplication) announce(change settingsChange) {
+	if change == 0 {
+		return
+	}
+	if change&changedFonts != 0 {
+		refreshTextEngine()
+		app.mu.Lock()
+		windows := append([]*waylandWindowState(nil), app.windows...)
+		app.mu.Unlock()
+		for _, state := range windows {
+			if state != nil && state.win != nil {
+				state.win.renderFrame()
+			}
+		}
+	}
+	if change&changedAppearance != 0 {
+		platform.NotifyAppearanceChanged()
+	}
+	platform.NotifyDesktopChanged(change.platformChange())
+}
+
+func (app *waylandApplication) fail(err error) {
+	if err != nil {
+		app.closeAll()
+	}
+}
+
+func (app *waylandApplication) inputMethodBus() *ibus.Bus {
+	if !app.ibusTried {
+		app.ibusTried = true
+		if bus, err := ibus.Dial(); err == nil {
+			app.ibus = bus
+			if app.loop != nil {
+				app.loop.addExtraFD(int32(bus.FD()), app.serveInputMethod)
+			}
+		}
+	}
+	return app.ibus
+}
+
+func (app *waylandApplication) serveInputMethod() {
+	if app.ibus != nil {
+		_ = app.ibus.Dispatch()
+		app.checkInputMethod()
+	}
+}
+
+func (app *waylandApplication) checkInputMethod() {
+	if app.ibus == nil || app.ibus.Err() == nil {
+		return
+	}
+	if app.loop != nil {
+		app.loop.removeExtraFD(int32(app.ibus.FD()))
+	}
+	app.ibus = nil
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	for _, state := range app.windows {
+		if state != nil && state.router.ime != nil {
+			state.router.ime.lost()
+		}
+	}
 }
 
 func (app *waylandApplication) removeWindow(state *waylandWindowState) {
@@ -209,6 +512,16 @@ func (app *waylandApplication) hasWindows() bool {
 // close releases all Wayland proxies, sockets, and dynamically linked libraries.
 func (app *waylandApplication) close() {
 	activeWaylandApp.CompareAndSwap(app, nil)
+	platform.SetWatchHook(nil)
+	app.closeStatus()
+	app.closeDesktop()
+	app.atspiClose()
+	if app.ibus != nil {
+		if app.loop != nil {
+			app.loop.removeExtraFD(int32(app.ibus.FD()))
+		}
+		app.ibus = nil
+	}
 	app.closeAll()
 	app.teardownDataDevice()
 	app.teardownPointer()

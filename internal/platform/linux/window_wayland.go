@@ -551,6 +551,7 @@ func (win *waylandWindow) destroy() {
 			win.state.text = nil
 		}
 		if win.app != nil {
+			win.app.atspiClosed(win.state)
 			if win.app.pointerFocus == win {
 				win.app.pointerFocus = nil
 			}
@@ -630,6 +631,12 @@ func (win *waylandWindow) Frame() (ui.Rect, bool) {
 	w := float32(contentSize(win.width, win.margin)) / scale
 	h := float32(contentSize(win.height, win.margin)) / scale
 	return ui.Rect{Width: w, Height: h}, false
+}
+
+func (win *waylandWindow) contentOrigin() (x, y int32) {
+	scale := win.displayScale()
+	margin := int32(float32(win.margin) / scale)
+	return margin, margin
 }
 
 // openWindow instantiates a new Wayland XDG-Shell window.
@@ -778,6 +785,7 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 	}
 	win.state = state
 
+	var ime *linuxIME
 	state.router = eventRouter{
 		config:  config,
 		text:    textInput,
@@ -785,6 +793,12 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 		scale:   win.displayScale,
 		clicks:  &input.ClickCounter{Interval: 500 * time.Millisecond, Distance: 4},
 		present: func(frame platform.Frame) error {
+			if ime != nil {
+				defer ime.sync()
+			}
+			if frame.Accessibility != nil && app != nil {
+				app.atspiFrame(state, frame.Accessibility)
+			}
 			merged, dirty, err := textInput.prepare(frame)
 			if err != nil || !dirty {
 				return err
@@ -795,6 +809,11 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 			}
 			return renderer.present()
 		},
+	}
+	if (config.DynamicTextInput || config.TextInput != nil) && app != nil {
+		if ime = app.newIME(win, textInput, state.router); ime != nil {
+			state.router.ime = ime
+		}
 	}
 
 	win.updateWindowGeometry()
@@ -830,6 +849,7 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 	app.mu.Lock()
 	app.windows = append(app.windows, state)
 	app.mu.Unlock()
+	app.atspiOpened(state)
 
 	return win, nil
 }
