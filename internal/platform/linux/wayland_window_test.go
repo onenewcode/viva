@@ -254,3 +254,112 @@ func TestWaylandResizeEdgeMapping(t *testing.T) {
 		}
 	}
 }
+
+func TestWaylandConfigureAckOnStateChange(t *testing.T) {
+	var ackedSerials []uint32
+	var committedSurfaces []uintptr
+
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			if opcode == xdgSurfaceAckConfigureOpcode && len(args) > 0 {
+				if serial, ok := args[0].(uint32); ok {
+					ackedSerials = append(ackedSerials, serial)
+				}
+			} else if opcode == wlSurfaceCommitOpcode {
+				committedSurfaces = append(committedSurfaces, proxy)
+			}
+			return 0
+		},
+		proxyAddListener: func(proxy uintptr, implementation uintptr, data unsafe.Pointer) int32 {
+			return 0
+		},
+	}
+	app := &waylandApplication{api: api}
+	win := &waylandWindow{
+		app:         app,
+		surface:     10,
+		xdgSurface:  20,
+		xdgToplevel: 30,
+		width:       400,
+		height:      300,
+	}
+	state := &waylandWindowState{app: app, win: win}
+	win.state = state
+
+	// Compositor sends state change (e.g. activation) with 0, 0 (no size change)
+	statesData := []uint32{xdgToplevelStateActivated}
+	statesArray := wlArray{
+		Size:  4,
+		Alloc: 4,
+		Data:  unsafe.Pointer(&statesData[0]),
+	}
+	win.handleXdgToplevelConfigure(0, 0, &statesArray)
+
+	// Followed by surface configure with serial
+	win.handleXdgSurfaceConfigure(5555)
+
+	if len(ackedSerials) != 1 || ackedSerials[0] != 5555 {
+		t.Fatalf("expected serial 5555 to be acknowledged on state change without resize, got %v", ackedSerials)
+	}
+	if len(committedSurfaces) != 1 || committedSurfaces[0] != 10 {
+		t.Fatalf("expected surface commit on state change configure, got %v", committedSurfaces)
+	}
+	if win.pendingSerial != 0 {
+		t.Fatalf("expected pendingSerial to be cleared after ack, got %d", win.pendingSerial)
+	}
+}
+
+func TestWaylandDestructorOrdering(t *testing.T) {
+	var order []string
+
+	app := &waylandApplication{}
+	win := &waylandWindow{
+		app:         app,
+		surface:     10,
+		xdgSurface:  20,
+		xdgToplevel: 30,
+		decoration:  40,
+	}
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			return 0
+		},
+		proxyDestroy: func(proxy uintptr) {
+			switch proxy {
+			case 40:
+				order = append(order, "decoration")
+			case 30:
+				order = append(order, "xdgToplevel")
+			case 20:
+				order = append(order, "xdgSurface")
+			case 10:
+				order = append(order, "surface")
+			}
+		},
+	}
+	app.api = api
+
+	state := &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			OnClosed: func() {
+				order = append(order, "OnClosed")
+			},
+		},
+	}
+	win.state = state
+
+	win.destroy()
+
+	// Order must be: decoration -> xdgToplevel -> xdgSurface -> OnClosed (renderer teardown) -> surface
+	expectedOrder := []string{"decoration", "xdgToplevel", "xdgSurface", "OnClosed", "surface"}
+	if len(order) != len(expectedOrder) {
+		t.Fatalf("unexpected destructor order: got %v, want %v", order, expectedOrder)
+	}
+	for i := range order {
+		if order[i] != expectedOrder[i] {
+			t.Fatalf("at index %d: got %s, want %s", i, order[i], expectedOrder[i])
+		}
+	}
+}

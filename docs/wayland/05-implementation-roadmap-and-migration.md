@@ -115,15 +115,15 @@ flowchart LR
   - [x] **Task 3.1**：新建 `internal/platform/linux/vulkan_wayland_surface.go`：
     - 实现 `waylandSurfaceProvider`；
     - 动态加载 `vkCreateWaylandSurfaceKHR`，将 `wl_display` 与 `wl_surface` 包装为 Vulkan 原生表面。
-  - [ ] **Task 3.2**：新建 `internal/platform/linux/window_wayland.go`：
+  - [x] **Task 3.2**：新建 `internal/platform/linux/window_wayland.go`：
     - 实现 `waylandWindowState` 与 `waylandWindow`：
       - 调用 `wl_compositor.create_surface` 获取底层表面；
       - 调用 `xdg_wm_base.get_xdg_surface` 并附加监听器处理 `configure(serial)`；
       - 调用 `xdg_surface.get_toplevel` 设置标题、App ID、最小尺寸与监听器；
     - 实现原子提交流程：`xdg_surface.ack_configure(serial)` $\to$ `wl_surface.attach(buffer)` $\to$ `wl_surface.commit()`。
-  - [ ] **Task 3.3**：新建 `internal/platform/linux/wayland_frame.go`：
+  - [x] **Task 3.3**：新建 `internal/platform/linux/wayland_frame.go`：
     - 接入 `wl_surface.frame` 回调驱动的帧时钟，实现垂直同步与反向背压控制。
-  - [ ] **Task 3.4**：支持 Viva 窗口模式：
+  - [x] **Task 3.4**：支持 Viva 窗口模式：
     - `WindowTitled`：通过 `zxdg_decoration_manager_v1` 协商服务端装饰（SSD）；
     - `WindowFrameless`：外边距 Margin 设为 0；
     - `WindowCustomTitlebar`：调用 `xdg_toplevel.move` 与 `xdg_toplevel.resize` 移交原生拖动。

@@ -344,10 +344,7 @@ func (win *waylandWindow) handleXdgSurfaceConfigure(serial uint32) {
 		win.reportFrame()
 	}
 
-	if !win.firstConfigureDone {
-		win.firstConfigureDone = true
-		win.renderFrame()
-	} else if resized || win.geometryDirty || win.needsRedraw {
+	if win.state != nil {
 		win.renderFrame()
 	}
 }
@@ -481,11 +478,8 @@ func (win *waylandWindow) destroy() {
 		api.proxyDestroy(win.frameCallback)
 		win.frameCallback = 0
 	}
-	if win.surface != 0 {
-		api.surfaceDestroy(win.surface)
-		win.surface = 0
-	}
 
+	// Vulkan swapchain and VkSurfaceKHR MUST be destroyed before wl_surface is destroyed!
 	if win.state != nil {
 		if win.state.renderer != nil {
 			win.state.renderer.close()
@@ -500,6 +494,11 @@ func (win *waylandWindow) destroy() {
 			win.state.config.OnClosed()
 		}
 		win.state = nil
+	}
+
+	if win.surface != 0 {
+		api.surfaceDestroy(win.surface)
+		win.surface = 0
 	}
 
 	win.pinner.Unpin()
