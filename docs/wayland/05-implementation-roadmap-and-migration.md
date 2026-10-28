@@ -38,7 +38,7 @@ flowchart LR
     - 在 `initialize()` 中通过 `provider.RequiredExtensions()` 与 `provider.CreateSurface()` 初始化通用 `renderer.surface`；
     - 修复 [`recreateSwapchain()`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/vulkan_linux.go#L1118)：重构为先将旧句柄暂存为 `oldSwapchain`，创建新交换链时传入 `VkSwapchainCreateInfoKHR.OldSwapchain`，待新链创建成功后再执行 `vkDestroySwapchainKHR`；
     - 修复 [`swapchainNeedsRebuild()`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/vulkan_linux.go#L179)：剥离 `vkSuboptimal`，仅保留 `vkErrorOutOfDate` 作为立即同步重建条件；`vkSuboptimal` 仅置位延迟标志 `renderer.swapchainSuboptimal = true`。
-  - [ ] **Task 1.4**：修改 [`internal/platform/linux/window_linux.go`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/window_linux.go#L297)：
+  - [x] **Task 1.4**：修改 [`internal/platform/linux/window_linux.go`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/window_linux.go#L297)：
     - 传入 `newXcbSurfaceProvider(win.connection, win.id)`，平滑对接现有 X11 窗口生命周期。
 
 #### 【Phase 1 验收清单】
