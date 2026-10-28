@@ -910,3 +910,39 @@ func (api *waylandAPI) keyboardRelease(keyboard uintptr) {
 		api.proxyDestroy(keyboard)
 	}
 }
+
+func (api *waylandAPI) getFractionalScale(scaleMgr uintptr, surface uintptr) uintptr {
+	if api == nil || scaleMgr == 0 || surface == 0 {
+		return 0
+	}
+	iface := api.getInterface("wp_fractional_scale_v1_interface", &wpFractionalScaleV1Interface)
+	return api.proxyMarshalFlags(scaleMgr, 1, iface, 1, 0, uintptr(0), surface)
+}
+
+func (api *waylandAPI) fractionalScaleDestroy(scaleObj uintptr) {
+	if api != nil && scaleObj != 0 {
+		api.proxyMarshalFlags(scaleObj, 0, 0, 1, 0)
+		api.proxyDestroy(scaleObj)
+	}
+}
+
+func (api *waylandAPI) getViewport(viewporter uintptr, surface uintptr) uintptr {
+	if api == nil || viewporter == 0 || surface == 0 {
+		return 0
+	}
+	iface := api.getInterface("wp_viewport_interface", &wpViewportInterface)
+	return api.proxyMarshalFlags(viewporter, 1, iface, 1, 0, uintptr(0), surface)
+}
+
+func (api *waylandAPI) viewportSetDestination(viewport uintptr, width, height int32) {
+	if api != nil && viewport != 0 {
+		api.proxyMarshalFlags(viewport, 2, 0, 1, 0, width, height)
+	}
+}
+
+func (api *waylandAPI) viewportDestroy(viewport uintptr) {
+	if api != nil && viewport != 0 {
+		api.proxyMarshalFlags(viewport, 0, 0, 1, 0)
+		api.proxyDestroy(viewport)
+	}
+}

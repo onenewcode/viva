@@ -159,7 +159,7 @@ flowchart LR
     - 通过 `purego` 动态加载 `libxkbcommon.so.0`；
     - 解析 `wl_keyboard.keymap` 传入的共享内存描述符，构建 `xkb_keymap` 与 `xkb_state`；
     - 将键盘按键实时转换为标准 XKB Keysym，复用已有的 [`keysym.go`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/keysym.go) 映射表。
-  - [ ] **Task 4.3**：新建 `internal/platform/linux/wayland_scale.go`：
+  - [x] **Task 4.3**：新建 `internal/platform/linux/wayland_scale.go`：
     - 监听 `wp_fractional_scale_v1.preferred_scale` 事件，以 120 为基准计算实际倍率；
     - 调用 `wp_viewport.set_destination` 设置逻辑尺寸，驱动 Vulkan 按照物理像素光栅化。
   - [ ] **Task 4.4**：新建 `internal/platform/linux/wayland_cursor.go`：

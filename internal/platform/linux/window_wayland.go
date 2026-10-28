@@ -91,6 +91,10 @@ type waylandWindow struct {
 	decoration     uintptr
 	decorationMode uint32
 
+	fractionalScale uintptr
+	viewport        uintptr
+	activeOutputs   []uintptr
+
 	width, height uint32 // device pixels
 	scaleBits     atomic.Uint32
 	margin        uint32
@@ -344,7 +348,9 @@ func (win *waylandWindow) handleXdgSurfaceConfigure(serial uint32) {
 	if resized && win.state != nil && win.state.renderer != nil {
 		_ = win.state.renderer.resize(win.width, win.height)
 		if win.state.config.OnResize != nil {
-			win.state.config.OnResize(win.logicalSize())
+			if frame, err := win.state.config.OnResize(win.logicalSize()); err == nil {
+				_ = win.state.router.present(frame)
+			}
 		}
 		win.reportFrame()
 	}
@@ -482,6 +488,14 @@ func (win *waylandWindow) destroy() {
 	if win.frameCallback != 0 {
 		api.proxyDestroy(win.frameCallback)
 		win.frameCallback = 0
+	}
+	if win.fractionalScale != 0 {
+		api.fractionalScaleDestroy(win.fractionalScale)
+		win.fractionalScale = 0
+	}
+	if win.viewport != 0 {
+		api.viewportDestroy(win.viewport)
+		win.viewport = 0
 	}
 
 	// Vulkan swapchain and VkSurfaceKHR MUST be destroyed before wl_surface is destroyed!
@@ -652,6 +666,7 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 	if decoration != 0 {
 		app.api.proxyAddListener(decoration, uintptr(unsafe.Pointer(&rawDecorationListener[0])), unsafe.Pointer(win))
 	}
+	app.setupWindowScale(win)
 
 	if config.WindowMode == platform.WindowCustomTitlebar && config.Actions != nil {
 		*config.Actions = platform.WindowActions{
