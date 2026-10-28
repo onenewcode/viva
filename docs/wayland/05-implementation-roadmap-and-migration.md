@@ -33,7 +33,7 @@ flowchart LR
   - [x] **Task 1.2**：新建 `internal/platform/linux/vulkan_xcb_surface.go`：
     - 将原 `vkXcbSurfaceCreateInfo` 及其创建逻辑封装为 `xcbSurfaceProvider`；
     - 导出构造函数 `newXcbSurfaceProvider(connection uintptr, window uint32) *xcbSurfaceProvider`。
-  - [ ] **Task 1.3**：修改 [`internal/platform/linux/vulkan_linux.go`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/vulkan_linux.go)：
+  - [x] **Task 1.3**：修改 [`internal/platform/linux/vulkan_linux.go`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/vulkan_linux.go)：
     - 重构 `newVulkanRenderer` 签名：接收 `provider vulkanSurfaceProvider` 替代原先散落的 `connection uintptr, window uint32`；
     - 在 `initialize()` 中通过 `provider.RequiredExtensions()` 与 `provider.CreateSurface()` 初始化通用 `renderer.surface`；
     - 修复 [`recreateSwapchain()`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/vulkan_linux.go#L1118)：重构为先将旧句柄暂存为 `oldSwapchain`，创建新交换链时传入 `VkSwapchainCreateInfoKHR.OldSwapchain`，待新链创建成功后再执行 `vkDestroySwapchainKHR`；

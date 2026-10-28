@@ -345,7 +345,7 @@ func TestVulkanSceneUploadWritesOnlyChangedRange(t *testing.T) {
 }
 
 func TestSwapchainStatusClassification(t *testing.T) {
-	if swapchainNeedsRebuild(vkSuccess) || !swapchainNeedsRebuild(vkSuboptimal) || !swapchainNeedsRebuild(vkErrorOutOfDate) {
+	if swapchainNeedsRebuild(vkSuccess) || swapchainNeedsRebuild(vkSuboptimal) || !swapchainNeedsRebuild(vkErrorOutOfDate) {
 		t.Fatal("unexpected swapchain status classification")
 	}
 }
@@ -462,5 +462,136 @@ func TestMissingVulkanIsNamedAndSaysWhatToInstall(t *testing.T) {
 	}
 	if err := noVulkan("x", cause); !errors.Is(err, cause) {
 		t.Errorf("the cause is lost: %v", err)
+	}
+}
+
+func TestSwapchainRecreationPassesOldHandle(t *testing.T) {
+	var oldSwapchainPassed uintptr
+	var eventOrder []string
+	renderer := vulkanRenderer{
+		device:    10,
+		swapchain: 42,
+		api: &vulkanAPI{
+			deviceWaitIdle: func(uintptr) int32 { return vkSuccess },
+			getSurfaceCapabilities: func(physical, surface uintptr, caps *vkSurfaceCapabilities) int32 {
+				caps.Current = vkExtent2D{Width: 100, Height: 100}
+				caps.MinImages = 2
+				caps.CompositeAlpha = vkCompositeOpaque
+				caps.Usage = vkImageUsageColorAttachment
+				return vkSuccess
+			},
+			getSurfaceFormats: func(physical, surface uintptr, count *uint32, formats *vkSurfaceFormat) int32 {
+				if formats == nil {
+					*count = 1
+					return vkSuccess
+				}
+				*formats = vkSurfaceFormat{Format: vkFormatBGRA8, ColorSpace: vkColorSpaceSRGB}
+				return vkSuccess
+			},
+			createSwapchain: func(dev uintptr, info *vkSwapchainCreateInfo, p unsafe.Pointer, swapchain *uintptr) int32 {
+				oldSwapchainPassed = info.OldSwapchain
+				eventOrder = append(eventOrder, "createSwapchain")
+				*swapchain = 99
+				return vkSuccess
+			},
+			destroySwapchain: func(dev uintptr, sw uintptr, p unsafe.Pointer) {
+				if sw == 42 {
+					eventOrder = append(eventOrder, "destroyOldSwapchain")
+				}
+			},
+			getSwapchainImages: func(dev, sw uintptr, count *uint32, images *uintptr) int32 {
+				if images == nil {
+					*count = 1
+					return vkSuccess
+				}
+				*images = 101
+				return vkSuccess
+			},
+			createImageView: func(dev uintptr, info *vkImageViewCreateInfo, p unsafe.Pointer, view *uintptr) int32 {
+				*view = 201
+				return vkSuccess
+			},
+			createRenderPass: func(dev uintptr, info *vkRenderPassCreateInfo, p unsafe.Pointer, rp *uintptr) int32 {
+				*rp = 301
+				return vkSuccess
+			},
+			createFramebuffer: func(dev uintptr, info *vkFramebufferCreateInfo, p unsafe.Pointer, fb *uintptr) int32 {
+				*fb = 401
+				return vkSuccess
+			},
+			createCommandPool: func(dev uintptr, info *vkCommandPoolCreateInfo, p unsafe.Pointer, pool *uintptr) int32 {
+				*pool = 501
+				return vkSuccess
+			},
+			allocateCommandBuffers: func(dev uintptr, info *vkCommandBufferAllocateInfo, buffers *uintptr) int32 {
+				*buffers = 601
+				return vkSuccess
+			},
+			createPipelineLayout: func(dev uintptr, info *vkPipelineLayoutCreateInfo, p unsafe.Pointer, layout *uintptr) int32 {
+				*layout = 701
+				return vkSuccess
+			},
+			createShaderModule: func(dev uintptr, info *vkShaderModuleCreateInfo, p unsafe.Pointer, module *uintptr) int32 {
+				*module = 801
+				return vkSuccess
+			},
+			destroyShaderModule: func(uintptr, uintptr, unsafe.Pointer) {},
+			createGraphicsPipelines: func(dev uintptr, cache uintptr, count uint32, info *vkGraphicsPipelineCreateInfo, p unsafe.Pointer, pipe *uintptr) int32 {
+				*pipe = 901
+				return vkSuccess
+			},
+			beginCommandBuffer: func(uintptr, *vkCommandBufferBeginInfo) int32 { return vkSuccess },
+			cmdBeginRenderPass: func(uintptr, *vkRenderPassBeginInfo, uint32) {},
+			cmdEndRenderPass:   func(uintptr) {},
+			endCommandBuffer:   func(uintptr) int32 { return vkSuccess },
+		},
+	}
+	if err := renderer.recreateSwapchain(); err != nil {
+		t.Fatalf("recreateSwapchain failed: %v", err)
+	}
+	if oldSwapchainPassed != 42 {
+		t.Fatalf("expected oldSwapchain 42, got %d", oldSwapchainPassed)
+	}
+	if !slices.Equal(eventOrder, []string{"createSwapchain", "destroyOldSwapchain"}) {
+		t.Fatalf("expected createSwapchain then destroyOldSwapchain, got %v", eventOrder)
+	}
+	if renderer.swapchain != 99 {
+		t.Fatalf("expected new swapchain 99, got %d", renderer.swapchain)
+	}
+}
+
+func TestSuboptimalDoesNotRecreateInFrame(t *testing.T) {
+	var recreations int
+	renderer := vulkanRenderer{
+		device:    10,
+		queue:     20,
+		swapchain: 30,
+		commands:  []uintptr{40},
+		fence:     50,
+		api: &vulkanAPI{
+			waitForFences: func(uintptr, uint32, *uintptr, uint32, uint64) int32 { return vkSuccess },
+			resetFences:   func(uintptr, uint32, *uintptr) int32 { return vkSuccess },
+			acquireNextImage: func(dev, sw uintptr, timeout uint64, sem, fence uintptr, image *uint32) int32 {
+				*image = 0
+				return vkSuccess
+			},
+			queueSubmit: func(uintptr, uint32, *vkSubmitInfo, uintptr) int32 { return vkSuccess },
+			queuePresent: func(queue uintptr, info *vkPresentInfo) int32 {
+				return vkSuboptimal
+			},
+			deviceWaitIdle: func(uintptr) int32 {
+				recreations++
+				return vkSuccess
+			},
+		},
+	}
+	if err := renderer.presentRebuilding(); err != nil {
+		t.Fatalf("presentRebuilding returned error: %v", err)
+	}
+	if recreations != 0 {
+		t.Fatalf("recreateSwapchain was called %d times on suboptimal present, want 0", recreations)
+	}
+	if !renderer.swapchainSuboptimal {
+		t.Fatal("expected swapchainSuboptimal flag to be set to true")
 	}
 }
