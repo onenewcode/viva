@@ -66,11 +66,11 @@ func (offscreen *Offscreen) Set(rectangles []render.Rectangle, labels []TextLabe
 	}
 
 	if len(labels) > 0 {
-		memory, strings, err := makeNativeTextLabels(labels)
+		memory, strings, count, err := makeNativeTextLabels(labels)
 		if err != nil {
 			return err
 		}
-		status := C.viva_offscreen_set_labels(offscreen.handle, (*C.viva_text_label)(memory), C.size_t(len(labels)))
+		status := C.viva_offscreen_set_labels(offscreen.handle, (*C.viva_text_label)(memory), C.size_t(count))
 		C.free(memory)
 		for _, value := range strings {
 			C.free(value)

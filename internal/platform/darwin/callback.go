@@ -503,6 +503,9 @@ func presentTextInput(state *runState, view unsafe.Pointer, update TextInputUpda
 	if state == nil {
 		return fmt.Errorf("darwin: text input update without callback state")
 	}
+	if update.Input != nil && (update.Input.Width <= 0 || update.Input.Height <= 0 || update.Input.FontSize <= 0) {
+		update.Input = nil
+	}
 	if err := validateTextInput(update.Input); err != nil {
 		return err
 	}
@@ -775,20 +778,16 @@ func updateRectangles(state *runState, view unsafe.Pointer, update render.Update
 func updateLabels(view unsafe.Pointer, labels []TextLabel) error {
 	var memory unsafe.Pointer
 	var strings []unsafe.Pointer
+	var count int
 	if len(labels) > 0 {
 		var err error
-		memory, strings, err = makeNativeTextLabels(labels)
+		memory, strings, count, err = makeNativeTextLabels(labels)
 		if err != nil {
 			return err
 		}
-		defer C.free(memory)
-		defer func() {
-			for _, value := range strings {
-				C.free(value)
-			}
-		}()
+		defer freeNativeTextLabels(memory, strings)
 	}
-	status := C.viva_view_update_labels(view, (*C.viva_text_label)(memory), C.size_t(len(labels)))
+	status := C.viva_view_update_labels(view, (*C.viva_text_label)(memory), C.size_t(count))
 	switch status {
 	case 0:
 		return nil

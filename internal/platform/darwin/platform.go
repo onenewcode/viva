@@ -245,7 +245,7 @@ func (application *nativeApplication) OpenWindow(config Config) (platform.Window
 		shaderMemory = C.CBytes(sceneShaderLibrary)
 		defer C.free(shaderMemory)
 	}
-	labelMemory, labelStrings, err := makeNativeTextLabels(config.TextLabels)
+	labelMemory, labelStrings, labelCount, err := makeNativeTextLabels(config.TextLabels)
 	if err != nil {
 		return nil, err
 	}
@@ -384,7 +384,7 @@ func (application *nativeApplication) OpenWindow(config Config) (platform.Window
 		rectangle_clips:         (*C.viva_clip)(clipMemory),
 		rectangle_count:         C.size_t(len(config.Rectangles)),
 		text_labels:             (*C.viva_text_label)(labelMemory),
-		text_label_count:        C.size_t(len(config.TextLabels)),
+		text_label_count:        C.size_t(labelCount),
 		accessibility:           (*C.viva_accessibility_node)(accessibilityMemory),
 		accessibility_count:     C.size_t(len(config.Accessibility)),
 		text_input:              nativeText,
@@ -585,29 +585,30 @@ func textRunFlags(run ui.TextRun) uint32 {
 	return flags
 }
 
-func makeNativeTextLabels(labels []TextLabel) (unsafe.Pointer, []unsafe.Pointer, error) {
+func makeNativeTextLabels(labels []TextLabel) (unsafe.Pointer, []unsafe.Pointer, int, error) {
 	if len(labels) == 0 {
-		return nil, nil, nil
+		return nil, nil, 0, nil
 	}
 	syncMonoFamilies()
 	size := C.size_t(unsafe.Sizeof(C.viva_text_label{}))
 	memory := C.malloc(C.size_t(len(labels)) * size)
 	if memory == nil {
-		return nil, nil, fmt.Errorf("darwin: failed to allocate text label staging memory")
+		return nil, nil, 0, fmt.Errorf("darwin: failed to allocate text label staging memory")
 	}
 	strings := make([]unsafe.Pointer, 0, len(labels))
 	native := unsafe.Slice((*C.viva_text_label)(memory), len(labels))
-	fail := func(err error) (unsafe.Pointer, []unsafe.Pointer, error) {
+	fail := func(err error) (unsafe.Pointer, []unsafe.Pointer, int, error) {
 		for _, value := range strings {
 			C.free(value)
 		}
 		C.free(memory)
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
+	validCount := 0
 	for index, label := range labels {
 		bitmap := len(label.Bitmap) > 0
 		if label.Width <= 0 || label.Height <= 0 || !bitmap && label.FontSize <= 0 {
-			return fail(fmt.Errorf("darwin: label %d dimensions and text font size must be positive", index))
+			continue
 		}
 		value := textBytes(label.Value)
 		if value != nil {
@@ -664,7 +665,7 @@ func makeNativeTextLabels(labels []TextLabel) (unsafe.Pointer, []unsafe.Pointer,
 			}
 			flags |= C.VIVA_LABEL_BITMAP
 		}
-		native[index] = C.viva_text_label{
+		native[validCount] = C.viva_text_label{
 			utf8:           (*C.uchar)(value),
 			utf8_length:    C.size_t(len(label.Value)),
 			x:              C.float(label.X),
@@ -697,8 +698,25 @@ func makeNativeTextLabels(labels []TextLabel) (unsafe.Pointer, []unsafe.Pointer,
 			origin_x:       C.float(label.OriginX),
 			origin_y:       C.float(label.OriginY),
 		}
+		validCount++
 	}
-	return memory, strings, nil
+	if validCount == 0 {
+		for _, value := range strings {
+			C.free(value)
+		}
+		C.free(memory)
+		return nil, nil, 0, nil
+	}
+	return memory, strings, validCount, nil
+}
+
+func freeNativeTextLabels(memory unsafe.Pointer, strings []unsafe.Pointer) {
+	for _, value := range strings {
+		C.free(value)
+	}
+	if memory != nil {
+		C.free(memory)
+	}
 }
 
 func validateTextInput(input *TextInput) error {

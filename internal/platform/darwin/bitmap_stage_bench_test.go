@@ -29,7 +29,7 @@ func BenchmarkStageBitmapUpload(b *testing.B) {
 		b.Run(test.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				memory, strings, err := makeNativeTextLabels(test.labels)
+				memory, strings, _, err := makeNativeTextLabels(test.labels)
 				if err != nil {
 					b.Fatal(err)
 				}
