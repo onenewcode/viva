@@ -23,7 +23,7 @@ type waylandAPI struct {
 	displayRoundtrip       func(display uintptr) int32
 
 	// Proxy marshaling and listeners
-	proxyMarshalFlags func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...uintptr) uintptr
+	proxyMarshalFlags func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr
 	proxyAddListener  func(proxy uintptr, implementation uintptr, data unsafe.Pointer) int32
 	proxyDestroy      func(proxy uintptr)
 	proxyGetVersion   func(proxy uintptr) uint32

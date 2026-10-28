@@ -53,6 +53,7 @@ func (c *libcAPI) teardown() {
 // waylandLoop coordinates the Wayland display socket, D-Bus sockets, and cross-goroutine eventfd waker in a single poll loop.
 type waylandLoop struct {
 	libc      *libcAPI
+	ownsLibc  bool
 	wayland   *waylandAPI
 	display   uintptr
 	waylandFD int32
@@ -62,8 +63,9 @@ type waylandLoop struct {
 	cmdQueue []waylandCommand
 
 	running atomic.Bool
-	pollFDs []pollFD
 
+	pollMu   sync.Mutex
+	pollFDs  []pollFD
 	extraFDs []int32
 	extraCBs []func()
 }
@@ -72,15 +74,20 @@ func newWaylandLoop(api *waylandAPI, display uintptr, libc *libcAPI) (*waylandLo
 	if api == nil || display == 0 {
 		return nil, errors.New("linux: invalid wayland API or display")
 	}
+	ownsLibc := false
 	if libc == nil {
 		var err error
 		libc, err = loadLibc()
 		if err != nil {
 			return nil, err
 		}
+		ownsLibc = true
 	}
 	wfd := api.displayGetFd(display)
 	if wfd < 0 {
+		if ownsLibc {
+			libc.teardown()
+		}
 		return nil, fmt.Errorf("linux: failed to get wayland display fd: %d", wfd)
 	}
 	wakeFD := int32(-1)
@@ -88,11 +95,15 @@ func newWaylandLoop(api *waylandAPI, display uintptr, libc *libcAPI) (*waylandLo
 		wakeFD = libc.eventfd(0, efdCloexec|efdNonblock)
 	}
 	if wakeFD < 0 {
+		if ownsLibc {
+			libc.teardown()
+		}
 		return nil, errors.New("linux: failed to create eventfd for wayland loop waker")
 	}
 
 	loop := &waylandLoop{
 		libc:      libc,
+		ownsLibc:  ownsLibc,
 		wayland:   api,
 		display:   display,
 		waylandFD: wfd,
@@ -104,6 +115,8 @@ func newWaylandLoop(api *waylandAPI, display uintptr, libc *libcAPI) (*waylandLo
 }
 
 func (l *waylandLoop) rebuildPollFDs() {
+	l.pollMu.Lock()
+	defer l.pollMu.Unlock()
 	total := 2 + len(l.extraFDs)
 	if cap(l.pollFDs) >= total {
 		l.pollFDs = l.pollFDs[:total]
@@ -121,9 +134,21 @@ func (l *waylandLoop) addExtraFD(fd int32, onReady func()) {
 	if fd < 0 {
 		return
 	}
+	l.pollMu.Lock()
 	l.extraFDs = append(l.extraFDs, fd)
 	l.extraCBs = append(l.extraCBs, onReady)
-	l.rebuildPollFDs()
+	total := 2 + len(l.extraFDs)
+	if cap(l.pollFDs) >= total {
+		l.pollFDs = l.pollFDs[:total]
+	} else {
+		l.pollFDs = make([]pollFD, total)
+	}
+	l.pollFDs[0] = pollFD{FD: l.waylandFD, Events: 1}
+	l.pollFDs[1] = pollFD{FD: l.wakeFD, Events: 1}
+	for i, f := range l.extraFDs {
+		l.pollFDs[2+i] = pollFD{FD: f, Events: 1}
+	}
+	l.pollMu.Unlock()
 }
 
 func (l *waylandLoop) post(cmd waylandCommand) {
@@ -132,12 +157,13 @@ func (l *waylandLoop) post(cmd waylandCommand) {
 	}
 	l.cmdMu.Lock()
 	l.cmdQueue = append(l.cmdQueue, cmd)
+	wakeFD := l.wakeFD
 	l.cmdMu.Unlock()
 
-	var val [8]byte
-	binary.NativeEndian.PutUint64(val[:], 1)
-	if l.libc != nil && l.libc.write != nil && l.wakeFD >= 0 {
-		l.libc.write(l.wakeFD, unsafe.Pointer(&val[0]), 8)
+	if l.libc != nil && l.libc.write != nil && wakeFD >= 0 {
+		var val [8]byte
+		binary.NativeEndian.PutUint64(val[:], 1)
+		l.libc.write(wakeFD, unsafe.Pointer(&val[0]), 8)
 	}
 }
 
@@ -159,17 +185,34 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 		return false
 	}
 
+	// 1. Dispatch any pending Wayland events already in the client library buffer BEFORE polling!
+	// This prevents hanging in poll if events were already read into memory.
+	if l.wayland != nil && l.wayland.displayDispatchPending != nil {
+		l.wayland.displayDispatchPending(l.display)
+	}
+
+	// 2. Flush outgoing requests to Wayland display socket
 	if l.wayland != nil && l.wayland.displayFlush != nil {
 		l.wayland.displayFlush(l.display)
 	}
 
+	// 3. Poll for readiness
+	l.pollMu.Lock()
+	nfds := uintptr(len(l.pollFDs))
+	pfd := &l.pollFDs[0]
+	l.pollMu.Unlock()
+
 	if l.libc != nil && l.libc.poll != nil {
-		ret := l.libc.poll(&l.pollFDs[0], uintptr(len(l.pollFDs)), timeoutMs)
+		ret := l.libc.poll(pfd, nfds, timeoutMs)
 		if ret < 0 {
 			return l.running.Load()
 		}
 	}
 
+	l.pollMu.Lock()
+	defer l.pollMu.Unlock()
+
+	// 4. Process waker eventfd (POLLIN)
 	if len(l.pollFDs) > 1 && l.pollFDs[1].REvents&1 != 0 {
 		var val [8]byte
 		if l.libc != nil && l.libc.read != nil && l.wakeFD >= 0 {
@@ -178,12 +221,14 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 		l.drainCommands()
 	}
 
+	// 5. Process extra registered FDs (e.g. D-Bus)
 	for i, cb := range l.extraCBs {
 		if len(l.pollFDs) > 2+i && l.pollFDs[2+i].REvents&1 != 0 && cb != nil {
 			cb()
 		}
 	}
 
+	// 6. Process incoming Wayland socket events
 	if len(l.pollFDs) > 0 && l.pollFDs[0].REvents&1 != 0 {
 		if l.wayland != nil && l.wayland.displayDispatch != nil {
 			if l.wayland.displayDispatch(l.display) < 0 {
@@ -195,6 +240,7 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 		l.wayland.displayDispatchPending(l.display)
 	}
 
+	// 7. Check for hangup / error on Wayland socket
 	if len(l.pollFDs) > 0 && l.pollFDs[0].REvents&(0x0008|0x0010) != 0 {
 		l.running.Store(false)
 		return false
@@ -210,8 +256,16 @@ func (l *waylandLoop) stop() {
 
 func (l *waylandLoop) close() {
 	l.stop()
-	if l.libc != nil && l.libc.close != nil && l.wakeFD >= 0 {
-		l.libc.close(l.wakeFD)
-		l.wakeFD = -1
+	l.cmdMu.Lock()
+	wakeFD := l.wakeFD
+	l.wakeFD = -1
+	l.cmdMu.Unlock()
+
+	if l.libc != nil && l.libc.close != nil && wakeFD >= 0 {
+		l.libc.close(wakeFD)
+	}
+	if l.ownsLibc && l.libc != nil {
+		l.libc.teardown()
+		l.libc = nil
 	}
 }

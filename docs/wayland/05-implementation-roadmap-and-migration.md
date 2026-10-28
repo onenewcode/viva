@@ -86,23 +86,22 @@ flowchart LR
 
 #### 【Phase 2 验收清单】
 
-- [ ] **自动化测试 1（Wayland 客户端库纯 Go 加载测试）**：
+- [x] **自动化测试 1（Wayland 客户端库纯 Go 加载测试）**：
   - 新增测试用例 `TestWaylandClientPureGoLoad`；
   - 判定标准：在安装有 `libwayland-client.so.0` 的系统上，所有核心函数指针成功绑定且非空；在无该库的系统上优雅返回错误，不得发生段错误（SIGSEGV）。
-- [ ] **自动化测试 2（Wayland 协议 ABI 结构体验证）**：
+- [x] **自动化测试 2（Wayland 协议 ABI 结构体验证）**：
   - 在 `api_linux_test.go` 中加入 `wl_interface`、`wl_message`、`wl_array` 结构体内存对齐与尺寸断言；
   - 判定标准：64 位环境下大小和偏移完全契合标准 C 头文件定义。
-- [ ] **自动化测试 3（Registry 全局对象绑定测试）**：
+- [x] **自动化测试 3（Registry 全局对象绑定测试）**：
   - 新增测试用例 `TestWaylandRegistryDiscovery`（在 Wayland 会话或 headless 合成器中运行）；
   - 判定标准：成功遍历系统 Globals，正确获取并保存 `wl_compositor` 与 `xdg_wm_base` 代理 ID。
-- [ ] **自动化测试 4（主事件循环非阻塞唤醒）**：
+- [x] **自动化测试 4（主事件循环非阻塞唤醒）**：
   - 新增测试用例 `TestWaylandLoopWaker`；
   - 判定标准：从另一个 Goroutine 向 `eventfd` 写入信号，主事件循环必须在 $\le 5\text{ms}$ 内从 `poll` 中唤醒并执行注册的任务，CPU 占用保持在 0%。
-- [ ] **自动化测试 5（集中式命令管道不依赖窗口）**：
+- [x] **自动化测试 5（集中式命令管道不依赖窗口）**：
   - 新增测试用例 `TestApplicationPostWithoutWindows`；
   - 判定标准：在所有窗口关闭（或仅托盘运行）时，跨 Goroutine 调用 `Application.Quit()`，命令队列通过 `eventfd` 100% 成功送达并使主循环优雅退出。
-- [ ] **资源释放与零泄漏验证**：
-
+- [x] **资源释放与零泄漏验证**：
   - 执行连接建立与断开循环 100 次，检查进程打开的文件描述符（FD）；
   - 判定标准：FD 计数严格恢复到初始状态，无 Socket 句柄泄漏。
 

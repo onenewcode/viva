@@ -3,6 +3,9 @@
 package linux
 
 import (
+	"errors"
+	"runtime"
+	"sync"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -233,8 +236,52 @@ var (
 	}
 )
 
+var (
+	registryListenerOnce sync.Once
+	rawRegistryListener  [2]uintptr
+	rawXdgWmBaseListener [1]uintptr
+	pinnerRegistry       runtime.Pinner
+)
+
+func initRegistryListeners() {
+	registryListenerOnce.Do(func() {
+		rawRegistryListener[0] = purego.NewCallback(func(data unsafe.Pointer, registry uintptr, name uint32, ifacePtr *byte, version uint32) {
+			if data == nil {
+				return
+			}
+			g := (*waylandGlobals)(data)
+			ifaceName := waylandGoString(ifacePtr)
+			g.handleGlobal(registry, name, ifaceName, version)
+		})
+		rawRegistryListener[1] = purego.NewCallback(func(data unsafe.Pointer, registry uintptr, name uint32) {
+			if data == nil {
+				return
+			}
+			g := (*waylandGlobals)(data)
+			g.handleGlobalRemove(name)
+		})
+
+		rawXdgWmBaseListener[0] = purego.NewCallback(func(data unsafe.Pointer, xdgWmBase uintptr, serial uint32) {
+			if data == nil {
+				return
+			}
+			g := (*waylandGlobals)(data)
+			if g.api != nil {
+				g.api.proxyMarshalFlags(xdgWmBase, xdgWmBasePongOpcode, 0, g.xdgWmBaseVer, 0, serial)
+			}
+		})
+
+		pinnerRegistry.Pin(&rawRegistryListener)
+		pinnerRegistry.Pin(&rawXdgWmBaseListener)
+	})
+}
+
 // waylandGlobals tracks bound global singleton protocol objects.
 type waylandGlobals struct {
+	api     *waylandAPI
+	display uintptr
+	pinner  runtime.Pinner
+
 	compositor       uintptr
 	compositorVer    uint32
 	shm              uintptr
@@ -265,15 +312,14 @@ func (api *waylandAPI) getInterface(name string, fallback *wlInterface) uintptr 
 
 func (api *waylandAPI) getRegistry(display uintptr) uintptr {
 	regIface := api.getInterface("wl_registry_interface", &wlRegistryInterface)
-	return api.proxyMarshalFlags(display, wlDisplayGetRegistryOpcode, regIface, 1, 0, 0)
+	return api.proxyMarshalFlags(display, wlDisplayGetRegistryOpcode, regIface, 1, 0, uintptr(0))
 }
 
-func (api *waylandAPI) bindRegistry(registry uintptr, name uint32, iface uintptr, version uint32) uintptr {
-	if iface == 0 {
+func (api *waylandAPI) bindRegistry(registry uintptr, name uint32, iface uintptr, ifaceName *byte, version uint32) uintptr {
+	if iface == 0 || ifaceName == nil {
 		return 0
 	}
-	ifaceObj := (*wlInterface)(unsafe.Pointer(iface))
-	return api.proxyMarshalFlags(registry, wlRegistryBindOpcode, iface, version, 0, uintptr(name), uintptr(unsafe.Pointer(ifaceObj.Name)), uintptr(version), 0)
+	return api.proxyMarshalFlags(registry, wlRegistryBindOpcode, iface, version, 0, name, uintptr(unsafe.Pointer(ifaceName)), version, uintptr(0))
 }
 
 func (api *waylandAPI) destroyProxy(proxy *uintptr) {
@@ -281,6 +327,105 @@ func (api *waylandAPI) destroyProxy(proxy *uintptr) {
 		api.proxyDestroy(*proxy)
 		*proxy = 0
 	}
+}
+
+func (g *waylandGlobals) handleGlobal(registry uintptr, name uint32, iface string, version uint32) {
+	if g.api == nil {
+		return
+	}
+	switch iface {
+	case "wl_compositor":
+		ver := min(version, 6)
+		if ver >= 4 && g.compositor == 0 {
+			ifacePtr := g.api.getInterface("wl_compositor_interface", &wlCompositorInterface)
+			g.compositor = g.api.bindRegistry(registry, name, ifacePtr, &strWlCompositor[0], ver)
+			g.compositorVer = ver
+		}
+	case "xdg_wm_base":
+		ver := min(version, 3)
+		if ver >= 1 && g.xdgWmBase == 0 {
+			ifacePtr := g.api.getInterface("xdg_wm_base_interface", &xdgWmBaseInterface)
+			g.xdgWmBase = g.api.bindRegistry(registry, name, ifacePtr, &strXdgWmBase[0], ver)
+			g.xdgWmBaseVer = ver
+			if g.xdgWmBase != 0 {
+				initRegistryListeners()
+				g.api.proxyAddListener(g.xdgWmBase, uintptr(unsafe.Pointer(&rawXdgWmBaseListener[0])), unsafe.Pointer(g))
+			}
+		}
+	case "wl_seat":
+		ver := min(version, 7)
+		if ver >= 5 && g.seat == 0 {
+			ifacePtr := g.api.getInterface("wl_seat_interface", &wlSeatInterface)
+			g.seat = g.api.bindRegistry(registry, name, ifacePtr, &strWlSeat[0], ver)
+			g.seatVer = ver
+		}
+	case "wl_shm":
+		ver := uint32(1)
+		if g.shm == 0 {
+			ifacePtr := g.api.getInterface("wl_shm_interface", &wlShmInterface)
+			g.shm = g.api.bindRegistry(registry, name, ifacePtr, &strWlShm[0], ver)
+			g.shmVer = ver
+		}
+	case "zxdg_decoration_manager_v1":
+		ver := uint32(1)
+		if g.decorationMgr == 0 {
+			ifacePtr := g.api.getInterface("zxdg_decoration_manager_v1_interface", &zxdgDecorationManagerV1Interface)
+			g.decorationMgr = g.api.bindRegistry(registry, name, ifacePtr, &strZxdgDecorationManagerV1[0], ver)
+			g.decorationMgrVer = ver
+		}
+	case "wp_fractional_scale_manager_v1":
+		ver := uint32(1)
+		if g.scaleMgr == 0 {
+			ifacePtr := g.api.getInterface("wp_fractional_scale_manager_v1_interface", &wpFractionalScaleManagerV1Interface)
+			g.scaleMgr = g.api.bindRegistry(registry, name, ifacePtr, &strWpFractionalScaleManagerV1[0], ver)
+			g.scaleMgrVer = ver
+		}
+	case "wp_viewporter":
+		ver := uint32(1)
+		if g.viewporter == 0 {
+			ifacePtr := g.api.getInterface("wp_viewporter_interface", &wpViewporterInterface)
+			g.viewporter = g.api.bindRegistry(registry, name, ifacePtr, &strWpViewporter[0], ver)
+			g.viewporterVer = ver
+		}
+	}
+}
+
+func (g *waylandGlobals) handleGlobalRemove(name uint32) {
+}
+
+// bindGlobals attaches to the display registry, registers listeners, performs a roundtrip,
+// and populates g with bound globals.
+func (g *waylandGlobals) bindGlobals(api *waylandAPI, display uintptr) error {
+	if api == nil || display == 0 {
+		return errors.New("linux: invalid wayland API or display")
+	}
+	initRegistryListeners()
+	g.api = api
+	g.display = display
+	g.pinner.Pin(g)
+
+	registry := api.getRegistry(display)
+	if registry == 0 {
+		g.pinner.Unpin()
+		return errors.New("linux: failed to get wayland display registry")
+	}
+	defer api.proxyDestroy(registry)
+
+	api.proxyAddListener(registry, uintptr(unsafe.Pointer(&rawRegistryListener[0])), unsafe.Pointer(g))
+	if api.displayRoundtrip(display) < 0 {
+		g.destroy(api)
+		return errors.New("linux: wayland registry discovery roundtrip failed")
+	}
+
+	if g.compositor == 0 {
+		g.destroy(api)
+		return errors.New("linux: compositor does not support wl_compositor")
+	}
+	if g.xdgWmBase == 0 {
+		g.destroy(api)
+		return errors.New("linux: compositor does not support xdg_wm_base")
+	}
+	return nil
 }
 
 // destroy releases all held global proxies.
@@ -295,6 +440,7 @@ func (g *waylandGlobals) destroy(api *waylandAPI) {
 	api.destroyProxy(&g.seat)
 	api.destroyProxy(&g.shm)
 	api.destroyProxy(&g.compositor)
+	g.pinner.Unpin()
 }
 
 func waylandGoString(ptr *byte) string {

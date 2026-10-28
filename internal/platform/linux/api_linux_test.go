@@ -13,7 +13,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/ebitengine/purego"
 	"github.com/vivaui/viva/internal/platform"
 	"github.com/vivaui/viva/internal/render"
 	"github.com/vivaui/viva/internal/scene"
@@ -104,6 +103,7 @@ func TestNativeStructureABI(t *testing.T) {
 		{"wl_interface", unsafe.Sizeof(wlInterface{}), 40},
 		{"wl_message", unsafe.Sizeof(wlMessage{}), 24},
 		{"wl_array", unsafe.Sizeof(wlArray{}), 24},
+		{"wl_fixed_t", unsafe.Sizeof(wlFixed(0)), 4},
 		{"VkBufferImageCopy", unsafe.Sizeof(vkBufferImageCopy{}), 56},
 		{"scene instance", unsafe.Sizeof(vulkanRectangleInstance{}), 80},
 	} {
@@ -643,6 +643,29 @@ func TestWaylandABIStructureOffsets(t *testing.T) {
 	}
 }
 
+func TestWaylandFixedPointConversion(t *testing.T) {
+	cases := []struct {
+		val   float64
+		fixed wlFixed
+	}{
+		{0.0, 0},
+		{1.0, 256},
+		{1.5, 384},
+		{0.25, 64},
+		{-2.5, -640},
+	}
+	for _, c := range cases {
+		gotFixed := float64ToWlFixed(c.val)
+		if gotFixed != c.fixed {
+			t.Errorf("float64ToWlFixed(%v) = %d, want %d", c.val, gotFixed, c.fixed)
+		}
+		gotFloat := wlFixedToFloat64(c.fixed)
+		if gotFloat != c.val {
+			t.Errorf("wlFixedToFloat64(%d) = %v, want %v", c.fixed, gotFloat, c.val)
+		}
+	}
+}
+
 func TestWaylandRegistryDiscovery(t *testing.T) {
 	if os.Getenv("WAYLAND_DISPLAY") == "" {
 		t.Log("WAYLAND_DISPLAY not set, skipping live discovery (verified in headless or Wayland sessions)")
@@ -658,30 +681,15 @@ func TestWaylandRegistryDiscovery(t *testing.T) {
 		t.Skip("cannot connect to Wayland display")
 	}
 	defer api.displayDisconnect(display)
-	registry := api.getRegistry(display)
-	if registry == 0 {
-		t.Fatal("failed to get wayland registry")
-	}
-	defer api.proxyDestroy(registry)
 
 	var globals waylandGlobals
-	listener := [2]uintptr{
-		purego.NewCallback(func(data unsafe.Pointer, reg uintptr, name uint32, iface *byte, ver uint32) {
-			nameStr := waylandGoString(iface)
-			switch nameStr {
-			case "wl_compositor":
-				globals.compositor = 1
-			case "xdg_wm_base":
-				globals.xdgWmBase = 1
-			}
-		}),
-		purego.NewCallback(func(data unsafe.Pointer, reg uintptr, name uint32) {}),
+	if err := globals.bindGlobals(api, display); err != nil {
+		t.Fatalf("bindGlobals failed: %v", err)
 	}
-	api.proxyAddListener(registry, uintptr(unsafe.Pointer(&listener[0])), nil)
-	api.displayRoundtrip(display)
+	defer globals.destroy(api)
 
 	if globals.compositor == 0 || globals.xdgWmBase == 0 {
-		t.Fatalf("expected discovery of compositor and xdg_wm_base, got: %+v", globals)
+		t.Fatalf("expected discovery and binding of compositor and xdg_wm_base, got: %+v", globals)
 	}
 }
 
@@ -780,22 +788,24 @@ func TestApplicationPostWithoutWindows(t *testing.T) {
 	loop.running.Store(true)
 	loop.rebuildPollFDs()
 
+	app := &waylandApplication{
+		loop: loop,
+	}
+
 	go func() {
 		time.Sleep(1 * time.Millisecond)
-		loop.post(func() {
-			quitCalled.Store(true)
-			loop.stop()
-		})
+		quitCalled.Store(true)
+		app.Quit()
 	}()
 
 	for loop.step(20) {
 	}
 
 	if !quitCalled.Load() {
-		t.Fatal("Quit command was not delivered without windows")
+		t.Fatal("Application.Quit was not delivered without windows")
 	}
 	if loop.running.Load() {
-		t.Fatal("loop was not stopped cleanly after quit")
+		t.Fatal("loop was not stopped cleanly after application quit")
 	}
 }
 
@@ -817,5 +827,45 @@ func TestWaylandLoopCloseReleasesWakeFD(t *testing.T) {
 	}
 	if loop.wakeFD != -1 {
 		t.Fatalf("expected wakeFD to be reset to -1, got %d", loop.wakeFD)
+	}
+}
+
+func TestWaylandConnectDisconnectFDLeak(t *testing.T) {
+	if os.Getenv("WAYLAND_DISPLAY") == "" {
+		t.Log("WAYLAND_DISPLAY not set, skipping live 100x connect/disconnect test")
+		return
+	}
+	api, err := loadWaylandClient()
+	if err != nil {
+		t.Skipf("cannot load libwayland-client: %v", err)
+	}
+	defer api.close()
+
+	// Warm up
+	d := api.displayConnect(nil)
+	if d == 0 {
+		t.Skip("cannot connect to Wayland display")
+	}
+	api.displayDisconnect(d)
+
+	countFDs := func() int {
+		entries, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			return -1
+		}
+		return len(entries)
+	}
+
+	initialFDs := countFDs()
+	for i := 0; i < 100; i++ {
+		disp := api.displayConnect(nil)
+		if disp == 0 {
+			t.Fatalf("displayConnect failed at iteration %d", i)
+		}
+		api.displayDisconnect(disp)
+	}
+	finalFDs := countFDs()
+	if initialFDs > 0 && finalFDs > initialFDs {
+		t.Fatalf("FD leak detected after 100 connections: was %d, now %d", initialFDs, finalFDs)
 	}
 }
