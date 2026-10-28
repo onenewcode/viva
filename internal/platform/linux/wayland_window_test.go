@@ -363,3 +363,35 @@ func TestWaylandDestructorOrdering(t *testing.T) {
 		}
 	}
 }
+
+func TestWaylandProtocolSignatures(t *testing.T) {
+	tests := []struct {
+		name     string
+		msg      wlMessage
+		wantName string
+		wantSig  string
+	}{
+		{"xdg_toplevel.set_parent", xdgToplevelRequests[1], "set_parent", "?o"},
+		{"xdg_toplevel.show_window_menu", xdgToplevelRequests[4], "show_window_menu", "ouii"},
+		{"xdg_toplevel.move", xdgToplevelRequests[5], "move", "ou"},
+		{"xdg_toplevel.resize", xdgToplevelRequests[6], "resize", "ouu"},
+		{"xdg_toplevel.set_fullscreen", xdgToplevelRequests[11], "set_fullscreen", "?o"},
+		{"xdg_surface.get_popup", xdgSurfaceRequests[2], "get_popup", "n?oo"},
+		{"wp_viewport.set_source", wpViewportRequests[1], "set_source", "ffff"},
+		{"wl_pointer.set_cursor", wlPointerRequests[0], "set_cursor", "u?oii"},
+		{"wl_data_device.start_drag", wlDataDeviceRequests[0], "start_drag", "?oo?ou"},
+		{"wl_data_device.set_selection", wlDataDeviceRequests[1], "set_selection", "?ou"},
+	}
+
+	for _, tt := range tests {
+		gotName := waylandGoString(tt.msg.Name)
+		gotSig := waylandGoString(tt.msg.Signature)
+		if gotName != tt.wantName {
+			t.Errorf("%s: got name %q, want %q", tt.name, gotName, tt.wantName)
+		}
+		if gotSig != tt.wantSig {
+			t.Errorf("%s: got signature %q, want %q", tt.name, gotSig, tt.wantSig)
+		}
+	}
+}
+

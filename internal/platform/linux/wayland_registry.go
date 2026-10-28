@@ -148,21 +148,27 @@ var (
 	sigO     = []byte("?o\x00")
 	sigOII   = []byte("?oii\x00")
 	sigI     = []byte("i\x00")
-	sigUOII  = []byte("uoii\x00")
-	sigUOFF  = []byte("uoff\x00")
-	sigUO    = []byte("uo\x00")
-	sigUFF   = []byte("uff\x00")
-	sigUUUU  = []byte("uuuu\x00")
-	sigUUF   = []byte("uuf\x00")
-	sigUU    = []byte("uu\x00")
-	sigUI    = []byte("ui\x00")
-	sigUHU   = []byte("uhu\x00")
-	sigUOA   = []byte("uoa\x00")
-	sigUUUUU = []byte("uuuuu\x00")
-	sigSH    = []byte("sh\x00")
-	sigUS    = []byte("u?s\x00")
-	sigUOFFO = []byte("uoff?o\x00")
-	sigOU    = []byte("?ou\x00")
+	sigUOII       = []byte("u?oii\x00")
+	sigUOFF       = []byte("uoff\x00")
+	sigUO         = []byte("uo\x00")
+	sigUFF        = []byte("uff\x00")
+	sigUUUU       = []byte("uuuu\x00")
+	sigUUF        = []byte("uuf\x00")
+	sigUU         = []byte("uu\x00")
+	sigUI         = []byte("ui\x00")
+	sigUHU        = []byte("uhu\x00")
+	sigUOA        = []byte("uoa\x00")
+	sigUUUUU      = []byte("uuuuu\x00")
+	sigSH         = []byte("sh\x00")
+	sigUS         = []byte("u?s\x00")
+	sigUOFFO      = []byte("uoff?o\x00")
+	sigOU         = []byte("ou\x00")
+	sigOUU        = []byte("ouu\x00")
+	sigOUII       = []byte("ouii\x00")
+	sigOptOU      = []byte("?ou\x00")
+	sigNOO        = []byte("n?oo\x00")
+	sigFFFF       = []byte("ffff\x00")
+	sigOptOOOptOU = []byte("?oo?ou\x00")
 )
 
 // Core static wlInterface definitions for extension protocols (and fallback)
@@ -329,7 +335,7 @@ var (
 	xdgSurfaceRequests = [5]wlMessage{
 		{Name: &[]byte("destroy\x00")[0], Signature: &sigEmpty[0]},
 		{Name: &[]byte("get_toplevel\x00")[0], Signature: &sigN[0]},
-		{Name: &[]byte("get_popup\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("get_popup\x00")[0], Signature: &sigNOO[0]},
 		{Name: &[]byte("set_window_geometry\x00")[0], Signature: &sigIIII[0]},
 		{Name: &[]byte("ack_configure\x00")[0], Signature: &sigU[0]},
 	}
@@ -348,17 +354,17 @@ var (
 	// xdg_toplevel
 	xdgToplevelRequests = [14]wlMessage{
 		{Name: &[]byte("destroy\x00")[0], Signature: &sigEmpty[0]},
-		{Name: &[]byte("set_parent\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("set_parent\x00")[0], Signature: &sigO[0]},
 		{Name: &[]byte("set_title\x00")[0], Signature: &sigS[0]},
 		{Name: &[]byte("set_app_id\x00")[0], Signature: &sigS[0]},
-		{Name: &[]byte("show_window_menu\x00")[0], Signature: &sigEmpty[0]},
-		{Name: &[]byte("move\x00")[0], Signature: &sigEmpty[0]},
-		{Name: &[]byte("resize\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("show_window_menu\x00")[0], Signature: &sigOUII[0]},
+		{Name: &[]byte("move\x00")[0], Signature: &sigOU[0]},
+		{Name: &[]byte("resize\x00")[0], Signature: &sigOUU[0]},
 		{Name: &[]byte("set_max_size\x00")[0], Signature: &sigII[0]},
 		{Name: &[]byte("set_min_size\x00")[0], Signature: &sigII[0]},
 		{Name: &[]byte("set_maximized\x00")[0], Signature: &sigEmpty[0]},
 		{Name: &[]byte("unset_maximized\x00")[0], Signature: &sigEmpty[0]},
-		{Name: &[]byte("set_fullscreen\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("set_fullscreen\x00")[0], Signature: &sigO[0]},
 		{Name: &[]byte("unset_fullscreen\x00")[0], Signature: &sigEmpty[0]},
 		{Name: &[]byte("set_minimized\x00")[0], Signature: &sigEmpty[0]},
 	}
@@ -450,7 +456,7 @@ var (
 	// wp_viewport
 	wpViewportRequests = [3]wlMessage{
 		{Name: &[]byte("destroy\x00")[0], Signature: &sigEmpty[0]},
-		{Name: &[]byte("set_source\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("set_source\x00")[0], Signature: &sigFFFF[0]},
 		{Name: &[]byte("set_destination\x00")[0], Signature: &sigII[0]},
 	}
 	wpViewportInterface = wlInterface{
@@ -474,8 +480,8 @@ var (
 
 	// wl_data_device
 	wlDataDeviceRequests = [3]wlMessage{
-		{Name: &[]byte("start_drag\x00")[0], Signature: &sigEmpty[0]},
-		{Name: &[]byte("set_selection\x00")[0], Signature: &sigOU[0]},
+		{Name: &[]byte("start_drag\x00")[0], Signature: &sigOptOOOptOU[0]},
+		{Name: &[]byte("set_selection\x00")[0], Signature: &sigOptOU[0]},
 		{Name: &[]byte("release\x00")[0], Signature: &sigEmpty[0]},
 	}
 	wlDataDeviceEvents = [6]wlMessage{
