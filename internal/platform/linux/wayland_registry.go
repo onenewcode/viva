@@ -746,6 +746,12 @@ func (api *waylandAPI) surfaceCommit(surface uintptr) {
 	}
 }
 
+func (api *waylandAPI) surfaceSetBufferScale(surface uintptr, scale int32) {
+	if api != nil && surface != 0 {
+		api.proxyMarshalFlags(surface, wlSurfaceSetBufferScaleOpcode, 0, 1, 0, scale)
+	}
+}
+
 func (api *waylandAPI) getXdgSurface(xdgWmBase uintptr, surface uintptr) uintptr {
 	if api == nil || xdgWmBase == 0 || surface == 0 {
 		return 0

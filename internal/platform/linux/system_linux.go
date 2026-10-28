@@ -390,6 +390,10 @@ func SetCursorShape(shape uint8) error {
 	if int(shape) >= len(glyphs) {
 		return fmt.Errorf("linux: invalid cursor %d", shape)
 	}
+	if waylandApp := activeWaylandApp.Load(); waylandApp != nil && waylandApp.hasWindows() {
+		waylandApp.setCursor(shape)
+		return nil
+	}
 	win := activeWindow.Load()
 	if win == nil {
 		return fmt.Errorf("linux: cursor requires a running window")

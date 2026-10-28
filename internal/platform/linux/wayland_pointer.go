@@ -40,6 +40,7 @@ func initPointerListeners() {
 			win := app.findWindowBySurface(surface)
 			app.pointerFocus = win
 			app.pointerSerial = serial
+			app.setCursor(app.currentCursorShape)
 
 			if win != nil && win.state != nil {
 				x, y := win.pointerCoords(surfaceX, surfaceY)

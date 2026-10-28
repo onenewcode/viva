@@ -5,11 +5,14 @@ package linux
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vivaui/viva/internal/input"
 	"github.com/vivaui/viva/internal/platform"
 )
+
+var activeWaylandApp atomic.Pointer[waylandApplication]
 
 // waylandApplication coordinates the Wayland client display connection,
 // event loop, and window lifecycle.
@@ -20,11 +23,13 @@ type waylandApplication struct {
 	loop    *waylandLoop
 	globals waylandGlobals
 
-	pointer       uintptr
-	keyboard      uintptr
-	pointerFocus  *waylandWindow
-	pointerSerial uint32
-	keyboardFocus *waylandWindow
+	pointer            uintptr
+	keyboard           uintptr
+	pointerFocus       *waylandWindow
+	pointerSerial      uint32
+	keyboardFocus      *waylandWindow
+	cursorMgr          *waylandCursorManager
+	currentCursorShape uint8
 
 	xkb            *xkbAPI
 	xkbContext     uintptr
@@ -77,6 +82,7 @@ func newWaylandApplication() (*waylandApplication, error) {
 		app.close()
 		return nil, err
 	}
+	activeWaylandApp.Store(app)
 	return app, nil
 }
 
@@ -144,10 +150,21 @@ func (app *waylandApplication) handleSeatCapabilities(caps uint32) {
 	}
 }
 
+func (app *waylandApplication) hasWindows() bool {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	return len(app.windows) > 0
+}
+
 // close releases all Wayland proxies, sockets, and dynamically linked libraries.
 func (app *waylandApplication) close() {
+	activeWaylandApp.CompareAndSwap(app, nil)
 	app.teardownPointer()
 	app.teardownKeyboard()
+	if app.cursorMgr != nil {
+		app.cursorMgr.destroy(app.api)
+		app.cursorMgr = nil
+	}
 	if app.globals.compositor != 0 {
 		app.globals.destroy(app.api)
 	}

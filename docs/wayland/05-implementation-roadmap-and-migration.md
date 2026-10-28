@@ -162,7 +162,7 @@ flowchart LR
   - [x] **Task 4.3**：新建 `internal/platform/linux/wayland_scale.go`：
     - 监听 `wp_fractional_scale_v1.preferred_scale` 事件，以 120 为基准计算实际倍率；
     - 调用 `wp_viewport.set_destination` 设置逻辑尺寸，驱动 Vulkan 按照物理像素光栅化。
-  - [ ] **Task 4.4**：新建 `internal/platform/linux/wayland_cursor.go`：
+  - [x] **Task 4.4**：新建 `internal/platform/linux/wayland_cursor.go`：
     - 通过 `libwayland-cursor.so.0` 加载系统当前主题光标（Arrow, I-Beam, Hand, Resize 等）；
     - 在 `wl_pointer.enter` 时通过 `wl_pointer.set_cursor` 绑定。
   - [ ] **Task 4.5**：新建 `internal/platform/linux/wayland_data.go`：
