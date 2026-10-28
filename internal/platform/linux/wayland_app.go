@@ -5,7 +5,9 @@ package linux
 import (
 	"errors"
 	"sync"
+	"time"
 
+	"github.com/vivaui/viva/internal/input"
 	"github.com/vivaui/viva/internal/platform"
 )
 
@@ -23,6 +25,18 @@ type waylandApplication struct {
 	pointerFocus  *waylandWindow
 	pointerSerial uint32
 	keyboardFocus *waylandWindow
+
+	xkb            *xkbAPI
+	xkbContext     uintptr
+	xkbKeymap      uintptr
+	xkbState       uintptr
+	modifiers      input.Modifiers
+	repeatRate     int32
+	repeatDelay    int32
+	repeatTimer    *time.Timer
+	repeatTicker   *time.Ticker
+	repeatKey      platform.KeyEvent
+	repeatScancode uint32
 
 	mu      sync.Mutex
 	windows []*waylandWindowState
@@ -129,9 +143,6 @@ func (app *waylandApplication) handleSeatCapabilities(caps uint32) {
 		app.teardownKeyboard()
 	}
 }
-
-func (app *waylandApplication) setupKeyboard() {}
-func (app *waylandApplication) teardownKeyboard() {}
 
 // close releases all Wayland proxies, sockets, and dynamically linked libraries.
 func (app *waylandApplication) close() {
