@@ -38,3 +38,18 @@ Viva 作为以“Go 优先、GPU 原生、无 WebView、零多余捆绑、直通
 2. **零 CGO 约束（Pure Go Runtime Dynamic Linking）**：延续 Viva Linux 端全部基于 `github.com/ebitengine/purego` 动态加载系统 `.so` 的优良传统，不引入任何 gcc/cgo 编译依赖；
 3. **无感知平滑降级（Transparent Fallback）**：在不支持 Wayland 的环境下，透明降级至现有的 XCB/X11 管线，对上层应用代码保持 100% 接口兼容；
 4. **极致性能与无撕裂（Every Frame is Perfect）**：充分利用 Wayland 的原子状态提交与垂直同步时钟，彻底消除窗口缩放黑闪与中间过渡残影。
+
+---
+
+## 4. 实施阶段与当前进展
+
+详细任务拆解与自动化验收清单请参阅 [05-implementation-roadmap-and-migration.md](05-implementation-roadmap-and-migration.md)。
+
+| 阶段 | 核心任务 | 状态 | 验收与 Review |
+| :---: | :--- | :---: | :---: |
+| **Phase 1** | Vulkan 表面解耦与交换链平滑过渡 | 进行中 | 待完成 |
+| **Phase 2** | PureGo Wayland 动态加载器与协议基座 | 未开始 | 待完成 |
+| **Phase 3** | XDG-Shell 窗口控制器与首帧渲染 | 未开始 | 待完成 |
+| **Phase 4** | 完整输入、分数缩放与光标支持 | 未开始 | 待完成 |
+| **Phase 5** | 调度器整合、自动化后备与 Conformance 验证 | 未开始 | 待完成 |
+

@@ -21,25 +21,25 @@ flowchart LR
 - **阶段目标**：
   将 Vulkan 渲染核心从 XCB 硬编码表面中剥离，建立表面提供者（Surface Provider）通用抽象；同时修正现存代码中旧交换链提前销毁与 `VK_SUBOPTIMAL_KHR` 处理缺陷，为接入 Wayland 打牢地基，且保持现有所有 X11 测试 100% 通过。
 - **改动范围与涉及文件**：
-  1. 新建 `internal/platform/linux/vulkan_surface.go`：
-     - 定义 `vulkanSurfaceProvider` 接口：
-       ```go
-       type vulkanSurfaceProvider interface {
-           RequiredExtensions() []*byte
-           CreateSurface(api *vulkanAPI, instance uintptr) (uintptr, error)
-           DestroySurface(api *vulkanAPI, instance uintptr, surface uintptr)
-       }
-       ```
-  2. 新建 `internal/platform/linux/vulkan_xcb_surface.go`：
-     - 将原 `vkXcbSurfaceCreateInfo` 及其创建逻辑封装为 `xcbSurfaceProvider`；
-     - 导出构造函数 `newXcbSurfaceProvider(connection uintptr, window uint32) *xcbSurfaceProvider`。
-  3. 修改 [`internal/platform/linux/vulkan_linux.go`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/vulkan_linux.go)：
-     - 重构 `newVulkanRenderer` 签名：接收 `provider vulkanSurfaceProvider` 替代原先散落的 `connection uintptr, window uint32`；
-     - 在 `initialize()` 中通过 `provider.RequiredExtensions()` 与 `provider.CreateSurface()` 初始化通用 `renderer.surface`；
-     - 修复 [`recreateSwapchain()`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/vulkan_linux.go#L1118)：重构为先将旧句柄暂存为 `oldSwapchain`，创建新交换链时传入 `VkSwapchainCreateInfoKHR.OldSwapchain`，待新链创建成功后再执行 `vkDestroySwapchainKHR`；
-     - 修复 [`swapchainNeedsRebuild()`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/vulkan_linux.go#L179)：剥离 `vkSuboptimal`，仅保留 `vkErrorOutOfDate` 作为立即同步重建条件；`vkSuboptimal` 仅置位延迟标志 `renderer.swapchainSuboptimal = true`。
-  4. 修改 [`internal/platform/linux/window_linux.go`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/window_linux.go#L297)：
-     - 传入 `newXcbSurfaceProvider(win.connection, win.id)`，平滑对接现有 X11 窗口生命周期。
+  - [ ] **Task 1.1**：新建 `internal/platform/linux/vulkan_surface.go`：
+    - 定义 `vulkanSurfaceProvider` 接口：
+      ```go
+      type vulkanSurfaceProvider interface {
+          RequiredExtensions() []*byte
+          CreateSurface(api *vulkanAPI, instance uintptr) (uintptr, error)
+          DestroySurface(api *vulkanAPI, instance uintptr, surface uintptr)
+      }
+      ```
+  - [ ] **Task 1.2**：新建 `internal/platform/linux/vulkan_xcb_surface.go`：
+    - 将原 `vkXcbSurfaceCreateInfo` 及其创建逻辑封装为 `xcbSurfaceProvider`；
+    - 导出构造函数 `newXcbSurfaceProvider(connection uintptr, window uint32) *xcbSurfaceProvider`。
+  - [ ] **Task 1.3**：修改 [`internal/platform/linux/vulkan_linux.go`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/vulkan_linux.go)：
+    - 重构 `newVulkanRenderer` 签名：接收 `provider vulkanSurfaceProvider` 替代原先散落的 `connection uintptr, window uint32`；
+    - 在 `initialize()` 中通过 `provider.RequiredExtensions()` 与 `provider.CreateSurface()` 初始化通用 `renderer.surface`；
+    - 修复 [`recreateSwapchain()`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/vulkan_linux.go#L1118)：重构为先将旧句柄暂存为 `oldSwapchain`，创建新交换链时传入 `VkSwapchainCreateInfoKHR.OldSwapchain`，待新链创建成功后再执行 `vkDestroySwapchainKHR`；
+    - 修复 [`swapchainNeedsRebuild()`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/vulkan_linux.go#L179)：剥离 `vkSuboptimal`，仅保留 `vkErrorOutOfDate` 作为立即同步重建条件；`vkSuboptimal` 仅置位延迟标志 `renderer.swapchainSuboptimal = true`。
+  - [ ] **Task 1.4**：修改 [`internal/platform/linux/window_linux.go`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/window_linux.go#L297)：
+    - 传入 `newXcbSurfaceProvider(win.connection, win.id)`，平滑对接现有 X11 窗口生命周期。
 
 #### 【Phase 1 验收清单】
 
@@ -66,23 +66,23 @@ flowchart LR
 - **阶段目标**：
   在纯 Go 环境（零 CGO）下，通过 `purego` 成功动态加载 `libwayland-client.so.0`，建立 UNIX Socket 通信，完成全局注册表（Registry）的枚举绑定，并跑通基于 `poll` 的单线程事件循环。
 - **改动范围与涉及文件**：
-  1. 新建 `internal/platform/linux/wayland_client.go`：
-     - 通过 `purego.Dlopen("libwayland-client.so.0", purego.RTLD_NOW|purego.RTLD_LOCAL)` 动态加载；
-     - 绑定核心函数：`wl_display_connect`, `wl_display_disconnect`, `wl_display_get_fd`, `wl_display_dispatch`, `wl_display_dispatch_pending`, `wl_display_flush`, `wl_display_roundtrip`, `wl_proxy_marshal_flags`, `wl_proxy_add_listener`, `wl_proxy_destroy`。
-  2. 新建 `internal/platform/linux/wayland_abi.go`：
-     - 定义 Wayland C ABI 结构体：`wl_interface`, `wl_message`, `wl_array`, `wl_fixed_t`；
-     - 实现 `purego.NewCallback` 跨语言监听器包装器与 GC 保护（`runtime.Pinner`）。
-  3. 新建 `internal/platform/linux/wayland_registry.go`：
-     - 监听 `wl_registry.global` 事件，解析并绑定核心全局协议对象：
-       - `wl_compositor`（版本 $\ge 4$）
-       - `xdg_wm_base`（版本 $\ge 1$）
-       - `wl_seat`（版本 $\ge 5$）
-       - `wl_shm`（版本 $\ge 1$）
-       - `zxdg_decoration_manager_v1`（可选，版本 $\ge 1$）
-       - `wp_fractional_scale_manager_v1`（可选，版本 $\ge 1$）
-       - `wp_viewporter`（可选，版本 $\ge 1$）
-  4. 新建 `internal/platform/linux/wayland_loop.go`：
-     - 整合 `libc.poll`，在同一个循环中管理 Wayland 连接 FD、D-Bus 连接 FD 以及跨协程 Waker `eventfd`。
+  - [ ] **Task 2.1**：新建 `internal/platform/linux/wayland_client.go`：
+    - 通过 `purego.Dlopen("libwayland-client.so.0", purego.RTLD_NOW|purego.RTLD_LOCAL)` 动态加载；
+    - 绑定核心函数：`wl_display_connect`, `wl_display_disconnect`, `wl_display_get_fd`, `wl_display_dispatch`, `wl_display_dispatch_pending`, `wl_display_flush`, `wl_display_roundtrip`, `wl_proxy_marshal_flags`, `wl_proxy_add_listener`, `wl_proxy_destroy`。
+  - [ ] **Task 2.2**：新建 `internal/platform/linux/wayland_abi.go`：
+    - 定义 Wayland C ABI 结构体：`wl_interface`, `wl_message`, `wl_array`, `wl_fixed_t`；
+    - 实现 `purego.NewCallback` 跨语言监听器包装器与 GC 保护（`runtime.Pinner`）。
+  - [ ] **Task 2.3**：新建 `internal/platform/linux/wayland_registry.go`：
+    - 监听 `wl_registry.global` 事件，解析并绑定核心全局协议对象：
+      - `wl_compositor`（版本 $\ge 4$）
+      - `xdg_wm_base`（版本 $\ge 1$）
+      - `wl_seat`（版本 $\ge 5$）
+      - `wl_shm`（版本 $\ge 1$）
+      - `zxdg_decoration_manager_v1`（可选，版本 $\ge 1$）
+      - `wp_fractional_scale_manager_v1`（可选，版本 $\ge 1$）
+      - `wp_viewporter`（可选，版本 $\ge 1$）
+  - [ ] **Task 2.4**：新建 `internal/platform/linux/wayland_loop.go`：
+    - 整合 `libc.poll`，在同一个循环中管理 Wayland 连接 FD、D-Bus 连接 FD 以及跨协程 Waker `eventfd`。
 
 #### 【Phase 2 验收清单】
 
@@ -113,21 +113,21 @@ flowchart LR
 - **阶段目标**：
   实现 Wayland 原生表面提供者，基于 XDG-Shell 状态机管理顶层窗口生命周期，打通首帧 Vulkan 呈现管道，并在拖拽调整大小时彻底终结黑白频闪与画面撕裂。
 - **改动范围与涉及文件**：
-  1. 新建 `internal/platform/linux/vulkan_wayland_surface.go`：
-     - 实现 `waylandSurfaceProvider`；
-     - 动态加载 `vkCreateWaylandSurfaceKHR`，将 `wl_display` 与 `wl_surface` 包装为 Vulkan 原生表面。
-  2. 新建 `internal/platform/linux/window_wayland.go`：
-     - 实现 `waylandWindowState` 与 `waylandWindow`：
-       - 调用 `wl_compositor.create_surface` 获取底层表面；
-       - 调用 `xdg_wm_base.get_xdg_surface` 并附加监听器处理 `configure(serial)`；
-       - 调用 `xdg_surface.get_toplevel` 设置标题、App ID、最小尺寸与监听器；
-     - 实现原子提交流程：`xdg_surface.ack_configure(serial)` $\to$ `wl_surface.attach(buffer)` $\to$ `wl_surface.commit()`。
-  3. 新建 `internal/platform/linux/wayland_frame.go`：
-     - 接入 `wl_surface.frame` 回调驱动的帧时钟，实现垂直同步与反向背压控制。
-  4. 支持 Viva 窗口模式：
-     - `WindowTitled`：通过 `zxdg_decoration_manager_v1` 协商服务端装饰（SSD）；
-     - `WindowFrameless`：外边距 Margin 设为 0；
-     - `WindowCustomTitlebar`：调用 `xdg_toplevel.move` 与 `xdg_toplevel.resize` 移交原生拖动。
+  - [ ] **Task 3.1**：新建 `internal/platform/linux/vulkan_wayland_surface.go`：
+    - 实现 `waylandSurfaceProvider`；
+    - 动态加载 `vkCreateWaylandSurfaceKHR`，将 `wl_display` 与 `wl_surface` 包装为 Vulkan 原生表面。
+  - [ ] **Task 3.2**：新建 `internal/platform/linux/window_wayland.go`：
+    - 实现 `waylandWindowState` 与 `waylandWindow`：
+      - 调用 `wl_compositor.create_surface` 获取底层表面；
+      - 调用 `xdg_wm_base.get_xdg_surface` 并附加监听器处理 `configure(serial)`；
+      - 调用 `xdg_surface.get_toplevel` 设置标题、App ID、最小尺寸与监听器；
+    - 实现原子提交流程：`xdg_surface.ack_configure(serial)` $\to$ `wl_surface.attach(buffer)` $\to$ `wl_surface.commit()`。
+  - [ ] **Task 3.3**：新建 `internal/platform/linux/wayland_frame.go`：
+    - 接入 `wl_surface.frame` 回调驱动的帧时钟，实现垂直同步与反向背压控制。
+  - [ ] **Task 3.4**：支持 Viva 窗口模式：
+    - `WindowTitled`：通过 `zxdg_decoration_manager_v1` 协商服务端装饰（SSD）；
+    - `WindowFrameless`：外边距 Margin 设为 0；
+    - `WindowCustomTitlebar`：调用 `xdg_toplevel.move` 与 `xdg_toplevel.resize` 移交原生拖动。
 
 #### 【Phase 3 验收清单】
 
@@ -158,21 +158,21 @@ flowchart LR
 - **阶段目标**：
   接入 Wayland 现代输入架构（指针、键盘、滚轮），实现高精点对点分数缩放，提供系统标准光标与剪贴板互通，达到日常生产力可用状态。
 - **改动范围与涉及文件**：
-  1. 新建 `internal/platform/linux/wayland_pointer.go`：
-     - 监听 `wl_pointer` 的 `enter`, `leave`, `motion`, `button`, `axis`, `axis_discrete`, `axis_v120`；
-     - 转换 24.8 定点数相对坐标，送入 Viva 现有的 `eventRouter`。
-  2. 新建 `internal/platform/linux/wayland_keyboard.go`：
-     - 通过 `purego` 动态加载 `libxkbcommon.so.0`；
-     - 解析 `wl_keyboard.keymap` 传入的共享内存描述符，构建 `xkb_keymap` 与 `xkb_state`；
-     - 将键盘按键实时转换为标准 XKB Keysym，复用已有的 [`keysym.go`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/keysym.go) 映射表。
-  3. 新建 `internal/platform/linux/wayland_scale.go`：
-     - 监听 `wp_fractional_scale_v1.preferred_scale` 事件，以 120 为基准计算实际倍率；
-     - 调用 `wp_viewport.set_destination` 设置逻辑尺寸，驱动 Vulkan 按照物理像素光栅化。
-  4. 新建 `internal/platform/linux/wayland_cursor.go`：
-     - 通过 `libwayland-cursor.so.0` 加载系统当前主题光标（Arrow, I-Beam, Hand, Resize 等）；
-     - 在 `wl_pointer.enter` 时通过 `wl_pointer.set_cursor` 绑定。
-  5. 新建 `internal/platform/linux/wayland_data.go`：
-     - 接入 `wl_data_device_manager`，打通文本复制粘贴（Clipboard）与文件拖拽（`OnFileDrop`）。
+  - [ ] **Task 4.1**：新建 `internal/platform/linux/wayland_pointer.go`：
+    - 监听 `wl_pointer` 的 `enter`, `leave`, `motion`, `button`, `axis`, `axis_discrete`, `axis_v120`；
+    - 转换 24.8 定点数相对坐标，送入 Viva 现有的 `eventRouter`。
+  - [ ] **Task 4.2**：新建 `internal/platform/linux/wayland_keyboard.go`：
+    - 通过 `purego` 动态加载 `libxkbcommon.so.0`；
+    - 解析 `wl_keyboard.keymap` 传入的共享内存描述符，构建 `xkb_keymap` 与 `xkb_state`；
+    - 将键盘按键实时转换为标准 XKB Keysym，复用已有的 [`keysym.go`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/keysym.go) 映射表。
+  - [ ] **Task 4.3**：新建 `internal/platform/linux/wayland_scale.go`：
+    - 监听 `wp_fractional_scale_v1.preferred_scale` 事件，以 120 为基准计算实际倍率；
+    - 调用 `wp_viewport.set_destination` 设置逻辑尺寸，驱动 Vulkan 按照物理像素光栅化。
+  - [ ] **Task 4.4**：新建 `internal/platform/linux/wayland_cursor.go`：
+    - 通过 `libwayland-cursor.so.0` 加载系统当前主题光标（Arrow, I-Beam, Hand, Resize 等）；
+    - 在 `wl_pointer.enter` 时通过 `wl_pointer.set_cursor` 绑定。
+  - [ ] **Task 4.5**：新建 `internal/platform/linux/wayland_data.go`：
+    - 接入 `wl_data_device_manager`，打通文本复制粘贴（Clipboard）与文件拖拽（`OnFileDrop`）。
 
 #### 【Phase 4 验收清单】
 
@@ -206,12 +206,12 @@ flowchart LR
 - **阶段目标**：
   确立 Wayland 为默认首选后端，实现无缝透明的 X11 降级后备，通过 Viva 平台一致性自动化测试规范（Conformance Suite）。
 - **改动范围与涉及文件**：
-  1. 新建 `internal/platform/linux/backend_select.go`：
-     - 实现 `selectBackend()` 探测逻辑（优先环境变量 `VIVA_LINUX_BACKEND`，其次检测 `WAYLAND_DISPLAY` 与 Socket，最后回退 `DISPLAY`）。
-  2. 修改 [`app/backend_linux.go`](file:///Volumes/HIKSEMI/code/viva/app/backend_linux.go)：
-     - 对接调度器，向应用层暴露统一的 `runNative` 与 `runNativeApplication`。
-  3. 运行一致性套件：
-     - 运行 [`cmd/viva-conformance`](file:///Volumes/HIKSEMI/code/viva/cmd/viva-conformance/) 验证全套生命周期契约。
+  - [ ] **Task 5.1**：新建 `internal/platform/linux/backend_select.go`：
+    - 实现 `selectBackend()` 探测逻辑（优先环境变量 `VIVA_LINUX_BACKEND`，其次检测 `WAYLAND_DISPLAY` 与 Socket，最后回退 `DISPLAY`）。
+  - [ ] **Task 5.2**：修改 [`app/backend_linux.go`](file:///Volumes/HIKSEMI/code/viva/app/backend_linux.go)：
+    - 对接调度器，向应用层暴露统一的 `runNative` 与 `runNativeApplication`。
+  - [ ] **Task 5.3**：运行一致性套件与集成测试：
+    - 运行 [`cmd/viva-conformance`](file:///Volumes/HIKSEMI/code/viva/cmd/viva-conformance/) 验证全套生命周期契约。
 
 #### 【Phase 5 验收清单】
 
