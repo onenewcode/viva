@@ -30,7 +30,7 @@ flowchart LR
           DestroySurface(api *vulkanAPI, instance uintptr, surface uintptr)
       }
       ```
-  - [ ] **Task 1.2**：新建 `internal/platform/linux/vulkan_xcb_surface.go`：
+  - [x] **Task 1.2**：新建 `internal/platform/linux/vulkan_xcb_surface.go`：
     - 将原 `vkXcbSurfaceCreateInfo` 及其创建逻辑封装为 `xcbSurfaceProvider`；
     - 导出构造函数 `newXcbSurfaceProvider(connection uintptr, window uint32) *xcbSurfaceProvider`。
   - [ ] **Task 1.3**：修改 [`internal/platform/linux/vulkan_linux.go`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/vulkan_linux.go)：
