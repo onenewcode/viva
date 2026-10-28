@@ -18,6 +18,12 @@ type waylandApplication struct {
 	loop    *waylandLoop
 	globals waylandGlobals
 
+	pointer       uintptr
+	keyboard      uintptr
+	pointerFocus  *waylandWindow
+	pointerSerial uint32
+	keyboardFocus *waylandWindow
+
 	mu      sync.Mutex
 	windows []*waylandWindowState
 }
@@ -52,6 +58,7 @@ func newWaylandApplication() (*waylandApplication, error) {
 		display: display,
 		loop:    loop,
 	}
+	app.globals.onCapabilities = app.handleSeatCapabilities
 	if err := app.globals.bindGlobals(api, display); err != nil {
 		app.close()
 		return nil, err
@@ -96,8 +103,40 @@ func (app *waylandApplication) removeWindow(state *waylandWindowState) {
 	}
 }
 
+func (app *waylandApplication) findWindowBySurface(surface uintptr) *waylandWindow {
+	if surface == 0 {
+		return nil
+	}
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	for _, state := range app.windows {
+		if state.win != nil && state.win.surface == surface {
+			return state.win
+		}
+	}
+	return nil
+}
+
+func (app *waylandApplication) handleSeatCapabilities(caps uint32) {
+	if caps&wlSeatCapabilityPointer != 0 {
+		app.setupPointer()
+	} else {
+		app.teardownPointer()
+	}
+	if caps&wlSeatCapabilityKeyboard != 0 {
+		app.setupKeyboard()
+	} else {
+		app.teardownKeyboard()
+	}
+}
+
+func (app *waylandApplication) setupKeyboard() {}
+func (app *waylandApplication) teardownKeyboard() {}
+
 // close releases all Wayland proxies, sockets, and dynamically linked libraries.
 func (app *waylandApplication) close() {
+	app.teardownPointer()
+	app.teardownKeyboard()
 	if app.globals.compositor != 0 {
 		app.globals.destroy(app.api)
 	}

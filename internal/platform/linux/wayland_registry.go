@@ -74,6 +74,20 @@ const (
 	xdgToplevelStateResizing   uint32 = 3
 	xdgToplevelStateActivated  uint32 = 4
 	xdgToplevelStateSuspended  uint32 = 5
+
+	wlSeatGetPointerOpcode  = 0
+	wlSeatGetKeyboardOpcode = 1
+	wlSeatGetTouchOpcode    = 2
+	wlSeatReleaseOpcode     = 3
+
+	wlPointerSetCursorOpcode = 0
+	wlPointerReleaseOpcode   = 1
+
+	wlKeyboardReleaseOpcode = 0
+
+	wlSeatCapabilityPointer  uint32 = 1
+	wlSeatCapabilityKeyboard uint32 = 2
+	wlSeatCapabilityTouch    uint32 = 4
 )
 
 // String constants for Wayland interfaces
@@ -83,6 +97,8 @@ var (
 	strWlCompositor               = []byte("wl_compositor\x00")
 	strWlShm                      = []byte("wl_shm\x00")
 	strWlSeat                     = []byte("wl_seat\x00")
+	strWlPointer                  = []byte("wl_pointer\x00")
+	strWlKeyboard                 = []byte("wl_keyboard\x00")
 	strWlSurface                  = []byte("wl_surface\x00")
 	strXdgWmBase                  = []byte("xdg_wm_base\x00")
 	strXdgSurface                 = []byte("xdg_surface\x00")
@@ -111,6 +127,17 @@ var (
 	sigO     = []byte("?o\x00")
 	sigOII   = []byte("?oii\x00")
 	sigI     = []byte("i\x00")
+	sigUOII  = []byte("uoii\x00")
+	sigUOFF  = []byte("uoff\x00")
+	sigUO    = []byte("uo\x00")
+	sigUFF   = []byte("uff\x00")
+	sigUUUU  = []byte("uuuu\x00")
+	sigUUF   = []byte("uuf\x00")
+	sigUU    = []byte("uu\x00")
+	sigUI    = []byte("ui\x00")
+	sigUHU   = []byte("uhu\x00")
+	sigUOA   = []byte("uoa\x00")
+	sigUUUUU = []byte("uuuuu\x00")
 )
 
 // Core static wlInterface definitions for extension protocols (and fallback)
@@ -141,9 +168,68 @@ var (
 		Version: 1,
 	}
 
+	wlSeatRequests = [4]wlMessage{
+		{Name: &[]byte("get_pointer\x00")[0], Signature: &sigN[0]},
+		{Name: &[]byte("get_keyboard\x00")[0], Signature: &sigN[0]},
+		{Name: &[]byte("get_touch\x00")[0], Signature: &sigN[0]},
+		{Name: &[]byte("release\x00")[0], Signature: &sigEmpty[0]},
+	}
+	wlSeatEvents = [2]wlMessage{
+		{Name: &[]byte("capabilities\x00")[0], Signature: &sigU[0]},
+		{Name: &[]byte("name\x00")[0], Signature: &sigS[0]},
+	}
 	wlSeatInterface = wlInterface{
-		Name:    &strWlSeat[0],
-		Version: 5,
+		Name:        &strWlSeat[0],
+		Version:     5,
+		MethodCount: 4,
+		Methods:     &wlSeatRequests[0],
+		EventCount:  2,
+		Events:      &wlSeatEvents[0],
+	}
+
+	wlPointerRequests = [2]wlMessage{
+		{Name: &[]byte("set_cursor\x00")[0], Signature: &sigUOII[0]},
+		{Name: &[]byte("release\x00")[0], Signature: &sigEmpty[0]},
+	}
+	wlPointerEvents = [10]wlMessage{
+		{Name: &[]byte("enter\x00")[0], Signature: &sigUOFF[0]},
+		{Name: &[]byte("leave\x00")[0], Signature: &sigUO[0]},
+		{Name: &[]byte("motion\x00")[0], Signature: &sigUFF[0]},
+		{Name: &[]byte("button\x00")[0], Signature: &sigUUUU[0]},
+		{Name: &[]byte("axis\x00")[0], Signature: &sigUUF[0]},
+		{Name: &[]byte("frame\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("axis_source\x00")[0], Signature: &sigU[0]},
+		{Name: &[]byte("axis_stop\x00")[0], Signature: &sigUU[0]},
+		{Name: &[]byte("axis_discrete\x00")[0], Signature: &sigUI[0]},
+		{Name: &[]byte("axis_value120\x00")[0], Signature: &sigUI[0]},
+	}
+	wlPointerInterface = wlInterface{
+		Name:        &strWlPointer[0],
+		Version:     8,
+		MethodCount: 2,
+		Methods:     &wlPointerRequests[0],
+		EventCount:  10,
+		Events:      &wlPointerEvents[0],
+	}
+
+	wlKeyboardRequests = [1]wlMessage{
+		{Name: &[]byte("release\x00")[0], Signature: &sigEmpty[0]},
+	}
+	wlKeyboardEvents = [6]wlMessage{
+		{Name: &[]byte("keymap\x00")[0], Signature: &sigUHU[0]},
+		{Name: &[]byte("enter\x00")[0], Signature: &sigUOA[0]},
+		{Name: &[]byte("leave\x00")[0], Signature: &sigUO[0]},
+		{Name: &[]byte("key\x00")[0], Signature: &sigUUUU[0]},
+		{Name: &[]byte("modifiers\x00")[0], Signature: &sigUUUUU[0]},
+		{Name: &[]byte("repeat_info\x00")[0], Signature: &sigII[0]},
+	}
+	wlKeyboardInterface = wlInterface{
+		Name:        &strWlKeyboard[0],
+		Version:     4,
+		MethodCount: 1,
+		Methods:     &wlKeyboardRequests[0],
+		EventCount:  6,
+		Events:      &wlKeyboardEvents[0],
 	}
 
 	wlSurfaceRequests = [10]wlMessage{
@@ -346,6 +432,7 @@ var (
 	registryListenerOnce sync.Once
 	rawRegistryListener  [2]uintptr
 	rawXdgWmBaseListener [1]uintptr
+	rawSeatListener      [2]uintptr
 	pinnerRegistry       runtime.Pinner
 )
 
@@ -377,8 +464,21 @@ func initRegistryListeners() {
 			}
 		})
 
+		rawSeatListener[0] = purego.NewCallback(func(data unsafe.Pointer, seat uintptr, caps uint32) {
+			if data == nil {
+				return
+			}
+			g := (*waylandGlobals)(data)
+			if g.onCapabilities != nil {
+				g.onCapabilities(caps)
+			}
+		})
+		rawSeatListener[1] = purego.NewCallback(func(data unsafe.Pointer, seat uintptr, name *byte) {
+		})
+
 		pinnerRegistry.Pin(&rawRegistryListener)
 		pinnerRegistry.Pin(&rawXdgWmBaseListener)
+		pinnerRegistry.Pin(&rawSeatListener)
 	})
 }
 
@@ -402,6 +502,8 @@ type waylandGlobals struct {
 	scaleMgrVer      uint32
 	viewporter       uintptr
 	viewporterVer    uint32
+
+	onCapabilities func(caps uint32)
 }
 
 func (api *waylandAPI) getInterface(name string, fallback *wlInterface) uintptr {
@@ -464,6 +566,10 @@ func (g *waylandGlobals) handleGlobal(registry uintptr, name uint32, iface strin
 			ifacePtr := g.api.getInterface("wl_seat_interface", &wlSeatInterface)
 			g.seat = g.api.bindRegistry(registry, name, ifacePtr, &strWlSeat[0], ver)
 			g.seatVer = ver
+			if g.seat != 0 {
+				initRegistryListeners()
+				g.api.proxyAddListener(g.seat, uintptr(unsafe.Pointer(&rawSeatListener[0])), unsafe.Pointer(g))
+			}
 		}
 	case "wl_shm":
 		ver := uint32(1)
@@ -766,5 +872,41 @@ func (api *waylandAPI) decorationDestroy(decoration uintptr) {
 	if api != nil && decoration != 0 {
 		api.proxyMarshalFlags(decoration, zxdgToplevelDecorationV1DestroyOpcode, 0, 1, 0)
 		api.proxyDestroy(decoration)
+	}
+}
+
+func (api *waylandAPI) seatGetPointer(seat uintptr) uintptr {
+	if api == nil || seat == 0 {
+		return 0
+	}
+	iface := api.getInterface("wl_pointer_interface", &wlPointerInterface)
+	return api.proxyMarshalFlags(seat, wlSeatGetPointerOpcode, iface, 1, 0, uintptr(0))
+}
+
+func (api *waylandAPI) pointerSetCursor(pointer uintptr, serial uint32, surface uintptr, hotspotX, hotspotY int32) {
+	if api != nil && pointer != 0 {
+		api.proxyMarshalFlags(pointer, wlPointerSetCursorOpcode, 0, 1, 0, serial, surface, hotspotX, hotspotY)
+	}
+}
+
+func (api *waylandAPI) pointerRelease(pointer uintptr) {
+	if api != nil && pointer != 0 {
+		api.proxyMarshalFlags(pointer, wlPointerReleaseOpcode, 0, 1, 0)
+		api.proxyDestroy(pointer)
+	}
+}
+
+func (api *waylandAPI) seatGetKeyboard(seat uintptr) uintptr {
+	if api == nil || seat == 0 {
+		return 0
+	}
+	iface := api.getInterface("wl_keyboard_interface", &wlKeyboardInterface)
+	return api.proxyMarshalFlags(seat, wlSeatGetKeyboardOpcode, iface, 1, 0, uintptr(0))
+}
+
+func (api *waylandAPI) keyboardRelease(keyboard uintptr) {
+	if api != nil && keyboard != 0 {
+		api.proxyMarshalFlags(keyboard, wlKeyboardReleaseOpcode, 0, 1, 0)
+		api.proxyDestroy(keyboard)
 	}
 }

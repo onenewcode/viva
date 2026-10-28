@@ -93,6 +93,43 @@ func (router eventRouter) pointerExit() error {
 	return router.presentFrame(frame, err)
 }
 
+func (router eventRouter) dispatchPointer(event platform.PointerEvent) error {
+	if router.config.OnPointer != nil {
+		frame, err := router.config.OnPointer(event)
+		if err := router.presentFrame(frame, err); err != nil {
+			return err
+		}
+	}
+	if router.text != nil {
+		frame, handled, err := router.text.pointer(event)
+		if handled || err != nil {
+			return router.presentFrame(frame, err)
+		}
+	}
+	return nil
+}
+
+func (router eventRouter) dispatchScroll(event platform.ScrollEvent) error {
+	if router.config.OnScroll == nil {
+		return nil
+	}
+	frame, err := router.config.OnScroll(event)
+	return router.presentFrame(frame, err)
+}
+
+func (router eventRouter) dispatchKey(keyEvent platform.KeyEvent) error {
+	if router.config.OnShortcut != nil && platform.ShortcutCandidate(keyEvent) {
+		frame, handled, err := router.config.OnShortcut(keyEvent)
+		if err := router.presentFrame(frame, err); err != nil {
+			return err
+		}
+		if handled {
+			return nil
+		}
+	}
+	return router.deliverKey(keyEvent)
+}
+
 func (router eventRouter) key(keymap *xcbKeymap, event *xcbInputEvent, repeat bool) error {
 	key := keymap.key(event.Detail)
 	modifiers := xcbModifiers(event.State)

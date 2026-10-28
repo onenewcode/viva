@@ -113,6 +113,9 @@ type waylandWindow struct {
 	hidden               bool
 	closed               atomic.Bool
 
+	pointerX, pointerY float32
+	lastClickTime      uint32
+
 	pinner runtime.Pinner
 	state  *waylandWindowState
 }

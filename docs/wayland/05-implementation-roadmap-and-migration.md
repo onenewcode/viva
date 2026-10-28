@@ -152,7 +152,7 @@ flowchart LR
 - **阶段目标**：
   接入 Wayland 现代输入架构（指针、键盘、滚轮），实现高精点对点分数缩放，提供系统标准光标与剪贴板互通，达到日常生产力可用状态。
 - **改动范围与涉及文件**：
-  - [ ] **Task 4.1**：新建 `internal/platform/linux/wayland_pointer.go`：
+  - [x] **Task 4.1**：新建 `internal/platform/linux/wayland_pointer.go`：
     - 监听 `wl_pointer` 的 `enter`, `leave`, `motion`, `button`, `axis`, `axis_discrete`, `axis_v120`；
     - 转换 24.8 定点数相对坐标，送入 Viva 现有的 `eventRouter`。
   - [ ] **Task 4.2**：新建 `internal/platform/linux/wayland_keyboard.go`：
