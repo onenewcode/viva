@@ -21,7 +21,7 @@ flowchart LR
 - **阶段目标**：
   将 Vulkan 渲染核心从 XCB 硬编码表面中剥离，建立表面提供者（Surface Provider）通用抽象；同时修正现存代码中旧交换链提前销毁与 `VK_SUBOPTIMAL_KHR` 处理缺陷，为接入 Wayland 打牢地基，且保持现有所有 X11 测试 100% 通过。
 - **改动范围与涉及文件**：
-  - [ ] **Task 1.1**：新建 `internal/platform/linux/vulkan_surface.go`：
+  - [x] **Task 1.1**：新建 `internal/platform/linux/vulkan_surface.go`：
     - 定义 `vulkanSurfaceProvider` 接口：
       ```go
       type vulkanSurfaceProvider interface {
