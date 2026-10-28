@@ -49,6 +49,7 @@ func TestNativeStructureABI(t *testing.T) {
 		{"VkApplicationInfo", unsafe.Sizeof(vkApplicationInfo{}), 48},
 		{"VkInstanceCreateInfo", unsafe.Sizeof(vkInstanceCreateInfo{}), 64},
 		{"VkXcbSurfaceCreateInfoKHR", unsafe.Sizeof(vkXcbSurfaceCreateInfo{}), 40},
+		{"VkWaylandSurfaceCreateInfoKHR", unsafe.Sizeof(vkWaylandSurfaceCreateInfo{}), 40},
 		{"VkQueueFamilyProperties", unsafe.Sizeof(vkQueueFamilyProperties{}), 24},
 		{"VkDeviceQueueCreateInfo", unsafe.Sizeof(vkDeviceQueueCreateInfo{}), 40},
 		{"VkDeviceCreateInfo", unsafe.Sizeof(vkDeviceCreateInfo{}), 72},

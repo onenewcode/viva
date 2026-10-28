@@ -112,7 +112,7 @@ flowchart LR
 - **阶段目标**：
   实现 Wayland 原生表面提供者，基于 XDG-Shell 状态机管理顶层窗口生命周期，打通首帧 Vulkan 呈现管道，并在拖拽调整大小时彻底终结黑白频闪与画面撕裂。
 - **改动范围与涉及文件**：
-  - [ ] **Task 3.1**：新建 `internal/platform/linux/vulkan_wayland_surface.go`：
+  - [x] **Task 3.1**：新建 `internal/platform/linux/vulkan_wayland_surface.go`：
     - 实现 `waylandSurfaceProvider`；
     - 动态加载 `vkCreateWaylandSurfaceKHR`，将 `wl_display` 与 `wl_surface` 包装为 Vulkan 原生表面。
   - [ ] **Task 3.2**：新建 `internal/platform/linux/window_wayland.go`：
