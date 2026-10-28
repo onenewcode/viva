@@ -248,6 +248,89 @@ func TestWaylandFileDropInteraction(t *testing.T) {
 	}
 }
 
+func TestWaylandDataOfferProxyCleanupOnSelectionChange(t *testing.T) {
+	var destroyedProxies []uintptr
+
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			if opcode == wlDataOfferDestroyOpcode {
+				destroyedProxies = append(destroyedProxies, proxy)
+			}
+			return 0
+		},
+		proxyDestroy: func(proxy uintptr) {},
+	}
+
+	app := &waylandApplication{
+		api: api,
+		dataOffers: map[uintptr]*waylandDataOffer{
+			501: {proxy: 501},
+			502: {proxy: 502},
+		},
+	}
+	initDataListeners()
+
+	// Initial selection with offer 501
+	puregoInvokeCallback3(rawDataDeviceListener[5], unsafe.Pointer(app), 300, 501)
+	if app.clipboardOffer == nil || app.clipboardOffer.proxy != 501 {
+		t.Fatalf("expected clipboardOffer 501")
+	}
+
+	// New selection with offer 502 -> should destroy superseded offer 501
+	puregoInvokeCallback3(rawDataDeviceListener[5], unsafe.Pointer(app), 300, 502)
+	if app.clipboardOffer == nil || app.clipboardOffer.proxy != 502 {
+		t.Fatalf("expected clipboardOffer 502")
+	}
+
+	if len(destroyedProxies) != 1 || destroyedProxies[0] != 501 {
+		t.Fatalf("expected destroyed proxy [501], got %v", destroyedProxies)
+	}
+	if _, exists := app.dataOffers[501]; exists {
+		t.Fatalf("expected offer 501 to be removed from app.dataOffers")
+	}
+}
+
+func TestWaylandDataOfferFinishVersionGuard(t *testing.T) {
+	var finishCalled bool
+
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			if opcode == wlDataOfferFinishOpcode {
+				finishCalled = true
+			}
+			return 0
+		},
+	}
+
+	// 1. Ver < 3 (e.g. version 2) -> must NOT call finish
+	app := &waylandApplication{
+		api: api,
+		globals: waylandGlobals{
+			dataDeviceManagerVer: 2,
+		},
+	}
+	if app.globals.dataDeviceManagerVer >= 3 {
+		app.api.dataOfferFinish(601)
+	}
+	if finishCalled {
+		t.Fatal("dataOfferFinish should not be called when dataDeviceManagerVer < 3")
+	}
+
+	// 2. Ver >= 3 -> must call finish
+	app.globals.dataDeviceManagerVer = 3
+	if app.globals.dataDeviceManagerVer >= 3 {
+		app.api.dataOfferFinish(601)
+	}
+	if !finishCalled {
+		t.Fatal("expected dataOfferFinish to be called when dataDeviceManagerVer >= 3")
+	}
+}
+
+func puregoInvokeCallback3(fn uintptr, a1 unsafe.Pointer, a2 uintptr, a3 uintptr) {
+	f := *(*func(unsafe.Pointer, uintptr, uintptr))(unsafe.Pointer(&fn))
+	f(a1, a2, a3)
+}
+
 // Helpers to invoke raw PureGo callbacks in testing
 func puregoInvokeCallback2(fn uintptr, a1 unsafe.Pointer, a2 uintptr) {
 	f := *(*func(unsafe.Pointer, uintptr))(unsafe.Pointer(&fn))

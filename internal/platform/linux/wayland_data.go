@@ -139,6 +139,13 @@ func initDataListeners() {
 			app.mu.Lock()
 			drag := app.dragState
 			app.dragState = nil
+			if drag != nil && drag.offer != nil {
+				isClipboard := (app.clipboardOffer != nil && app.clipboardOffer.proxy == drag.offer.proxy)
+				if !isClipboard && app.api != nil {
+					app.api.dataOfferDestroy(drag.offer.proxy)
+					delete(app.dataOffers, drag.offer.proxy)
+				}
+			}
 			app.mu.Unlock()
 
 			if drag != nil && drag.win != nil && drag.win.state != nil && drag.win.state.config.OnFileDrop != nil {
@@ -192,6 +199,15 @@ func initDataListeners() {
 			}
 			win := drag.win
 			if drag.offer == nil || !drag.offer.hasMime("text/uri-list") {
+				if drag.offer != nil && app.api != nil {
+					app.mu.Lock()
+					isClipboard := (app.clipboardOffer != nil && app.clipboardOffer.proxy == drag.offer.proxy)
+					if !isClipboard {
+						app.api.dataOfferDestroy(drag.offer.proxy)
+						delete(app.dataOffers, drag.offer.proxy)
+					}
+					app.mu.Unlock()
+				}
 				return
 			}
 
@@ -199,30 +215,68 @@ func initDataListeners() {
 			if err != nil {
 				return
 			}
-			if app.api != nil {
-				app.api.dataOfferReceive(drag.offer.proxy, "text/uri-list", int32(w.Fd()))
-				_ = w.Close()
-				data, readErr := io.ReadAll(r)
+			if app.api == nil {
 				_ = r.Close()
-				app.api.dataOfferFinish(drag.offer.proxy)
-				if readErr == nil {
-					paths := parseURIList(string(data))
-					if len(paths) > 0 && win.state != nil && win.state.config.OnFileDrop != nil {
-						frame, taken, dropErr := win.state.config.OnFileDrop(platform.FileDropEvent{
+				_ = w.Close()
+				return
+			}
+
+			app.api.dataOfferReceive(drag.offer.proxy, "text/uri-list", int32(w.Fd()))
+			_ = w.Close()
+			if app.display != 0 {
+				app.api.displayFlush(app.display)
+			}
+
+			go func(pipeR *os.File, offerProxy uintptr, dragX, dragY float32, targetWin *waylandWindow) {
+				defer pipeR.Close()
+
+				type dropResult struct {
+					data []byte
+					err  error
+				}
+				ch := make(chan dropResult, 1)
+				go func() {
+					b, e := io.ReadAll(pipeR)
+					ch <- dropResult{data: b, err: e}
+				}()
+
+				var content []byte
+				select {
+				case res := <-ch:
+					if res.err != nil {
+						return
+					}
+					content = res.data
+				case <-time.After(2 * time.Second):
+					return
+				}
+
+				app.post(func() {
+					if app.globals.dataDeviceManagerVer >= 3 && app.api != nil {
+						app.api.dataOfferFinish(offerProxy)
+					}
+					app.mu.Lock()
+					isClipboard := (app.clipboardOffer != nil && app.clipboardOffer.proxy == offerProxy)
+					if !isClipboard && app.api != nil {
+						app.api.dataOfferDestroy(offerProxy)
+						delete(app.dataOffers, offerProxy)
+					}
+					app.mu.Unlock()
+
+					paths := parseURIList(string(content))
+					if len(paths) > 0 && targetWin.state != nil && targetWin.state.config.OnFileDrop != nil {
+						frame, taken, dropErr := targetWin.state.config.OnFileDrop(platform.FileDropEvent{
 							Phase: platform.FileDropDrop,
-							X:     drag.x,
-							Y:     drag.y,
+							X:     dragX,
+							Y:     dragY,
 							Paths: paths,
 						})
 						if taken && dropErr == nil {
-							_ = win.state.router.present(frame)
+							_ = targetWin.state.router.present(frame)
 						}
 					}
-				}
-			} else {
-				_ = w.Close()
-				_ = r.Close()
-			}
+				})
+			}(r, drag.offer.proxy, drag.x, drag.y, win)
 		})
 
 		// 5: selection(id: ?wl_data_offer)
@@ -233,6 +287,14 @@ func initDataListeners() {
 			app := (*waylandApplication)(data)
 			app.mu.Lock()
 			defer app.mu.Unlock()
+			if app.clipboardOffer != nil && app.clipboardOffer.proxy != id {
+				// Destroy superseded clipboard offer if not in active drag
+				isDrag := (app.dragState != nil && app.dragState.offer != nil && app.dragState.offer.proxy == app.clipboardOffer.proxy)
+				if !isDrag && app.api != nil {
+					app.api.dataOfferDestroy(app.clipboardOffer.proxy)
+					delete(app.dataOffers, app.clipboardOffer.proxy)
+				}
+			}
 			if id == 0 {
 				app.clipboardOffer = nil
 				return
@@ -356,6 +418,15 @@ func (app *waylandApplication) teardownDataDevice() {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 
+	for proxy := range app.dataOffers {
+		if app.api != nil {
+			app.api.dataOfferDestroy(proxy)
+		}
+	}
+	app.dataOffers = nil
+	app.clipboardOffer = nil
+	app.dragState = nil
+
 	if app.dataSource != 0 && app.api != nil {
 		app.api.dataSourceDestroy(app.dataSource)
 		app.dataSource = 0
@@ -368,9 +439,6 @@ func (app *waylandApplication) teardownDataDevice() {
 		}
 		app.dataDevice = 0
 	}
-	app.clipboardOffer = nil
-	app.dataOffers = nil
-	app.dragState = nil
 }
 
 func (app *waylandApplication) setClipboardText(text string) error {

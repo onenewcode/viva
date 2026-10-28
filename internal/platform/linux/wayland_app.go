@@ -105,6 +105,8 @@ func newWaylandApplication() (*waylandApplication, error) {
 func (app *waylandApplication) post(cmd waylandCommand) {
 	if app.loop != nil {
 		app.loop.post(cmd)
+	} else if cmd != nil {
+		cmd()
 	}
 }
 
