@@ -8,7 +8,9 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -680,5 +682,140 @@ func TestWaylandRegistryDiscovery(t *testing.T) {
 
 	if globals.compositor == 0 || globals.xdgWmBase == 0 {
 		t.Fatalf("expected discovery of compositor and xdg_wm_base, got: %+v", globals)
+	}
+}
+
+func TestWaylandLoopWaker(t *testing.T) {
+	var executed atomic.Bool
+	wakeCh := make(chan struct{}, 1)
+
+	mockLibc := &libcAPI{
+		poll: func(fds *pollFD, nfds uintptr, timeout int32) int32 {
+			slice := unsafe.Slice(fds, int(nfds))
+			select {
+			case <-wakeCh:
+				slice[1].REvents = 1
+				return 1
+			case <-time.After(100 * time.Millisecond):
+				return 0
+			}
+		},
+		read: func(fd int32, buf unsafe.Pointer, n uintptr) int {
+			return int(n)
+		},
+		write: func(fd int32, buf unsafe.Pointer, n uintptr) int {
+			select {
+			case wakeCh <- struct{}{}:
+			default:
+			}
+			return int(n)
+		},
+		close: func(int32) int32 { return 0 },
+	}
+
+	loop := &waylandLoop{
+		libc:      mockLibc,
+		wayland:   &waylandAPI{},
+		display:   1,
+		waylandFD: 10,
+		wakeFD:    11,
+	}
+	loop.running.Store(true)
+	loop.rebuildPollFDs()
+
+	start := time.Now()
+	go func() {
+		time.Sleep(1 * time.Millisecond)
+		loop.post(func() {
+			executed.Store(true)
+			loop.stop()
+		})
+	}()
+
+	for loop.step(50) {
+	}
+
+	elapsed := time.Since(start)
+	if !executed.Load() {
+		t.Fatal("posted command was not executed by waylandLoop")
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Fatalf("waker took too long: %v", elapsed)
+	}
+}
+
+func TestApplicationPostWithoutWindows(t *testing.T) {
+	var quitCalled atomic.Bool
+	wakeCh := make(chan struct{}, 1)
+
+	mockLibc := &libcAPI{
+		poll: func(fds *pollFD, nfds uintptr, timeout int32) int32 {
+			slice := unsafe.Slice(fds, int(nfds))
+			select {
+			case <-wakeCh:
+				slice[1].REvents = 1
+				return 1
+			case <-time.After(50 * time.Millisecond):
+				return 0
+			}
+		},
+		read: func(fd int32, buf unsafe.Pointer, n uintptr) int { return int(n) },
+		write: func(fd int32, buf unsafe.Pointer, n uintptr) int {
+			select {
+			case wakeCh <- struct{}{}:
+			default:
+			}
+			return int(n)
+		},
+		close: func(int32) int32 { return 0 },
+	}
+
+	loop := &waylandLoop{
+		libc:      mockLibc,
+		wayland:   &waylandAPI{},
+		display:   1,
+		waylandFD: 10,
+		wakeFD:    11,
+	}
+	loop.running.Store(true)
+	loop.rebuildPollFDs()
+
+	go func() {
+		time.Sleep(1 * time.Millisecond)
+		loop.post(func() {
+			quitCalled.Store(true)
+			loop.stop()
+		})
+	}()
+
+	for loop.step(20) {
+	}
+
+	if !quitCalled.Load() {
+		t.Fatal("Quit command was not delivered without windows")
+	}
+	if loop.running.Load() {
+		t.Fatal("loop was not stopped cleanly after quit")
+	}
+}
+
+func TestWaylandLoopCloseReleasesWakeFD(t *testing.T) {
+	var closedFD int32 = -1
+	mockLibc := &libcAPI{
+		close: func(fd int32) int32 {
+			closedFD = fd
+			return 0
+		},
+	}
+	loop := &waylandLoop{
+		libc:   mockLibc,
+		wakeFD: 99,
+	}
+	loop.close()
+	if closedFD != 99 {
+		t.Fatalf("expected close to be called for wakeFD 99, got %d", closedFD)
+	}
+	if loop.wakeFD != -1 {
+		t.Fatalf("expected wakeFD to be reset to -1, got %d", loop.wakeFD)
 	}
 }

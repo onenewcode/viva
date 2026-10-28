@@ -81,7 +81,7 @@ flowchart LR
       - `zxdg_decoration_manager_v1`（可选，版本 $\ge 1$）
       - `wp_fractional_scale_manager_v1`（可选，版本 $\ge 1$）
       - `wp_viewporter`（可选，版本 $\ge 1$）
-  - [ ] **Task 2.4**：新建 `internal/platform/linux/wayland_loop.go`：
+  - [x] **Task 2.4**：新建 `internal/platform/linux/wayland_loop.go`：
     - 整合 `libc.poll`，在同一个循环中管理 Wayland 连接 FD、D-Bus 连接 FD 以及跨协程 Waker `eventfd`。
 
 #### 【Phase 2 验收清单】
