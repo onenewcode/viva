@@ -5,9 +5,9 @@ package linux
 import (
 	"errors"
 	"sync"
-)
 
-type waylandWindowState struct{}
+	"github.com/vivaui/viva/internal/platform"
+)
 
 // waylandApplication coordinates the Wayland client display connection,
 // event loop, and window lifecycle.
@@ -73,6 +73,27 @@ func (app *waylandApplication) Quit() {
 			app.loop.stop()
 		}
 	})
+}
+
+// OpenWindow creates and displays a new Wayland-backed window.
+func (app *waylandApplication) OpenWindow(config platform.Config) (platform.Window, error) {
+	return app.openWindow(config)
+}
+
+// AddStatusItem is currently a stub on Wayland until system tray integration is completed.
+func (app *waylandApplication) AddStatusItem(config platform.StatusItemConfig) (platform.StatusItem, error) {
+	return nil, errors.New("linux: StatusNotifierItem not supported on Wayland yet")
+}
+
+func (app *waylandApplication) removeWindow(state *waylandWindowState) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	for i, w := range app.windows {
+		if w == state {
+			app.windows = append(app.windows[:i], app.windows[i+1:]...)
+			break
+		}
+	}
 }
 
 // close releases all Wayland proxies, sockets, and dynamically linked libraries.

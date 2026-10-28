@@ -14,7 +14,66 @@ import (
 const (
 	wlDisplayGetRegistryOpcode = 1
 	wlRegistryBindOpcode       = 0
-	xdgWmBasePongOpcode        = 3
+
+	wlCompositorCreateSurfaceOpcode = 0
+	wlCompositorCreateRegionOpcode  = 1
+
+	wlSurfaceDestroyOpcode         = 0
+	wlSurfaceAttachOpcode          = 1
+	wlSurfaceDamageOpcode          = 2
+	wlSurfaceFrameOpcode           = 3
+	wlSurfaceSetOpaqueRegionOpcode = 4
+	wlSurfaceSetInputRegionOpcode  = 5
+	wlSurfaceCommitOpcode          = 6
+	wlSurfaceSetBufferTransform    = 7
+	wlSurfaceSetBufferScaleOpcode  = 8
+	wlSurfaceDamageBufferOpcode    = 9
+
+	wlRegionDestroyOpcode  = 0
+	wlRegionAddOpcode      = 1
+	wlRegionSubtractOpcode = 2
+
+	xdgWmBaseDestroyOpcode          = 0
+	xdgWmBaseCreatePositionerOpcode = 1
+	xdgWmBaseGetXdgSurfaceOpcode    = 2
+	xdgWmBasePongOpcode             = 3
+
+	xdgSurfaceDestroyOpcode           = 0
+	xdgSurfaceGetToplevelOpcode       = 1
+	xdgSurfaceGetPopupOpcode          = 2
+	xdgSurfaceSetWindowGeometryOpcode = 3
+	xdgSurfaceAckConfigureOpcode      = 4
+
+	xdgToplevelDestroyOpcode         = 0
+	xdgToplevelSetParentOpcode       = 1
+	xdgToplevelSetTitleOpcode        = 2
+	xdgToplevelSetAppIdOpcode        = 3
+	xdgToplevelShowWindowMenuOpcode  = 4
+	xdgToplevelMoveOpcode            = 5
+	xdgToplevelResizeOpcode          = 6
+	xdgToplevelSetMaxSizeOpcode      = 7
+	xdgToplevelSetMinSizeOpcode      = 8
+	xdgToplevelSetMaximizedOpcode    = 9
+	xdgToplevelUnsetMaximizedOpcode  = 10
+	xdgToplevelSetFullscreenOpcode   = 11
+	xdgToplevelUnsetFullscreenOpcode = 12
+	xdgToplevelSetMinimizedOpcode    = 13
+
+	zxdgDecorationManagerV1DestroyOpcode               = 0
+	zxdgDecorationManagerV1GetToplevelDecorationOpcode = 1
+
+	zxdgToplevelDecorationV1DestroyOpcode   = 0
+	zxdgToplevelDecorationV1SetModeOpcode   = 1
+	zxdgToplevelDecorationV1UnsetModeOpcode = 2
+
+	zxdgToplevelDecorationModeClientSide uint32 = 1
+	zxdgToplevelDecorationModeServerSide uint32 = 2
+
+	xdgToplevelStateMaximized  uint32 = 1
+	xdgToplevelStateFullscreen uint32 = 2
+	xdgToplevelStateResizing   uint32 = 3
+	xdgToplevelStateActivated  uint32 = 4
+	xdgToplevelStateSuspended  uint32 = 5
 )
 
 // String constants for Wayland interfaces
@@ -34,6 +93,8 @@ var (
 	strWpFractionalScaleV1        = []byte("wp_fractional_scale_v1\x00")
 	strWpViewporter               = []byte("wp_viewporter\x00")
 	strWpViewport                 = []byte("wp_viewport\x00")
+	strWlRegion                   = []byte("wl_region\x00")
+	strWlCallback                 = []byte("wl_callback\x00")
 )
 
 // Signature constants
@@ -47,6 +108,9 @@ var (
 	sigIIII  = []byte("iiii\x00")
 	sigS     = []byte("s\x00")
 	sigA     = []byte("a\x00")
+	sigO     = []byte("?o\x00")
+	sigOII   = []byte("?oii\x00")
+	sigI     = []byte("i\x00")
 )
 
 // Core static wlInterface definitions for extension protocols (and fallback)
@@ -61,9 +125,15 @@ var (
 		Methods:     &wlRegistryRequests[0],
 	}
 
+	wlCompositorRequests = [2]wlMessage{
+		{Name: &[]byte("create_surface\x00")[0], Signature: &sigN[0]},
+		{Name: &[]byte("create_region\x00")[0], Signature: &sigN[0]},
+	}
 	wlCompositorInterface = wlInterface{
-		Name:    &strWlCompositor[0],
-		Version: 4,
+		Name:        &strWlCompositor[0],
+		Version:     4,
+		MethodCount: 2,
+		Methods:     &wlCompositorRequests[0],
 	}
 
 	wlShmInterface = wlInterface{
@@ -76,9 +146,45 @@ var (
 		Version: 5,
 	}
 
+	wlSurfaceRequests = [10]wlMessage{
+		{Name: &[]byte("destroy\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("attach\x00")[0], Signature: &sigOII[0]},
+		{Name: &[]byte("damage\x00")[0], Signature: &sigIIII[0]},
+		{Name: &[]byte("frame\x00")[0], Signature: &sigN[0]},
+		{Name: &[]byte("set_opaque_region\x00")[0], Signature: &sigO[0]},
+		{Name: &[]byte("set_input_region\x00")[0], Signature: &sigO[0]},
+		{Name: &[]byte("commit\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("set_buffer_transform\x00")[0], Signature: &sigI[0]},
+		{Name: &[]byte("set_buffer_scale\x00")[0], Signature: &sigI[0]},
+		{Name: &[]byte("damage_buffer\x00")[0], Signature: &sigIIII[0]},
+	}
 	wlSurfaceInterface = wlInterface{
-		Name:    &strWlSurface[0],
-		Version: 4,
+		Name:        &strWlSurface[0],
+		Version:     4,
+		MethodCount: 10,
+		Methods:     &wlSurfaceRequests[0],
+	}
+
+	wlRegionRequests = [3]wlMessage{
+		{Name: &[]byte("destroy\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("add\x00")[0], Signature: &sigIIII[0]},
+		{Name: &[]byte("subtract\x00")[0], Signature: &sigIIII[0]},
+	}
+	wlRegionInterface = wlInterface{
+		Name:        &strWlRegion[0],
+		Version:     1,
+		MethodCount: 3,
+		Methods:     &wlRegionRequests[0],
+	}
+
+	wlCallbackEvents = [1]wlMessage{
+		{Name: &[]byte("done\x00")[0], Signature: &sigU[0]},
+	}
+	wlCallbackInterface = wlInterface{
+		Name:       &strWlCallback[0],
+		Version:    1,
+		EventCount: 1,
+		Events:     &wlCallbackEvents[0],
 	}
 
 	// xdg_wm_base
@@ -452,4 +558,213 @@ func waylandGoString(ptr *byte) string {
 		length++
 	}
 	return string(unsafe.Slice(ptr, length))
+}
+
+func (api *waylandAPI) createSurface(compositor uintptr) uintptr {
+	if api == nil || compositor == 0 {
+		return 0
+	}
+	iface := api.getInterface("wl_surface_interface", &wlSurfaceInterface)
+	return api.proxyMarshalFlags(compositor, wlCompositorCreateSurfaceOpcode, iface, 4, 0, uintptr(0))
+}
+
+func (api *waylandAPI) createRegion(compositor uintptr) uintptr {
+	if api == nil || compositor == 0 {
+		return 0
+	}
+	iface := api.getInterface("wl_region_interface", &wlRegionInterface)
+	return api.proxyMarshalFlags(compositor, wlCompositorCreateRegionOpcode, iface, 1, 0, uintptr(0))
+}
+
+func (api *waylandAPI) regionAdd(region uintptr, x, y, width, height int32) {
+	if api != nil && region != 0 {
+		api.proxyMarshalFlags(region, wlRegionAddOpcode, 0, 1, 0, x, y, width, height)
+	}
+}
+
+func (api *waylandAPI) regionSubtract(region uintptr, x, y, width, height int32) {
+	if api != nil && region != 0 {
+		api.proxyMarshalFlags(region, wlRegionSubtractOpcode, 0, 1, 0, x, y, width, height)
+	}
+}
+
+func (api *waylandAPI) destroyRegion(region uintptr) {
+	if api != nil && region != 0 {
+		api.proxyMarshalFlags(region, wlRegionDestroyOpcode, 0, 1, 0)
+		api.proxyDestroy(region)
+	}
+}
+
+func (api *waylandAPI) surfaceDestroy(surface uintptr) {
+	if api != nil && surface != 0 {
+		api.proxyMarshalFlags(surface, wlSurfaceDestroyOpcode, 0, 1, 0)
+		api.proxyDestroy(surface)
+	}
+}
+
+func (api *waylandAPI) surfaceAttach(surface uintptr, buffer uintptr, x, y int32) {
+	if api != nil && surface != 0 {
+		api.proxyMarshalFlags(surface, wlSurfaceAttachOpcode, 0, 1, 0, buffer, x, y)
+	}
+}
+
+func (api *waylandAPI) surfaceDamage(surface uintptr, x, y, width, height int32) {
+	if api != nil && surface != 0 {
+		api.proxyMarshalFlags(surface, wlSurfaceDamageOpcode, 0, 1, 0, x, y, width, height)
+	}
+}
+
+func (api *waylandAPI) surfaceFrame(surface uintptr) uintptr {
+	if api == nil || surface == 0 {
+		return 0
+	}
+	iface := api.getInterface("wl_callback_interface", &wlCallbackInterface)
+	return api.proxyMarshalFlags(surface, wlSurfaceFrameOpcode, iface, 1, 0, uintptr(0))
+}
+
+func (api *waylandAPI) surfaceSetInputRegion(surface uintptr, region uintptr) {
+	if api != nil && surface != 0 {
+		api.proxyMarshalFlags(surface, wlSurfaceSetInputRegionOpcode, 0, 1, 0, region)
+	}
+}
+
+func (api *waylandAPI) surfaceSetOpaqueRegion(surface uintptr, region uintptr) {
+	if api != nil && surface != 0 {
+		api.proxyMarshalFlags(surface, wlSurfaceSetOpaqueRegionOpcode, 0, 1, 0, region)
+	}
+}
+
+func (api *waylandAPI) surfaceCommit(surface uintptr) {
+	if api != nil && surface != 0 {
+		api.proxyMarshalFlags(surface, wlSurfaceCommitOpcode, 0, 1, 0)
+	}
+}
+
+func (api *waylandAPI) getXdgSurface(xdgWmBase uintptr, surface uintptr) uintptr {
+	if api == nil || xdgWmBase == 0 || surface == 0 {
+		return 0
+	}
+	iface := api.getInterface("xdg_surface_interface", &xdgSurfaceInterface)
+	return api.proxyMarshalFlags(xdgWmBase, xdgWmBaseGetXdgSurfaceOpcode, iface, 1, 0, uintptr(0), surface)
+}
+
+func (api *waylandAPI) xdgSurfaceDestroy(xdgSurface uintptr) {
+	if api != nil && xdgSurface != 0 {
+		api.proxyMarshalFlags(xdgSurface, xdgSurfaceDestroyOpcode, 0, 1, 0)
+		api.proxyDestroy(xdgSurface)
+	}
+}
+
+func (api *waylandAPI) xdgSurfaceGetToplevel(xdgSurface uintptr) uintptr {
+	if api == nil || xdgSurface == 0 {
+		return 0
+	}
+	iface := api.getInterface("xdg_toplevel_interface", &xdgToplevelInterface)
+	return api.proxyMarshalFlags(xdgSurface, xdgSurfaceGetToplevelOpcode, iface, 1, 0, uintptr(0))
+}
+
+func (api *waylandAPI) xdgSurfaceSetWindowGeometry(xdgSurface uintptr, x, y, width, height int32) {
+	if api != nil && xdgSurface != 0 {
+		api.proxyMarshalFlags(xdgSurface, xdgSurfaceSetWindowGeometryOpcode, 0, 1, 0, x, y, width, height)
+	}
+}
+
+func (api *waylandAPI) xdgSurfaceAckConfigure(xdgSurface uintptr, serial uint32) {
+	if api != nil && xdgSurface != 0 {
+		api.proxyMarshalFlags(xdgSurface, xdgSurfaceAckConfigureOpcode, 0, 1, 0, serial)
+	}
+}
+
+func (api *waylandAPI) xdgToplevelDestroy(xdgToplevel uintptr) {
+	if api != nil && xdgToplevel != 0 {
+		api.proxyMarshalFlags(xdgToplevel, xdgToplevelDestroyOpcode, 0, 1, 0)
+		api.proxyDestroy(xdgToplevel)
+	}
+}
+
+func (api *waylandAPI) xdgToplevelSetTitle(xdgToplevel uintptr, title *byte) {
+	if api != nil && xdgToplevel != 0 && title != nil {
+		api.proxyMarshalFlags(xdgToplevel, xdgToplevelSetTitleOpcode, 0, 1, 0, uintptr(unsafe.Pointer(title)))
+	}
+}
+
+func (api *waylandAPI) xdgToplevelSetAppId(xdgToplevel uintptr, appId *byte) {
+	if api != nil && xdgToplevel != 0 && appId != nil {
+		api.proxyMarshalFlags(xdgToplevel, xdgToplevelSetAppIdOpcode, 0, 1, 0, uintptr(unsafe.Pointer(appId)))
+	}
+}
+
+func (api *waylandAPI) xdgToplevelSetMaxSize(xdgToplevel uintptr, width, height int32) {
+	if api != nil && xdgToplevel != 0 {
+		api.proxyMarshalFlags(xdgToplevel, xdgToplevelSetMaxSizeOpcode, 0, 1, 0, width, height)
+	}
+}
+
+func (api *waylandAPI) xdgToplevelSetMinSize(xdgToplevel uintptr, width, height int32) {
+	if api != nil && xdgToplevel != 0 {
+		api.proxyMarshalFlags(xdgToplevel, xdgToplevelSetMinSizeOpcode, 0, 1, 0, width, height)
+	}
+}
+
+func (api *waylandAPI) xdgToplevelSetMaximized(xdgToplevel uintptr) {
+	if api != nil && xdgToplevel != 0 {
+		api.proxyMarshalFlags(xdgToplevel, xdgToplevelSetMaximizedOpcode, 0, 1, 0)
+	}
+}
+
+func (api *waylandAPI) xdgToplevelUnsetMaximized(xdgToplevel uintptr) {
+	if api != nil && xdgToplevel != 0 {
+		api.proxyMarshalFlags(xdgToplevel, xdgToplevelUnsetMaximizedOpcode, 0, 1, 0)
+	}
+}
+
+func (api *waylandAPI) xdgToplevelSetFullscreen(xdgToplevel uintptr, output uintptr) {
+	if api != nil && xdgToplevel != 0 {
+		api.proxyMarshalFlags(xdgToplevel, xdgToplevelSetFullscreenOpcode, 0, 1, 0, output)
+	}
+}
+
+func (api *waylandAPI) xdgToplevelUnsetFullscreen(xdgToplevel uintptr) {
+	if api != nil && xdgToplevel != 0 {
+		api.proxyMarshalFlags(xdgToplevel, xdgToplevelUnsetFullscreenOpcode, 0, 1, 0)
+	}
+}
+
+func (api *waylandAPI) xdgToplevelSetMinimized(xdgToplevel uintptr) {
+	if api != nil && xdgToplevel != 0 {
+		api.proxyMarshalFlags(xdgToplevel, xdgToplevelSetMinimizedOpcode, 0, 1, 0)
+	}
+}
+
+func (api *waylandAPI) xdgToplevelMove(xdgToplevel uintptr, seat uintptr, serial uint32) {
+	if api != nil && xdgToplevel != 0 && seat != 0 {
+		api.proxyMarshalFlags(xdgToplevel, xdgToplevelMoveOpcode, 0, 1, 0, seat, serial)
+	}
+}
+
+func (api *waylandAPI) xdgToplevelResize(xdgToplevel uintptr, seat uintptr, serial uint32, edges uint32) {
+	if api != nil && xdgToplevel != 0 && seat != 0 {
+		api.proxyMarshalFlags(xdgToplevel, xdgToplevelResizeOpcode, 0, 1, 0, seat, serial, edges)
+	}
+}
+
+func (api *waylandAPI) getToplevelDecoration(decorationMgr uintptr, toplevel uintptr) uintptr {
+	if api == nil || decorationMgr == 0 || toplevel == 0 {
+		return 0
+	}
+	iface := api.getInterface("zxdg_toplevel_decoration_v1_interface", &zxdgToplevelDecorationV1Interface)
+	return api.proxyMarshalFlags(decorationMgr, zxdgDecorationManagerV1GetToplevelDecorationOpcode, iface, 1, 0, uintptr(0), toplevel)
+}
+
+func (api *waylandAPI) setDecorationMode(decoration uintptr, mode uint32) {
+	if api != nil && decoration != 0 {
+		api.proxyMarshalFlags(decoration, zxdgToplevelDecorationV1SetModeOpcode, 0, 1, 0, mode)
+	}
+}
+
+func (api *waylandAPI) decorationDestroy(decoration uintptr) {
+	if api != nil && decoration != 0 {
+		api.proxyMarshalFlags(decoration, zxdgToplevelDecorationV1DestroyOpcode, 0, 1, 0)
+		api.proxyDestroy(decoration)
+	}
 }

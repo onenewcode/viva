@@ -5,6 +5,7 @@ package linux
 import (
 	"math"
 	"runtime"
+	"unsafe"
 )
 
 // wlFixed is a 24.8 signed fixed-point number used by Wayland.
@@ -42,7 +43,7 @@ type wlInterface struct {
 type wlArray struct {
 	Size  uintptr
 	Alloc uintptr
-	Data  uintptr
+	Data  unsafe.Pointer
 }
 
 // pinnedListener pins callback function tables and user data to prevent Go runtime GC movement.
