@@ -46,6 +46,9 @@ type SaveFileOptions struct {
 }
 
 func ClipboardText() (string, error) {
+	if waylandApp := activeWaylandApp.Load(); waylandApp != nil && waylandApp.hasWindows() {
+		return waylandApp.getClipboardText()
+	}
 	if win := activeWindow.Load(); win != nil {
 		win.mu.Lock()
 		if activeWindow.Load() == win && win.connection != 0 && win.ownsClipboard {
@@ -356,6 +359,9 @@ func SetClipboardText(value string) error {
 	}
 	if !utf8.ValidString(value) {
 		return fmt.Errorf("linux: clipboard text is not valid UTF-8")
+	}
+	if waylandApp := activeWaylandApp.Load(); waylandApp != nil && waylandApp.hasWindows() {
+		return waylandApp.setClipboardText(value)
 	}
 	win := activeWindow.Load()
 	if win == nil {

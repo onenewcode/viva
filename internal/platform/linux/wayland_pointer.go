@@ -40,6 +40,7 @@ func initPointerListeners() {
 			win := app.findWindowBySurface(surface)
 			app.pointerFocus = win
 			app.pointerSerial = serial
+			app.lastSerial = serial
 			app.setCursor(app.currentCursorShape)
 
 			if win != nil && win.state != nil {
@@ -99,6 +100,7 @@ func initPointerListeners() {
 			}
 			app := (*waylandApplication)(data)
 			app.pointerSerial = serial
+			app.lastSerial = serial
 			if app.pointerFocus == nil || app.pointerFocus.state == nil {
 				return
 			}

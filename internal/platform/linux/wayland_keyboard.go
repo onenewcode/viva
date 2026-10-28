@@ -90,6 +90,7 @@ func initKeyboardListeners() {
 				return
 			}
 			app := (*waylandApplication)(data)
+			app.lastSerial = serial
 			app.keyboardFocus = app.findWindowBySurface(surface)
 		})
 
@@ -114,6 +115,7 @@ func initKeyboardListeners() {
 				return
 			}
 			app := (*waylandApplication)(data)
+			app.lastSerial = serial
 			app.handleKey(serial, timeMs, scancode, state)
 		})
 

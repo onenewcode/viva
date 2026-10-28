@@ -85,6 +85,23 @@ const (
 
 	wlKeyboardReleaseOpcode = 0
 
+	wlDataDeviceManagerCreateDataSourceOpcode = 0
+	wlDataDeviceManagerGetDataDeviceOpcode    = 1
+
+	wlDataDeviceStartDragOpcode    = 0
+	wlDataDeviceSetSelectionOpcode = 1
+	wlDataDeviceReleaseOpcode      = 2
+
+	wlDataSourceOfferOpcode      = 0
+	wlDataSourceDestroyOpcode    = 1
+	wlDataSourceSetActionsOpcode = 2
+
+	wlDataOfferAcceptOpcode     = 0
+	wlDataOfferReceiveOpcode    = 1
+	wlDataOfferDestroyOpcode    = 2
+	wlDataOfferFinishOpcode     = 3
+	wlDataOfferSetActionsOpcode = 4
+
 	wlSeatCapabilityPointer  uint32 = 1
 	wlSeatCapabilityKeyboard uint32 = 2
 	wlSeatCapabilityTouch    uint32 = 4
@@ -111,6 +128,10 @@ var (
 	strWpViewport                 = []byte("wp_viewport\x00")
 	strWlRegion                   = []byte("wl_region\x00")
 	strWlCallback                 = []byte("wl_callback\x00")
+	strWlDataDeviceManager        = []byte("wl_data_device_manager\x00")
+	strWlDataDevice               = []byte("wl_data_device\x00")
+	strWlDataSource               = []byte("wl_data_source\x00")
+	strWlDataOffer                = []byte("wl_data_offer\x00")
 )
 
 // Signature constants
@@ -138,6 +159,10 @@ var (
 	sigUHU   = []byte("uhu\x00")
 	sigUOA   = []byte("uoa\x00")
 	sigUUUUU = []byte("uuuuu\x00")
+	sigSH    = []byte("sh\x00")
+	sigUS    = []byte("u?s\x00")
+	sigUOFFO = []byte("uoff?o\x00")
+	sigOU    = []byte("?ou\x00")
 )
 
 // Core static wlInterface definitions for extension protocols (and fallback)
@@ -426,6 +451,86 @@ var (
 		MethodCount: 3,
 		Methods:     &wpViewportRequests[0],
 	}
+
+	// wl_data_device_manager
+	wlDataDeviceManagerRequests = [2]wlMessage{
+		{Name: &[]byte("create_data_source\x00")[0], Signature: &sigN[0]},
+		{Name: &[]byte("get_data_device\x00")[0], Signature: &sigNO[0]},
+	}
+	wlDataDeviceManagerInterface = wlInterface{
+		Name:        &strWlDataDeviceManager[0],
+		Version:     3,
+		MethodCount: 2,
+		Methods:     &wlDataDeviceManagerRequests[0],
+	}
+
+	// wl_data_device
+	wlDataDeviceRequests = [3]wlMessage{
+		{Name: &[]byte("start_drag\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("set_selection\x00")[0], Signature: &sigOU[0]},
+		{Name: &[]byte("release\x00")[0], Signature: &sigEmpty[0]},
+	}
+	wlDataDeviceEvents = [6]wlMessage{
+		{Name: &[]byte("data_offer\x00")[0], Signature: &sigN[0]},
+		{Name: &[]byte("enter\x00")[0], Signature: &sigUOFFO[0]},
+		{Name: &[]byte("leave\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("motion\x00")[0], Signature: &sigUFF[0]},
+		{Name: &[]byte("drop\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("selection\x00")[0], Signature: &sigO[0]},
+	}
+	wlDataDeviceInterface = wlInterface{
+		Name:        &strWlDataDevice[0],
+		Version:     3,
+		MethodCount: 3,
+		Methods:     &wlDataDeviceRequests[0],
+		EventCount:  6,
+		Events:      &wlDataDeviceEvents[0],
+	}
+
+	// wl_data_source
+	wlDataSourceRequests = [3]wlMessage{
+		{Name: &[]byte("offer\x00")[0], Signature: &sigS[0]},
+		{Name: &[]byte("destroy\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("set_actions\x00")[0], Signature: &sigU[0]},
+	}
+	wlDataSourceEvents = [6]wlMessage{
+		{Name: &[]byte("target\x00")[0], Signature: &sigS[0]},
+		{Name: &[]byte("send\x00")[0], Signature: &sigSH[0]},
+		{Name: &[]byte("cancelled\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("dnd_drop_performed\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("dnd_finished\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("action\x00")[0], Signature: &sigU[0]},
+	}
+	wlDataSourceInterface = wlInterface{
+		Name:        &strWlDataSource[0],
+		Version:     3,
+		MethodCount: 3,
+		Methods:     &wlDataSourceRequests[0],
+		EventCount:  6,
+		Events:      &wlDataSourceEvents[0],
+	}
+
+	// wl_data_offer
+	wlDataOfferRequests = [5]wlMessage{
+		{Name: &[]byte("accept\x00")[0], Signature: &sigUS[0]},
+		{Name: &[]byte("receive\x00")[0], Signature: &sigSH[0]},
+		{Name: &[]byte("destroy\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("finish\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("set_actions\x00")[0], Signature: &sigUU[0]},
+	}
+	wlDataOfferEvents = [3]wlMessage{
+		{Name: &[]byte("offer\x00")[0], Signature: &sigS[0]},
+		{Name: &[]byte("source_actions\x00")[0], Signature: &sigU[0]},
+		{Name: &[]byte("action\x00")[0], Signature: &sigU[0]},
+	}
+	wlDataOfferInterface = wlInterface{
+		Name:        &strWlDataOffer[0],
+		Version:     3,
+		MethodCount: 5,
+		Methods:     &wlDataOfferRequests[0],
+		EventCount:  3,
+		Events:      &wlDataOfferEvents[0],
+	}
 )
 
 var (
@@ -502,6 +607,8 @@ type waylandGlobals struct {
 	scaleMgrVer      uint32
 	viewporter       uintptr
 	viewporterVer    uint32
+	dataDeviceManager    uintptr
+	dataDeviceManagerVer uint32
 
 	onCapabilities func(caps uint32)
 }
@@ -599,6 +706,13 @@ func (g *waylandGlobals) handleGlobal(registry uintptr, name uint32, iface strin
 			g.viewporter = g.api.bindRegistry(registry, name, ifacePtr, &strWpViewporter[0], ver)
 			g.viewporterVer = ver
 		}
+	case "wl_data_device_manager":
+		ver := min(version, 3)
+		if g.dataDeviceManager == 0 {
+			ifacePtr := g.api.getInterface("wl_data_device_manager_interface", &wlDataDeviceManagerInterface)
+			g.dataDeviceManager = g.api.bindRegistry(registry, name, ifacePtr, &strWlDataDeviceManager[0], ver)
+			g.dataDeviceManagerVer = ver
+		}
 	}
 }
 
@@ -645,6 +759,7 @@ func (g *waylandGlobals) destroy(api *waylandAPI) {
 	if api == nil {
 		return
 	}
+	api.destroyProxy(&g.dataDeviceManager)
 	api.destroyProxy(&g.decorationMgr)
 	api.destroyProxy(&g.scaleMgr)
 	api.destroyProxy(&g.viewporter)
@@ -950,5 +1065,79 @@ func (api *waylandAPI) viewportDestroy(viewport uintptr) {
 	if api != nil && viewport != 0 {
 		api.proxyMarshalFlags(viewport, 0, 0, 1, 0)
 		api.proxyDestroy(viewport)
+	}
+}
+
+func (api *waylandAPI) createDataSource(manager uintptr) uintptr {
+	if api == nil || manager == 0 {
+		return 0
+	}
+	iface := api.getInterface("wl_data_source_interface", &wlDataSourceInterface)
+	return api.proxyMarshalFlags(manager, wlDataDeviceManagerCreateDataSourceOpcode, iface, 1, 0, uintptr(0))
+}
+
+func (api *waylandAPI) getDataDevice(manager uintptr, seat uintptr) uintptr {
+	if api == nil || manager == 0 || seat == 0 {
+		return 0
+	}
+	iface := api.getInterface("wl_data_device_interface", &wlDataDeviceInterface)
+	return api.proxyMarshalFlags(manager, wlDataDeviceManagerGetDataDeviceOpcode, iface, 1, 0, uintptr(0), seat)
+}
+
+func (api *waylandAPI) dataDeviceSetSelection(device uintptr, source uintptr, serial uint32) {
+	if api != nil && device != 0 {
+		api.proxyMarshalFlags(device, wlDataDeviceSetSelectionOpcode, 0, 1, 0, source, serial)
+	}
+}
+
+func (api *waylandAPI) dataDeviceRelease(device uintptr) {
+	if api != nil && device != 0 {
+		api.proxyMarshalFlags(device, wlDataDeviceReleaseOpcode, 0, 1, 0)
+		api.proxyDestroy(device)
+	}
+}
+
+func (api *waylandAPI) dataSourceOffer(source uintptr, mimeType string) {
+	if api != nil && source != 0 && mimeType != "" {
+		cMime := append([]byte(mimeType), 0)
+		api.proxyMarshalFlags(source, wlDataSourceOfferOpcode, 0, 1, 0, unsafe.Pointer(&cMime[0]))
+	}
+}
+
+func (api *waylandAPI) dataSourceDestroy(source uintptr) {
+	if api != nil && source != 0 {
+		api.proxyMarshalFlags(source, wlDataSourceDestroyOpcode, 0, 1, 0)
+		api.proxyDestroy(source)
+	}
+}
+
+func (api *waylandAPI) dataOfferAccept(offer uintptr, serial uint32, mimeType string) {
+	if api != nil && offer != 0 {
+		var mimePtr unsafe.Pointer
+		if mimeType != "" {
+			cMime := append([]byte(mimeType), 0)
+			mimePtr = unsafe.Pointer(&cMime[0])
+		}
+		api.proxyMarshalFlags(offer, wlDataOfferAcceptOpcode, 0, 1, 0, serial, mimePtr)
+	}
+}
+
+func (api *waylandAPI) dataOfferReceive(offer uintptr, mimeType string, fd int32) {
+	if api != nil && offer != 0 && mimeType != "" {
+		cMime := append([]byte(mimeType), 0)
+		api.proxyMarshalFlags(offer, wlDataOfferReceiveOpcode, 0, 1, 0, unsafe.Pointer(&cMime[0]), fd)
+	}
+}
+
+func (api *waylandAPI) dataOfferDestroy(offer uintptr) {
+	if api != nil && offer != 0 {
+		api.proxyMarshalFlags(offer, wlDataOfferDestroyOpcode, 0, 1, 0)
+		api.proxyDestroy(offer)
+	}
+}
+
+func (api *waylandAPI) dataOfferFinish(offer uintptr) {
+	if api != nil && offer != 0 {
+		api.proxyMarshalFlags(offer, wlDataOfferFinishOpcode, 0, 1, 0)
 	}
 }

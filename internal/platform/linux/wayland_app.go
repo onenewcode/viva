@@ -28,8 +28,17 @@ type waylandApplication struct {
 	pointerFocus       *waylandWindow
 	pointerSerial      uint32
 	keyboardFocus      *waylandWindow
+	lastSerial         uint32
 	cursorMgr          *waylandCursorManager
 	currentCursorShape uint8
+
+	dataDevice     uintptr
+	dataSource     uintptr
+	clipboardText  string
+	ownsClipboard  bool
+	clipboardOffer *waylandDataOffer
+	dragState      *waylandDragState
+	dataOffers     map[uintptr]*waylandDataOffer
 
 	xkb            *xkbAPI
 	xkbContext     uintptr
@@ -82,6 +91,7 @@ func newWaylandApplication() (*waylandApplication, error) {
 		app.close()
 		return nil, err
 	}
+	app.setupDataDevice()
 	activeWaylandApp.Store(app)
 	return app, nil
 }
@@ -159,6 +169,7 @@ func (app *waylandApplication) hasWindows() bool {
 // close releases all Wayland proxies, sockets, and dynamically linked libraries.
 func (app *waylandApplication) close() {
 	activeWaylandApp.CompareAndSwap(app, nil)
+	app.teardownDataDevice()
 	app.teardownPointer()
 	app.teardownKeyboard()
 	if app.cursorMgr != nil {
