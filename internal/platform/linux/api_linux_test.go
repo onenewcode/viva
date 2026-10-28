@@ -11,6 +11,7 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/ebitengine/purego"
 	"github.com/vivaui/viva/internal/platform"
 	"github.com/vivaui/viva/internal/render"
 	"github.com/vivaui/viva/internal/scene"
@@ -637,5 +638,47 @@ func TestWaylandABIStructureOffsets(t *testing.T) {
 		if field.got != field.want {
 			t.Errorf("%s offset = %d, want %d", field.name, field.got, field.want)
 		}
+	}
+}
+
+func TestWaylandRegistryDiscovery(t *testing.T) {
+	if os.Getenv("WAYLAND_DISPLAY") == "" {
+		t.Log("WAYLAND_DISPLAY not set, skipping live discovery (verified in headless or Wayland sessions)")
+		return
+	}
+	api, err := loadWaylandClient()
+	if err != nil {
+		t.Skipf("cannot load libwayland-client: %v", err)
+	}
+	defer api.close()
+	display := api.displayConnect(nil)
+	if display == 0 {
+		t.Skip("cannot connect to Wayland display")
+	}
+	defer api.displayDisconnect(display)
+	registry := api.getRegistry(display)
+	if registry == 0 {
+		t.Fatal("failed to get wayland registry")
+	}
+	defer api.proxyDestroy(registry)
+
+	var globals waylandGlobals
+	listener := [2]uintptr{
+		purego.NewCallback(func(data unsafe.Pointer, reg uintptr, name uint32, iface *byte, ver uint32) {
+			nameStr := waylandGoString(iface)
+			switch nameStr {
+			case "wl_compositor":
+				globals.compositor = 1
+			case "xdg_wm_base":
+				globals.xdgWmBase = 1
+			}
+		}),
+		purego.NewCallback(func(data unsafe.Pointer, reg uintptr, name uint32) {}),
+	}
+	api.proxyAddListener(registry, uintptr(unsafe.Pointer(&listener[0])), nil)
+	api.displayRoundtrip(display)
+
+	if globals.compositor == 0 || globals.xdgWmBase == 0 {
+		t.Fatalf("expected discovery of compositor and xdg_wm_base, got: %+v", globals)
 	}
 }

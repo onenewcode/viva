@@ -72,7 +72,7 @@ flowchart LR
   - [x] **Task 2.2**：新建 `internal/platform/linux/wayland_abi.go`：
     - 定义 Wayland C ABI 结构体：`wl_interface`, `wl_message`, `wl_array`, `wl_fixed_t`；
     - 实现 `purego.NewCallback` 跨语言监听器包装器与 GC 保护（`runtime.Pinner`）。
-  - [ ] **Task 2.3**：新建 `internal/platform/linux/wayland_registry.go`：
+  - [x] **Task 2.3**：新建 `internal/platform/linux/wayland_registry.go`：
     - 监听 `wl_registry.global` 事件，解析并绑定核心全局协议对象：
       - `wl_compositor`（版本 $\ge 4$）
       - `xdg_wm_base`（版本 $\ge 1$）
