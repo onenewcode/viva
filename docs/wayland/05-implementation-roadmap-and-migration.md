@@ -43,19 +43,19 @@ flowchart LR
 
 #### 【Phase 1 验收清单】
 
-- [ ] **自动化测试 1（静态 ABI 对齐）**：
+- [x] **自动化测试 1（静态 ABI 对齐）**：
   - 执行命令：`go test -v -run TestNativeStructureABI ./internal/platform/linux`
   - 判定标准：AMD64 与 ARM64 架构下所有 Vulkan 结构体大小对齐校验全部通过。
-- [ ] **自动化测试 2（存量单元测试回归）**：
+- [x] **自动化测试 2（存量单元测试回归）**：
   - 执行命令：`go test -v -count=1 ./internal/platform/linux/...`
   - 判定标准：现存全部 50+ 个单元测试 100% PASS，无接口破坏，无 panic。
-- [ ] **自动化测试 3（交换链 oldSwapchain 传递验证）**：
+- [x] **自动化测试 3（交换链 oldSwapchain 传递验证）**：
   - 新增测试用例 `TestSwapchainRecreationPassesOldHandle`（利用 mock Vulkan API 截获调用参数）；
   - 判定标准：在调用 `vkCreateSwapchainKHR` 时，入参 `VkSwapchainCreateInfoKHR.OldSwapchain` 必须为前一任交换链句柄，且 `vkDestroySwapchainKHR` 必须在新链创建成功后才触发。
-- [ ] **自动化测试 4（Suboptimal 呈现无震荡验证）**：
+- [x] **自动化测试 4（Suboptimal 呈现无震荡验证）**：
   - 新增测试用例 `TestSuboptimalDoesNotRecreateInFrame`；
   - 判定标准：当 `vkQueuePresentKHR` 返回 `VK_SUBOPTIMAL_KHR` 时，`presentRebuilding` 必须返回 `nil` 并正常结束当前帧，严禁同帧二次执行 `recreateSwapchain`。
-- [ ] **数据竞争检测**：
+- [x] **数据竞争检测**：
   - 执行命令：`go test -race ./internal/platform/linux`
   - 判定标准：0 Data Race，无内存悬垂指针。
 

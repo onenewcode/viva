@@ -645,6 +645,9 @@ func (renderer *vulkanRenderer) createSwapchain() error {
 func (renderer *vulkanRenderer) createSwapchainWithOld(oldSwapchain uintptr) (err error) {
 	defer func() {
 		if err != nil {
+			if oldSwapchain != 0 {
+				renderer.api.destroySwapchain(renderer.device, oldSwapchain, nil)
+			}
 			renderer.destroySwapchain()
 		}
 	}()
@@ -708,6 +711,7 @@ func (renderer *vulkanRenderer) createSwapchainWithOld(oldSwapchain uintptr) (er
 	}
 	if oldSwapchain != 0 {
 		renderer.api.destroySwapchain(renderer.device, oldSwapchain, nil)
+		oldSwapchain = 0
 	}
 	renderer.swapchain = newSwapchain
 	var imageTotal uint32
@@ -746,6 +750,7 @@ func (renderer *vulkanRenderer) createSwapchainWithOld(oldSwapchain uintptr) (er
 		return err
 	}
 	renderer.width, renderer.height, renderer.format = extent.Width, extent.Height, selected.Format
+	renderer.swapchainSuboptimal = false
 	return nil
 }
 
@@ -1210,7 +1215,11 @@ func (renderer *vulkanRenderer) close() {
 		renderer.api.destroyDevice(renderer.device, nil)
 	}
 	if renderer.surface != 0 && renderer.instance != 0 {
-		renderer.api.destroySurface(renderer.instance, renderer.surface, nil)
+		if renderer.provider != nil {
+			renderer.provider.DestroySurface(renderer.api, renderer.instance, renderer.surface)
+		} else {
+			renderer.api.destroySurface(renderer.instance, renderer.surface, nil)
+		}
 	}
 	if renderer.instance != 0 {
 		renderer.api.destroyInstance(renderer.instance, nil)
