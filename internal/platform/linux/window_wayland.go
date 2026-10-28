@@ -178,12 +178,20 @@ func (win *waylandWindow) updateWindowGeometry() {
 	if win.xdgSurface == 0 || win.app == nil || win.app.api == nil {
 		return
 	}
+	scale := win.displayScale()
+	if scale <= 0 {
+		scale = 1.0
+	}
 	if win.margin > 0 {
-		cW := int32(contentSize(win.width, win.margin))
-		cH := int32(contentSize(win.height, win.margin))
-		win.app.api.xdgSurfaceSetWindowGeometry(win.xdgSurface, int32(win.margin), int32(win.margin), cW, cH)
+		geomX := int32(math.Round(float64(float32(win.margin) / scale)))
+		geomY := int32(math.Round(float64(float32(win.margin) / scale)))
+		geomW := int32(math.Round(float64(float32(contentSize(win.width, win.margin)) / scale)))
+		geomH := int32(math.Round(float64(float32(contentSize(win.height, win.margin)) / scale)))
+		win.app.api.xdgSurfaceSetWindowGeometry(win.xdgSurface, geomX, geomY, geomW, geomH)
 	} else {
-		win.app.api.xdgSurfaceSetWindowGeometry(win.xdgSurface, 0, 0, int32(win.width), int32(win.height))
+		geomW := int32(math.Round(float64(float32(win.width) / scale)))
+		geomH := int32(math.Round(float64(float32(win.height) / scale)))
+		win.app.api.xdgSurfaceSetWindowGeometry(win.xdgSurface, 0, 0, geomW, geomH)
 	}
 }
 
@@ -193,14 +201,17 @@ func (win *waylandWindow) updateInputRegion() {
 	}
 	if win.margin > 0 {
 		scale := win.displayScale()
+		if scale <= 0 {
+			scale = 1.0
+		}
 		grip := frameGrip(scale)
 		cW := contentSize(win.width, win.margin)
 		cH := contentSize(win.height, win.margin)
 		reach := min(grip, win.margin)
-		rx := int32(win.margin - reach)
-		ry := int32(win.margin - reach)
-		rw := int32(cW + 2*reach)
-		rh := int32(cH + 2*reach)
+		rx := int32(math.Round(float64(float32(win.margin-reach) / scale)))
+		ry := int32(math.Round(float64(float32(win.margin-reach) / scale)))
+		rw := int32(math.Round(float64(float32(cW+2*reach) / scale)))
+		rh := int32(math.Round(float64(float32(cH+2*reach) / scale)))
 
 		region := win.app.api.createRegion(win.app.globals.compositor)
 		if region != 0 {

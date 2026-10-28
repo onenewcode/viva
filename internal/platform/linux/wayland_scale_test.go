@@ -91,9 +91,9 @@ func TestWaylandApplyScaleAndViewport(t *testing.T) {
 		t.Fatalf("expected total size 1272x972, got %dx%d", win.width, win.height)
 	}
 
-	// Viewport destination must equal logical content dimensions (800x600)
-	if viewportSetWidth != 800 || viewportSetHeight != 600 {
-		t.Fatalf("expected viewport destination (800, 600), got (%d, %d)", viewportSetWidth, viewportSetHeight)
+	// Viewport destination must equal total surface logical dimensions (848x648 at 1.5x with margin 24)
+	if viewportSetWidth != 848 || viewportSetHeight != 648 {
+		t.Fatalf("expected viewport destination (848, 648), got (%d, %d)", viewportSetWidth, viewportSetHeight)
 	}
 
 	// Logical size reported to application must remain 800x600 with scale 1.5
@@ -127,5 +127,64 @@ func TestWaylandSurfaceEnterLeaveOutput(t *testing.T) {
 	win.handleSurfaceLeave(2)
 	if len(win.activeOutputs) != 0 {
 		t.Fatalf("expected activeOutputs empty, got %v", win.activeOutputs)
+	}
+}
+
+func TestWaylandScaledWindowGeometryAndInputRegion(t *testing.T) {
+	var (
+		setGeomX, setGeomY, setGeomW, setGeomH int32
+		addedRegionX, addedRegionY, addedRegionW, addedRegionH int32
+	)
+
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			if opcode == xdgSurfaceSetWindowGeometryOpcode && len(args) >= 4 {
+				setGeomX = args[0].(int32)
+				setGeomY = args[1].(int32)
+				setGeomW = args[2].(int32)
+				setGeomH = args[3].(int32)
+			}
+			if opcode == wlRegionAddOpcode && len(args) >= 4 {
+				addedRegionX = args[0].(int32)
+				addedRegionY = args[1].(int32)
+				addedRegionW = args[2].(int32)
+				addedRegionH = args[3].(int32)
+			}
+			if opcode == wlCompositorCreateRegionOpcode {
+				return 999
+			}
+			return 0
+		},
+		proxyDestroy: func(proxy uintptr) {},
+	}
+
+	app := &waylandApplication{
+		api: api,
+		globals: waylandGlobals{
+			compositor: 888,
+		},
+	}
+
+	win := &waylandWindow{
+		app:        app,
+		surface:    10,
+		xdgSurface: 20,
+		width:      1272, // 1200 + 2*36
+		height:     972,  // 900 + 2*36
+		margin:     36,   // 24 * 1.5
+	}
+	win.storeScale(1.5)
+
+	win.updateWindowGeometry()
+	if setGeomX != 24 || setGeomY != 24 || setGeomW != 800 || setGeomH != 600 {
+		t.Fatalf("expected logical geometry (24, 24, 800, 600), got (%d, %d, %d, %d)", setGeomX, setGeomY, setGeomW, setGeomH)
+	}
+
+	win.updateInputRegion()
+	// grip at 1.5x = 8*1.5 = 12. reach = min(12, 36) = 12.
+	// margin - reach = 36 - 12 = 24 physical -> 24 / 1.5 = 16 logical
+	// cW + 2*reach = 1200 + 24 = 1224 physical -> 1224 / 1.5 = 816 logical
+	if addedRegionX != 16 || addedRegionY != 16 || addedRegionW != 816 || addedRegionH != 616 {
+		t.Fatalf("expected logical input region (16, 16, 816, 616), got (%d, %d, %d, %d)", addedRegionX, addedRegionY, addedRegionW, addedRegionH)
 	}
 }

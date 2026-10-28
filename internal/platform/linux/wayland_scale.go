@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"math"
 	"runtime"
 	"sync"
 	"unsafe"
@@ -160,9 +161,11 @@ func (win *waylandWindow) applyScale(scale float32) {
 		_ = win.state.renderer.resize(win.width, win.height)
 	}
 
-	// Configure viewport destination logical dimensions
+	// Configure viewport destination logical dimensions (entire surface)
 	if win.viewport != 0 && win.app != nil && win.app.api != nil {
-		win.app.api.viewportSetDestination(win.viewport, int32(logicalW), int32(logicalH))
+		totalLogicalW := int32(math.Round(float64(float32(win.width) / scale)))
+		totalLogicalH := int32(math.Round(float64(float32(win.height) / scale)))
+		win.app.api.viewportSetDestination(win.viewport, totalLogicalW, totalLogicalH)
 	}
 
 	win.geometryDirty = true
