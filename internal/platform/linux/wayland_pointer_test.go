@@ -5,6 +5,7 @@ package linux
 import (
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/vivaui/viva/internal/input"
 	"github.com/vivaui/viva/internal/platform"
@@ -208,5 +209,84 @@ func TestWaylandPointerEventsDispatch(t *testing.T) {
 	_ = state.router.dispatchScroll(platform.ScrollEvent{DeltaY: 48})
 	if len(scrollEvents) != 1 || scrollEvents[0].DeltaY != 48 {
 		t.Fatalf("expected scroll event with DeltaY=48, got %v", scrollEvents)
+	}
+}
+
+func TestWaylandPointerScrollFrameAndV120Deduplication(t *testing.T) {
+	app := &waylandApplication{
+		modifiers: input.ModifierControl,
+	}
+	win := &waylandWindow{
+		app:      app,
+		surface:  101,
+		pointerX: 120,
+		pointerY: 240,
+	}
+	win.storeScale(1.0)
+
+	var scrollEvents []platform.ScrollEvent
+	state := &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			OnScroll: func(event platform.ScrollEvent) (platform.Frame, error) {
+				scrollEvents = append(scrollEvents, event)
+				return platform.Frame{}, nil
+			},
+		},
+	}
+	state.router = eventRouter{config: state.config, scale: win.displayScale}
+	win.state = state
+	app.windows = []*waylandWindowState{state}
+	app.pointerFocus = win
+
+	initPointerListeners()
+
+	// axis_value120 (120 units = 1 notch = 48.0 delta)
+	puregoInvokeCallback4(rawPointerListener[9], unsafe.Pointer(app), 0, 0, 120)
+
+	// Fallback axis event in the same frame: must be ignored because axis_v120 was already processed!
+	puregoInvokeCallback5(rawPointerListener[4], unsafe.Pointer(app), 0, 100, 0, float64ToWlFixed(10))
+
+	// Before frame(): no scroll should be dispatched yet
+	if len(scrollEvents) != 0 {
+		t.Fatalf("expected 0 scroll events before frame(), got %d", len(scrollEvents))
+	}
+
+	// frame()
+	puregoInvokeCallback2(rawPointerListener[5], unsafe.Pointer(app), 0)
+
+	if len(scrollEvents) != 1 {
+		t.Fatalf("expected exactly 1 scroll event after frame(), got %d", len(scrollEvents))
+	}
+	ev := scrollEvents[0]
+	if ev.DeltaY != 48.0 || ev.X != 120 || ev.Y != 240 || ev.Modifiers != input.ModifierControl {
+		t.Fatalf("unexpected scroll event: %+v", ev)
+	}
+}
+
+func TestWaylandPointerCoordsWithScaleAndMargin(t *testing.T) {
+	win := &waylandWindow{
+		margin: 48, // physical margin at 2.0x scale -> 24 logical margin
+	}
+	win.storeScale(2.0)
+
+	// Surface coords (24, 24) should map to content logical coords (0, 0)
+	x, y := win.pointerCoords(float64ToWlFixed(24), float64ToWlFixed(24))
+	if x != 0 || y != 0 {
+		t.Fatalf("expected (0, 0), got (%f, %f)", x, y)
+	}
+
+	// Surface coords (124, 224) should map to content logical coords (100, 200)
+	x, y = win.pointerCoords(float64ToWlFixed(124), float64ToWlFixed(224))
+	if x != 100 || y != 200 {
+		t.Fatalf("expected (100, 200), got (%f, %f)", x, y)
+	}
+
+	// When margin is 0 (maximized or frameless)
+	win.margin = 0
+	x, y = win.pointerCoords(float64ToWlFixed(50), float64ToWlFixed(60))
+	if x != 50 || y != 60 {
+		t.Fatalf("expected (50, 60), got (%f, %f)", x, y)
 	}
 }

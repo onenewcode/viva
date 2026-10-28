@@ -29,6 +29,10 @@ type waylandApplication struct {
 	pointerSerial      uint32
 	keyboardFocus      *waylandWindow
 	lastSerial         uint32
+	scrollPending      bool
+	scrollV120Axis0    bool
+	scrollV120Axis1    bool
+	pendingScroll      platform.ScrollEvent
 	cursorMgr          *waylandCursorManager
 	currentCursorShape uint8
 

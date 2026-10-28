@@ -47,9 +47,10 @@ func initPointerListeners() {
 				x, y := win.pointerCoords(surfaceX, surfaceY)
 				win.pointerX, win.pointerY = x, y
 				event := platform.PointerEvent{
-					Kind: platform.PointerMove,
-					X:    x,
-					Y:    y,
+					Kind:      platform.PointerMove,
+					X:         x,
+					Y:         y,
+					Modifiers: app.modifiers,
 				}
 				_ = win.state.router.dispatchPointer(event)
 			}
@@ -63,9 +64,10 @@ func initPointerListeners() {
 			app := (*waylandApplication)(data)
 			if app.pointerFocus != nil && app.pointerFocus.state != nil {
 				event := platform.PointerEvent{
-					Kind: platform.PointerExit,
-					X:    app.pointerFocus.pointerX,
-					Y:    app.pointerFocus.pointerY,
+					Kind:      platform.PointerExit,
+					X:         app.pointerFocus.pointerX,
+					Y:         app.pointerFocus.pointerY,
+					Modifiers: app.modifiers,
 				}
 				_ = app.pointerFocus.state.router.dispatchPointer(event)
 			}
@@ -86,9 +88,10 @@ func initPointerListeners() {
 			win.pointerX, win.pointerY = x, y
 
 			event := platform.PointerEvent{
-				Kind: platform.PointerMove,
-				X:    x,
-				Y:    y,
+				Kind:      platform.PointerMove,
+				X:         x,
+				Y:         y,
+				Modifiers: app.modifiers,
 			}
 			_ = win.state.router.dispatchPointer(event)
 		})
@@ -132,6 +135,7 @@ func initPointerListeners() {
 				X:          win.pointerX,
 				Y:          win.pointerY,
 				ClickCount: count,
+				Modifiers:  app.modifiers,
 			}
 			_ = win.state.router.dispatchPointer(event)
 		})
@@ -145,19 +149,40 @@ func initPointerListeners() {
 			if app.pointerFocus == nil || app.pointerFocus.state == nil {
 				return
 			}
-			val := float32(wlFixedToFloat64(value)) * 4.8
-			scroll := platform.ScrollEvent{}
-			if axis == 0 {
-				scroll.DeltaY = val
-			} else if axis == 1 {
-				scroll.DeltaX = val
+			// If axis_value120 already provided high-resolution delta for this axis in this frame, skip fallback
+			if (axis == 0 && app.scrollV120Axis0) || (axis == 1 && app.scrollV120Axis1) {
+				return
 			}
-			_ = app.pointerFocus.state.router.dispatchScroll(scroll)
+			val := float32(wlFixedToFloat64(value)) * 4.8
+			if axis == 0 {
+				app.pendingScroll.DeltaY += val
+			} else if axis == 1 {
+				app.pendingScroll.DeltaX += val
+			}
+			app.scrollPending = true
 		})
 
 		// 5: frame()
 		rawPointerListener[5] = purego.NewCallback(func(data unsafe.Pointer, pointer uintptr) {
-			// Frame demarcates end of event group in Wayland v5+
+			if data == nil {
+				return
+			}
+			app := (*waylandApplication)(data)
+			if app.scrollPending {
+				app.scrollPending = false
+				app.scrollV120Axis0 = false
+				app.scrollV120Axis1 = false
+				if app.pointerFocus != nil && app.pointerFocus.state != nil {
+					scroll := app.pendingScroll
+					app.pendingScroll = platform.ScrollEvent{}
+					scroll.X = app.pointerFocus.pointerX
+					scroll.Y = app.pointerFocus.pointerY
+					scroll.Modifiers = app.modifiers
+					_ = app.pointerFocus.state.router.dispatchScroll(scroll)
+				} else {
+					app.pendingScroll = platform.ScrollEvent{}
+				}
+			}
 		})
 
 		// 6: axis_source(axis_source)
@@ -182,13 +207,14 @@ func initPointerListeners() {
 				return
 			}
 			val := float32(value120) / 120.0 * 48.0
-			scroll := platform.ScrollEvent{}
 			if axis == 0 {
-				scroll.DeltaY = val
+				app.scrollV120Axis0 = true
+				app.pendingScroll.DeltaY += val
 			} else if axis == 1 {
-				scroll.DeltaX = val
+				app.scrollV120Axis1 = true
+				app.pendingScroll.DeltaX += val
 			}
-			_ = app.pointerFocus.state.router.dispatchScroll(scroll)
+			app.scrollPending = true
 		})
 
 		pinnerPointer.Pin(&rawPointerListener)
@@ -236,13 +262,13 @@ func waylandPointerButton(button uint32) ui.PointerButton {
 
 func (win *waylandWindow) pointerCoords(surfaceX, surfaceY wlFixed) (float32, float32) {
 	scale := win.displayScale()
-	devX := float32(wlFixedToFloat64(surfaceX))
-	devY := float32(wlFixedToFloat64(surfaceY))
-
-	contentDevX := devX - float32(win.margin)
-	contentDevY := devY - float32(win.margin)
-
-	return contentDevX / scale, contentDevY / scale
+	logicalMargin := float32(0)
+	if scale > 0 {
+		logicalMargin = float32(win.margin) / scale
+	}
+	logicalX := float32(wlFixedToFloat64(surfaceX)) - logicalMargin
+	logicalY := float32(wlFixedToFloat64(surfaceY)) - logicalMargin
+	return logicalX, logicalY
 }
 
 func (win *waylandWindow) checkDoubleClick(timeMs uint32) bool {
