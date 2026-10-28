@@ -121,6 +121,7 @@ type waylandWindow struct {
 	lastClickTime      uint32
 
 	pinner runtime.Pinner
+	pinned bool
 	state  *waylandWindowState
 }
 
@@ -479,38 +480,47 @@ func xdgResizeEdge(edge platform.WindowEdge) uint32 {
 }
 
 func (win *waylandWindow) destroy() {
-	if win.app == nil || win.app.api == nil {
+	if win == nil {
 		return
 	}
-	api := win.app.api
+	win.closed.Store(true)
+	var api *waylandAPI
+	if win.app != nil {
+		api = win.app.api
+	}
 
-	if win.decoration != 0 {
-		api.decorationDestroy(win.decoration)
-		win.decoration = 0
-	}
-	if win.xdgToplevel != 0 {
-		api.xdgToplevelDestroy(win.xdgToplevel)
-		win.xdgToplevel = 0
-	}
-	if win.xdgSurface != 0 {
-		api.xdgSurfaceDestroy(win.xdgSurface)
-		win.xdgSurface = 0
-	}
-	if win.frameCallback != 0 {
-		api.proxyDestroy(win.frameCallback)
-		win.frameCallback = 0
-	}
-	if win.fractionalScale != 0 {
-		api.fractionalScaleDestroy(win.fractionalScale)
-		win.fractionalScale = 0
-	}
-	if win.viewport != 0 {
-		api.viewportDestroy(win.viewport)
-		win.viewport = 0
+	if api != nil {
+		if win.decoration != 0 {
+			api.decorationDestroy(win.decoration)
+			win.decoration = 0
+		}
+		if win.xdgToplevel != 0 {
+			api.xdgToplevelDestroy(win.xdgToplevel)
+			win.xdgToplevel = 0
+		}
+		if win.xdgSurface != 0 {
+			api.xdgSurfaceDestroy(win.xdgSurface)
+			win.xdgSurface = 0
+		}
+		if win.frameCallback != 0 {
+			api.proxyDestroy(win.frameCallback)
+			win.frameCallback = 0
+		}
+		if win.fractionalScale != 0 {
+			api.fractionalScaleDestroy(win.fractionalScale)
+			win.fractionalScale = 0
+		}
+		if win.viewport != 0 {
+			api.viewportDestroy(win.viewport)
+			win.viewport = 0
+		}
 	}
 
 	// Vulkan swapchain and VkSurfaceKHR MUST be destroyed before wl_surface is destroyed!
 	if win.state != nil {
+		if win.state.config.Waker != nil && win.state.config.OnRedraw != nil {
+			win.state.config.Waker.Unbind()
+		}
 		if win.state.renderer != nil {
 			win.state.renderer.close()
 			win.state.renderer = nil
@@ -519,19 +529,24 @@ func (win *waylandWindow) destroy() {
 			win.state.text.close()
 			win.state.text = nil
 		}
-		win.app.removeWindow(win.state)
+		if win.app != nil {
+			win.app.removeWindow(win.state)
+		}
 		if win.state.config.OnClosed != nil {
 			win.state.config.OnClosed()
 		}
 		win.state = nil
 	}
 
-	if win.surface != 0 {
+	if api != nil && win.surface != 0 {
 		api.surfaceDestroy(win.surface)
 		win.surface = 0
 	}
 
-	win.pinner.Unpin()
+	if win.pinned {
+		win.pinner.Unpin()
+		win.pinned = false
+	}
 }
 
 // Close closes the window and releases all resources.
@@ -670,6 +685,7 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 	}
 	win.storeScale(scale)
 	win.pinner.Pin(win)
+	win.pinned = true
 
 	initWindowListeners()
 	app.api.proxyAddListener(xdgSurface, uintptr(unsafe.Pointer(&rawXdgSurfaceListener[0])), unsafe.Pointer(win))

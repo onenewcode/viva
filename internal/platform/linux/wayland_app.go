@@ -4,6 +4,7 @@ package linux
 
 import (
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -111,13 +112,27 @@ func (app *waylandApplication) post(cmd waylandCommand) {
 	}
 }
 
-// Quit signals the event loop to stop and terminates the application cleanly.
+// Quit closes every window, bypassing close requests, and ends the loop.
+// It is thread-safe.
 func (app *waylandApplication) Quit() {
 	app.post(func() {
+		app.closeAll()
 		if app.loop != nil {
 			app.loop.stop()
 		}
 	})
+}
+
+// closeAll closes and destroys all currently open windows, bypassing OnCloseRequest.
+func (app *waylandApplication) closeAll() {
+	app.mu.Lock()
+	states := append([]*waylandWindowState(nil), app.windows...)
+	app.mu.Unlock()
+	for _, state := range states {
+		if state != nil && state.win != nil {
+			state.win.destroy()
+		}
+	}
 }
 
 // OpenWindow creates and displays a new Wayland-backed window.
@@ -132,6 +147,7 @@ func (app *waylandApplication) Run(start platform.ApplicationStart) error {
 	defer app.close()
 
 	if err := start(app); err != nil {
+		app.closeAll()
 		return err
 	}
 
@@ -143,7 +159,7 @@ func (app *waylandApplication) Run(start platform.ApplicationStart) error {
 
 // AddStatusItem is currently a stub on Wayland until system tray integration is completed.
 func (app *waylandApplication) AddStatusItem(config platform.StatusItemConfig) (platform.StatusItem, error) {
-	return nil, errors.New("linux: StatusNotifierItem not supported on Wayland yet")
+	return nil, fmt.Errorf("%w: StatusNotifierItem not supported on Wayland yet", platform.ErrStatusAreaUnavailable)
 }
 
 func (app *waylandApplication) removeWindow(state *waylandWindowState) {
@@ -193,6 +209,7 @@ func (app *waylandApplication) hasWindows() bool {
 // close releases all Wayland proxies, sockets, and dynamically linked libraries.
 func (app *waylandApplication) close() {
 	activeWaylandApp.CompareAndSwap(app, nil)
+	app.closeAll()
 	app.teardownDataDevice()
 	app.teardownPointer()
 	app.teardownKeyboard()

@@ -185,6 +185,11 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 		return false
 	}
 
+	l.drainCommands()
+	if !l.running.Load() {
+		return false
+	}
+
 	// 1. Dispatch any pending Wayland events already in the client library buffer BEFORE polling!
 	// This prevents hanging in poll if events were already read into memory.
 	if l.wayland != nil && l.wayland.displayDispatchPending != nil {
