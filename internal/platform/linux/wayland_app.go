@@ -53,6 +53,7 @@ type waylandApplication struct {
 	repeatDelay    int32
 	repeatTimer    *time.Timer
 	repeatTicker   *time.Ticker
+	repeatStop     chan struct{}
 	repeatKey      platform.KeyEvent
 	repeatScancode uint32
 

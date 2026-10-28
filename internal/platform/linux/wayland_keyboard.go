@@ -284,7 +284,12 @@ func (app *waylandApplication) handleKey(serial, timeMs, scancode, state uint32)
 		app.startKeyRepeat(keyEvent, scancode)
 		_ = win.state.router.dispatchKey(keyEvent)
 	} else {
-		app.stopKeyRepeat()
+		app.mu.Lock()
+		isRepeatingKey := (scancode == app.repeatScancode)
+		app.mu.Unlock()
+		if isRepeatingKey {
+			app.stopKeyRepeat()
+		}
 		if win.state.router.wantsKeyReleases() {
 			_ = win.state.router.dispatchKey(keyEvent)
 		}
@@ -296,9 +301,14 @@ func (app *waylandApplication) startKeyRepeat(keyEvent platform.KeyEvent, scanco
 	if app.repeatRate <= 0 {
 		return
 	}
+
+	app.mu.Lock()
 	app.repeatKey = keyEvent
 	app.repeatKey.Repeat = true
 	app.repeatScancode = scancode
+	stopCh := make(chan struct{})
+	app.repeatStop = stopCh
+	app.mu.Unlock()
 
 	delay := time.Duration(app.repeatDelay) * time.Millisecond
 	if delay <= 0 {
@@ -309,6 +319,7 @@ func (app *waylandApplication) startKeyRepeat(keyEvent platform.KeyEvent, scanco
 		interval = 40 * time.Millisecond
 	}
 
+	app.mu.Lock()
 	app.repeatTimer = time.AfterFunc(delay, func() {
 		app.mu.Lock()
 		if app.repeatScancode != scancode {
@@ -320,26 +331,39 @@ func (app *waylandApplication) startKeyRepeat(keyEvent platform.KeyEvent, scanco
 		event := app.repeatKey
 		app.mu.Unlock()
 
-		for range ticker.C {
-			app.mu.Lock()
-			if app.repeatScancode != scancode || app.keyboardFocus == nil || app.keyboardFocus.state == nil {
-				app.mu.Unlock()
-				return
-			}
-			win := app.keyboardFocus
-			app.mu.Unlock()
+		go func(t *time.Ticker, stop <-chan struct{}, repeatEvent platform.KeyEvent) {
+			defer t.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-t.C:
+					app.mu.Lock()
+					if app.repeatScancode != scancode || app.keyboardFocus == nil || app.keyboardFocus.state == nil {
+						app.mu.Unlock()
+						return
+					}
+					win := app.keyboardFocus
+					app.mu.Unlock()
 
-			app.post(func() {
-				_ = win.state.router.dispatchKey(event)
-			})
-		}
+					app.post(func() {
+						_ = win.state.router.dispatchKey(repeatEvent)
+					})
+				}
+			}
+		}(ticker, stopCh, event)
 	})
+	app.mu.Unlock()
 }
 
 func (app *waylandApplication) stopKeyRepeat() {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 	app.repeatScancode = 0
+	if app.repeatStop != nil {
+		close(app.repeatStop)
+		app.repeatStop = nil
+	}
 	if app.repeatTimer != nil {
 		app.repeatTimer.Stop()
 		app.repeatTimer = nil

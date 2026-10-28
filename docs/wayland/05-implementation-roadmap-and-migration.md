@@ -155,7 +155,7 @@ flowchart LR
   - [x] **Task 4.1**：新建 `internal/platform/linux/wayland_pointer.go`：
     - 监听 `wl_pointer` 的 `enter`, `leave`, `motion`, `button`, `axis`, `axis_discrete`, `axis_v120`；
     - 转换 24.8 定点数相对坐标，送入 Viva 现有的 `eventRouter`。
-  - [ ] **Task 4.2**：新建 `internal/platform/linux/wayland_keyboard.go`：
+  - [x] **Task 4.2**：新建 `internal/platform/linux/wayland_keyboard.go`：
     - 通过 `purego` 动态加载 `libxkbcommon.so.0`；
     - 解析 `wl_keyboard.keymap` 传入的共享内存描述符，构建 `xkb_keymap` 与 `xkb_state`；
     - 将键盘按键实时转换为标准 XKB Keysym，复用已有的 [`keysym.go`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/keysym.go) 映射表。

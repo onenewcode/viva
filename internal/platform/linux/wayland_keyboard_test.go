@@ -171,3 +171,66 @@ func TestWaylandKeyboardFocusAndModifiers(t *testing.T) {
 		t.Fatal("expected keyboardFocus to be nil after leave")
 	}
 }
+
+func TestWaylandKeyRepeatGoroutineCleanupAndIndependentRelease(t *testing.T) {
+	app := &waylandApplication{
+		repeatRate:  50,
+		repeatDelay: 50,
+	}
+	win := &waylandWindow{
+		app:     app,
+		surface: 203,
+	}
+	state := &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			OnKey: func(event platform.KeyEvent) (platform.Frame, error) {
+				return platform.Frame{}, nil
+			},
+		},
+	}
+	state.router = eventRouter{config: state.config, scale: win.displayScale}
+	win.state = state
+	app.windows = []*waylandWindowState{state}
+	app.keyboardFocus = win
+
+	// Press key A (scancode 30)
+	app.handleKey(1, 100, 30, 1)
+
+	app.mu.Lock()
+	if app.repeatScancode != 30 {
+		app.mu.Unlock()
+		t.Fatalf("expected repeatScancode = 30, got %d", app.repeatScancode)
+	}
+	stopCh := app.repeatStop
+	app.mu.Unlock()
+
+	// Release a different key (scancode 42 - Shift): should NOT stop repeat of key 30
+	app.handleKey(2, 120, 42, 0)
+
+	app.mu.Lock()
+	if app.repeatScancode != 30 {
+		app.mu.Unlock()
+		t.Fatalf("release of different key stopped repeat: expected 30, got %d", app.repeatScancode)
+	}
+	app.mu.Unlock()
+
+	// Release repeating key 30: should stop repeat and close stopCh
+	app.handleKey(3, 140, 30, 0)
+
+	app.mu.Lock()
+	if app.repeatScancode != 0 {
+		app.mu.Unlock()
+		t.Fatalf("expected repeatScancode = 0, got %d", app.repeatScancode)
+	}
+	app.mu.Unlock()
+
+	// Verify stopCh was closed so goroutine exits
+	select {
+	case <-stopCh:
+		// success: channel closed
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected repeatStop channel to be closed")
+	}
+}
