@@ -58,6 +58,17 @@ type waylandDragState struct {
 	x, y   float32
 }
 
+func (app *waylandApplication) dispatchFileDropEvent(win *waylandWindow, event platform.FileDropEvent) {
+	if win == nil || win.state == nil || win.state.config.OnFileDrop == nil {
+		return
+	}
+	frame, _, err := win.state.config.OnFileDrop(event)
+	if err == nil && win.state.router.present != nil {
+		err = win.state.router.present(frame)
+	}
+	app.fail(err)
+}
+
 var (
 	dataListenerOnce      sync.Once
 	rawDataDeviceListener [6]uintptr
@@ -120,13 +131,11 @@ func initDataListeners() {
 				if app.api != nil {
 					app.api.dataOfferAccept(id, serial, "text/uri-list")
 				}
-				if win.state != nil && win.state.config.OnFileDrop != nil {
-					_, _, _ = win.state.config.OnFileDrop(platform.FileDropEvent{
-						Phase: platform.FileDropOver,
-						X:     x,
-						Y:     y,
-					})
-				}
+				app.dispatchFileDropEvent(win, platform.FileDropEvent{
+					Phase: platform.FileDropOver,
+					X:     x,
+					Y:     y,
+				})
 			}
 		})
 
@@ -148,8 +157,8 @@ func initDataListeners() {
 			}
 			app.mu.Unlock()
 
-			if drag != nil && drag.win != nil && drag.win.state != nil && drag.win.state.config.OnFileDrop != nil {
-				_, _, _ = drag.win.state.config.OnFileDrop(platform.FileDropEvent{
+			if drag != nil {
+				app.dispatchFileDropEvent(drag.win, platform.FileDropEvent{
 					Phase: platform.FileDropLeave,
 					X:     drag.x,
 					Y:     drag.y,
@@ -174,13 +183,11 @@ func initDataListeners() {
 			win := drag.win
 			app.mu.Unlock()
 
-			if win != nil && win.state != nil && win.state.config.OnFileDrop != nil {
-				_, _, _ = win.state.config.OnFileDrop(platform.FileDropEvent{
-					Phase: platform.FileDropOver,
-					X:     x,
-					Y:     y,
-				})
-			}
+			app.dispatchFileDropEvent(win, platform.FileDropEvent{
+				Phase: platform.FileDropOver,
+				X:     x,
+				Y:     y,
+			})
 		})
 
 		// 4: drop()
@@ -282,17 +289,13 @@ func initDataListeners() {
 					app.mu.Unlock()
 
 					paths := parseURIList(string(content))
-					if len(paths) > 0 && targetWin.state != nil && targetWin.state.config.OnFileDrop != nil {
-						frame, taken, dropErr := targetWin.state.config.OnFileDrop(platform.FileDropEvent{
+					if len(paths) > 0 {
+						app.dispatchFileDropEvent(targetWin, platform.FileDropEvent{
 							Phase: platform.FileDropDrop,
 							X:     dragX,
 							Y:     dragY,
 							Paths: paths,
 						})
-						if dropErr == nil && taken && targetWin.state.router.present != nil {
-							dropErr = targetWin.state.router.present(frame)
-						}
-						app.fail(dropErr)
 					}
 				})
 			}(r, drag.offer.proxy, drag.x, drag.y, win)

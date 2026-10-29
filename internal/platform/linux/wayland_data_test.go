@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -202,6 +203,7 @@ func TestWaylandFileDropInteraction(t *testing.T) {
 	var mu sync.Mutex
 	var dropPhases []platform.FileDropPhase
 	var droppedPaths []string
+	presentCount := 0
 
 	win := &waylandWindow{
 		surface: 777,
@@ -216,9 +218,15 @@ func TestWaylandFileDropInteraction(t *testing.T) {
 					droppedPaths = event.Paths
 				}
 				mu.Unlock()
-				return platform.Frame{}, true, nil
+				return platform.Frame{}, event.Phase == platform.FileDropDrop, nil
 			},
 		},
+	}
+	win.state.router.present = func(platform.Frame) error {
+		mu.Lock()
+		presentCount++
+		mu.Unlock()
+		return nil
 	}
 
 	api := &waylandAPI{
@@ -268,8 +276,9 @@ func TestWaylandFileDropInteraction(t *testing.T) {
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		count := len(dropPhases)
+		presents := presentCount
 		mu.Unlock()
-		if count >= 3 {
+		if count >= 3 && presents >= 3 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -286,6 +295,51 @@ func TestWaylandFileDropInteraction(t *testing.T) {
 	}
 	if len(droppedPaths) != 2 || droppedPaths[0] != "/home/user/document.pdf" || droppedPaths[1] != "/home/user/image.png" {
 		t.Fatalf("unexpected dropped paths: %v", droppedPaths)
+	}
+	if presentCount != 3 {
+		t.Fatalf("presented %d file-drop frames, want enter, motion and drop", presentCount)
+	}
+}
+
+func TestWaylandFileDropErrorsReachApplication(t *testing.T) {
+	callbackErr := errors.New("file drop callback failed")
+	presentErr := errors.New("file drop present failed")
+	tests := []struct {
+		name        string
+		callbackErr error
+		presentErr  error
+		want        error
+	}{
+		{name: "callback", callbackErr: callbackErr, want: callbackErr},
+		{name: "present", presentErr: presentErr, want: presentErr},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app := &waylandApplication{
+				dataOffers: map[uintptr]*waylandDataOffer{
+					601: {proxy: 601, mimeTypes: []string{"text/uri-list"}},
+				},
+			}
+			win := &waylandWindow{app: app, surface: 777}
+			state := &waylandWindowState{
+				app: app,
+				win: win,
+				config: platform.Config{
+					OnFileDrop: func(platform.FileDropEvent) (platform.Frame, bool, error) {
+						return platform.Frame{}, true, test.callbackErr
+					},
+				},
+			}
+			state.router.present = func(platform.Frame) error { return test.presentErr }
+			win.state = state
+			app.windows = []*waylandWindowState{state}
+
+			initDataListeners()
+			puregoInvokeCallback7(rawDataDeviceListener[1], unsafe.Pointer(app), 300, 111, win.surface, 0, 0, 601)
+			if !errors.Is(app.firstErr, test.want) {
+				t.Fatalf("application error = %v, want %v", app.firstErr, test.want)
+			}
+		})
 	}
 }
 
