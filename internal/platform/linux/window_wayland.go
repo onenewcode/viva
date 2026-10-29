@@ -423,11 +423,11 @@ func (win *waylandWindow) applyPendingResize() {
 		return
 	}
 
-	// Always acknowledge configure BEFORE presenting the new geometry/buffer.
-	// This ensures compositor matches the acknowledged serial with the committed frame.
-	if win.app != nil && win.app.api != nil && win.xdgSurface != 0 && win.pendingSerial != 0 {
-		win.app.api.xdgSurfaceAckConfigure(win.xdgSurface, win.pendingSerial)
-		win.pendingSerial = 0
+	ackConfigure := func() {
+		if win.app != nil && win.app.api != nil && win.xdgSurface != 0 && win.pendingSerial != 0 {
+			win.app.api.xdgSurfaceAckConfigure(win.xdgSurface, win.pendingSerial)
+			win.pendingSerial = 0
+		}
 	}
 
 	// Synchronize window geometry, viewport destination and input region prior
@@ -442,32 +442,54 @@ func (win *waylandWindow) applyPendingResize() {
 	// Request next frame callback BEFORE committing current frame
 	win.requestFrameCallback()
 
+	var err error
 	if win.state.renderer != nil {
-		_ = win.state.renderer.resize(win.width, win.height)
-		presented := false
-		if win.state.config.OnResize != nil {
-			if frame, err := win.state.config.OnResize(win.logicalSize()); err == nil {
-				if win.state.router.present != nil {
-					_ = win.state.router.present(frame)
-					presented = true
-				}
+		err = win.state.renderer.resize(win.width, win.height)
+		if err != nil {
+			if win.app != nil {
+				win.app.fail(err)
 			}
+			return
 		}
-		if !presented {
-			_ = win.state.renderer.present()
+	}
+
+	var frame platform.Frame
+	hasResizeFrame := false
+	if win.state.config.OnResize != nil {
+		frame, err = win.state.config.OnResize(win.logicalSize())
+		if err != nil {
+			if win.app != nil {
+				win.app.fail(err)
+			}
+			return
 		}
-		win.reportFrame()
+		hasResizeFrame = true
+	}
+
+	// The compositor requires the configure ACK before the matching buffer.
+	ackConfigure()
+	if win.state.renderer != nil {
+		if hasResizeFrame && win.state.router.present != nil {
+			err = win.state.router.present(frame)
+		} else {
+			err = win.state.renderer.present()
+		}
 	} else {
-		if win.state.config.OnResize != nil {
-			if frame, err := win.state.config.OnResize(win.logicalSize()); err == nil {
-				if win.state.router.present != nil {
-					_ = win.state.router.present(frame)
-				}
-			}
+		if hasResizeFrame && win.state.router.present != nil {
+			err = win.state.router.present(frame)
 		}
-		if win.app != nil && win.app.api != nil {
+		if err == nil && win.app != nil && win.app.api != nil {
 			win.app.api.surfaceCommit(win.surface)
 		}
+	}
+	if err != nil {
+		if win.app != nil {
+			win.app.fail(err)
+		}
+		return
+	}
+	if win.state.renderer != nil {
+		win.reportFrame()
 	}
 	if win.app != nil && win.app.api != nil && win.app.api.displayFlush != nil && win.app.display != 0 {
 		win.app.api.displayFlush(win.app.display)

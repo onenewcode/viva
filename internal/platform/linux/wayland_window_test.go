@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/vivaui/viva/internal/platform"
+	"github.com/vivaui/viva/ui"
 )
 
 func TestWaylandSurfaceProviderExtensionsAndCreate(t *testing.T) {
@@ -600,6 +601,104 @@ func TestWaylandViewportDestinationSync(t *testing.T) {
 	expectedLogicalH := int32(math.Round(float64(float32(win.height) / 1.25)))
 	if destW != expectedLogicalW || destH != expectedLogicalH {
 		t.Fatalf("expected configure to sync viewport destination to (%d, %d), got (%d, %d)", expectedLogicalW, expectedLogicalH, destW, destH)
+	}
+}
+
+func TestWaylandResizeErrorsStopConfigureCompletion(t *testing.T) {
+	callbackErr := errors.New("resize callback failed")
+	routerErr := errors.New("resize upload failed")
+	tests := []struct {
+		name           string
+		resizeFailure  bool
+		callbackErr    error
+		routerErr      error
+		presentFailure bool
+		wantACK        int
+		wantPresents   int
+		wantErr        error
+	}{
+		{name: "renderer resize", resizeFailure: true},
+		{name: "resize callback", callbackErr: callbackErr, wantErr: callbackErr},
+		{name: "router present", routerErr: routerErr, wantACK: 1, wantErr: routerErr},
+		{name: "renderer present", presentFailure: true, wantACK: 1, wantPresents: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			acks := 0
+			frameReports := 0
+			rendererPresents := 0
+			api := &waylandAPI{
+				proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+					if opcode == xdgSurfaceAckConfigureOpcode {
+						acks++
+					}
+					return 0
+				},
+			}
+			app := &waylandApplication{api: api}
+			win := &waylandWindow{
+				app:           app,
+				surface:       1,
+				xdgSurface:    2,
+				width:         800,
+				height:        600,
+				pendingWidth:  780,
+				pendingHeight: 570,
+				pendingSerial: 99,
+				framePending:  true,
+			}
+			win.storeScale(1)
+			renderer := &vulkanRenderer{
+				width:  780,
+				height: 570,
+				api: &vulkanAPI{
+					waitForFences: func(uintptr, uint32, *uintptr, uint32, uint64) int32 {
+						rendererPresents++
+						return vkErrorDeviceLost
+					},
+				},
+			}
+			if test.resizeFailure {
+				renderer.width = 800
+				renderer.height = 600
+				renderer.api.deviceWaitIdle = func(uintptr) int32 { return vkErrorDeviceLost }
+			}
+			state := &waylandWindowState{
+				app:      app,
+				win:      win,
+				renderer: renderer,
+				config: platform.Config{
+					OnResize: func(platform.Size) (platform.Frame, error) {
+						return platform.Frame{}, test.callbackErr
+					},
+					OnFrameChange: func(ui.Rect) {
+						frameReports++
+					},
+				},
+			}
+			if test.presentFailure {
+				state.config.OnResize = nil
+			}
+			state.router.present = func(platform.Frame) error { return test.routerErr }
+			win.state = state
+
+			win.applyPendingResize()
+			if app.firstErr == nil {
+				t.Fatal("resize failure did not reach the application")
+			}
+			if test.wantErr != nil && !errors.Is(app.firstErr, test.wantErr) {
+				t.Fatalf("application error = %v, want %v", app.firstErr, test.wantErr)
+			}
+			if acks != test.wantACK {
+				t.Fatalf("configure ACKs = %d, want %d", acks, test.wantACK)
+			}
+			if frameReports != 0 {
+				t.Fatalf("failed resize reported %d new frames", frameReports)
+			}
+			if rendererPresents != test.wantPresents {
+				t.Fatalf("renderer presents = %d, want %d", rendererPresents, test.wantPresents)
+			}
+		})
 	}
 }
 
