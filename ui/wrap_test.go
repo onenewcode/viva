@@ -297,3 +297,22 @@ func TestFitLineRemembersCutLinesAndNeverMixesThemUp(t *testing.T) {
 		t.Fatalf("cut after the measurer changed = %q", got)
 	}
 }
+
+func TestFitLineReusesOneLabelAtDifferentControlWidths(t *testing.T) {
+	canvas := wrapper()
+	label := strings.Repeat("a long group name ", 10)
+	paint := func() {
+		for _, width := range []float32{248, 282} {
+			_ = canvas.FitLine(label, 14, WeightRegular, width)
+		}
+	}
+	paint()
+	if allocations := testing.AllocsPerRun(100, paint); allocations != 0 {
+		t.Fatalf("input and popup labels evict each other: %g allocations", allocations)
+	}
+	for _, width := range []float32{248, 282} {
+		if got, want := canvas.FitLine(label, 14, WeightRegular, width), canvas.ellipsize(label, 14, WeightRegular, width); got != want {
+			t.Fatalf("width %v: %q, want %q", width, got, want)
+		}
+	}
+}

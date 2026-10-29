@@ -88,12 +88,14 @@ mistakes an absence for an oversight. Items marked *measured* were tried or size
 | AppImage, rpm | Linux | AppImage needs an external runtime binary; rpm could not be checked here. `viva package` makes tar.gz and .deb. |
 | Native text events in `viva dev` | all | The worker protocol does not carry them; native Canvas examples do not run under `viva dev`. |
 | A flat accessibility tree | Windows, macOS | Every node hangs from the window; Linux derives parents from geometry. |
+| XIM input | Linux | Composition goes through IBus (IBus and Fcitx5's IBus frontend); XIM-only applications cannot compose. |
 
 ## Test environments
 
 Windows is a Windows 11 virtual machine with a display-only GPU, so Direct3D runs
-on WARP; Linux is KDE Plasma on X11 with software Vulkan. Neither is evidence for
-GPU performance, only for behavior.
+on WARP; Linux is KDE Plasma on X11 with software Vulkan. macOS is arm64; Intel
+Macs, their GPUs, IME and text rasterization are not part of that matrix. None of
+these machines is evidence for GPU performance, only for behavior.
 
 ## Machines without a GPU
 

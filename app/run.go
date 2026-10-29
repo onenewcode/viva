@@ -25,6 +25,8 @@ func Run(config Config) error {
 		Icon:           normalized.Icon.platform(),
 		Width:          normalized.Width,
 		Height:         normalized.Height,
+		MinWidth:       normalized.MinWidth,
+		MinHeight:      normalized.MinHeight,
 		WindowMode:     platform.WindowMode(normalized.WindowMode),
 		TitlebarHeight: normalized.TitlebarHeight,
 		ClearColor: platform.Color{

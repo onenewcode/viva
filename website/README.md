@@ -38,7 +38,9 @@ URL slugs. Examples also come exclusively from generated data. All examples are
 stacked vertically with independent previews and reset buttons; the production
 component source is expanded once below them.
 
-- `/` redirects to `/zh/ui/button/`; `/zh/` and `/en/` open the corresponding Button page.
+- `/` redirects to `/zh/`; `/zh/` and `/en/` open the home page.
+- `/zh/docs/<slug>/` and `/en/docs/<slug>/` hold the guides; `/zh/components/` and
+  `/en/components/` index the catalog.
 - `/zh/ui/<component>/` and `/en/ui/<component>/` document each generated page.
 - `/zh/coverage/` and `/en/coverage/` list source components; pending entries are not page links.
 - `/preview/index.html?component=<id>&example=<id>&theme=light|dark&source=<revision>` is
@@ -131,4 +133,39 @@ it merges. A deploy is skipped on pull requests and when the token is unset.
 Cloudflare Pages assumes a single-page application and answers every unknown
 path with the root document and a `200`, which turns a broken link into a
 silent redirect. `site.test.mjs` fails if that file disappears.
+
+## What a crawler reads
+
+The build writes four files beside the HTML, derived from the pages that were
+actually built (`siteFiles` in `astro.config.mjs`), so a new guide cannot be
+missing from the sitemap and a deleted one cannot linger as a 404:
+
+- `sitemap.xml` — every reader-facing page, with its `hreflang` translations and
+  an `x-default`. About 1,060 entries at the time of writing; about 18 KB compressed.
+- `robots.txt` — `User-agent: *`, `Allow: /` and the sitemap location. The
+  content-signal terms are still set in the Cloudflare dashboard, because that
+  managed file replaces this one when it is enabled.
+- `llms.txt` — the guides and the reference indexes with their own summaries,
+  which is what an assistant reads instead of crawling every page.
+- `_headers` — HSTS, frame and MIME protection for every path, and a one-year
+  immutable cache for the hashed `_astro/` assets.
+
+Each page also states its canonical URL, its translations, its `x-default`, its
+Open Graph and Twitter card, and a schema.org graph (`Organization` and
+`WebSite` on every page, `SoftwareApplication` on the home page, `TechArticle`
+and `BreadcrumbList` in the guides). `site.test.mjs` checks all of it against
+the built output, so a new route that forgets a canonical fails `test:site`.
+
+Email Address Obfuscation (Scrape Shield) rewrites anything that looks like an
+address, and it served `go get github.com/vivaui/viva@v0.1.3` as
+`github.com/vivaui/[email protected]` — what every reader copies and every crawler
+reads. `BaseLayout.astro` wraps `<body>` in Cloudflare's documented
+`<!--email_off-->` marker, which switches the rewrite off for these pages while
+the zone setting stays on. Keep the marker: without it, turning the setting back
+on silently breaks the install command again.
+
+One setting lives in the Cloudflare dashboard rather than in this repository:
+
+1. **Keep the managed `robots.txt` policy in sync** with the built file. If it
+   is enabled, its content-signal block replaces the generated directives.
 

@@ -27,7 +27,7 @@ If you are in a checkout of Viva itself, its `AGENTS.md` is the authority and ov
 
 ## 3. How a screen is written
 
-The painting function is the UI. It runs again on every redraw, declares what is on screen with value types, and keeps no layout cache. The smallest complete program is `examples/guides/hello/main.go`; the others in `examples/guides` show one concept each (layout, input, text field, overlays, windows, theming, drawing, background).
+The painting function is the UI. It runs again on every redraw, declares what is on screen with value types, and keeps no layout cache. The smallest complete program is [`hello/main.go`](https://github.com/vivaui/viva/blob/main/examples/guides/hello/main.go); the others in [`examples/guides`](https://github.com/vivaui/viva/tree/main/examples/guides) show one concept each (layout, input, text field, overlays, windows, theming, drawing, background).
 
 - Declare identities once: `tree = ui.Tree{}`, a `tree.Feature("name")` per area, `tree.ID(feature, "control")` per control. Keep them stable between frames; focus, hover and press are tracked by ID, and `Canvas.Focused`, `Canvas.FocusVisible` and `Canvas.Hovered` report them back.
 - Handle a click where the control is declared: `f.Button(id, label).Clicked()` is true for the one paint that delivers the click, and only then may state change.
@@ -38,8 +38,8 @@ The painting function is the UI. It runs again on every redraw, declares what is
 
 Do not open a real window unless the user agrees; it interrupts them and depends on which display it lands on. Use these in order of cost.
 
-1. **`app.Driver`** in a Go test: runs your real painter, router and focus rules from explicit calls (`Click`, `Key`, `Type`, `Scroll`, `Advance`) and returns a `Snapshot` of labels, hit regions and focus. See `examples/guides/hello/main_test.go`. Test behavior a user depends on, not pixel offsets or exact primitive counts.
-2. **Headless build and line protocol**: import `github.com/vivaui/viva/headless/auto` from a file guarded by `//go:build vivahead`, so release builds never contain it. Build with `-tags vivahead` and start the program with `VIVA_HEADLESS=1` and a throwaway `HOME`: `RunCanvas` then reads one command per line from stdin instead of opening a window (`click "Label"`, `type`, `key`, `waitfor`, `shot`, `texts`, `layout` ...). Each reply ends in one `ok` or `error` line. The complete command list is the comment above `Serve` in `headless/control.go`; do not copy it elsewhere, it would go stale.
+1. **`app.Driver`** in a Go test: runs your real painter, router and focus rules from explicit calls (`Click`, `Key`, `Type`, `Scroll`, `Advance`) and returns a `Snapshot` of labels, hit regions and focus. See [`hello/main_test.go`](https://github.com/vivaui/viva/blob/main/examples/guides/hello/main_test.go). Test behavior a user depends on, not pixel offsets or exact primitive counts.
+2. **Headless build and line protocol**: import `github.com/vivaui/viva/headless/auto` from a file guarded by `//go:build vivahead`, so release builds never contain it. Build with `-tags vivahead` and start the program with `VIVA_HEADLESS=1` and a throwaway `HOME`: `RunCanvas` then reads one command per line from stdin instead of opening a window (`click "Label"`, `type`, `key`, `waitfor`, `shot`, `texts`, `layout` ...). Each reply ends in one `ok` or `error` line. The complete command list is the comment above `Serve` in [`headless/control.go`](https://github.com/vivaui/viva/blob/main/headless/control.go); do not copy it elsewhere, it would go stale.
 3. **`layout`** lists text that is clipped, spills out of its control or lies over other text. It is faster to read than a screenshot; use `shot` when the look itself matters.
 4. **Real windows** on each target platform for anything the above cannot see: IME, focus loss, window-manager close, physical keyboard, high-DPI. Say plainly what you did not test.
 
@@ -47,6 +47,6 @@ Before finishing, run `gofmt`, `go vet ./...` and `go test ./... -count=1`. For 
 
 ## 5. Where to look
 
-- Guides: `website/content/guides/en` (programming model, declarative layout, handling input, text input, overlays, theming, performance, testing, platforms).
-- Platform behavior and what still needs a real window: `docs/conformance.md`.
-- Measurements and the machines they were taken on: `docs/benchmarks/`.
+- Guides: <https://vivaui.dev/en/docs/> (programming model, declarative layout, handling input, text input, overlays, theming, performance, testing, platforms).
+- Platform behavior and what still needs a real window: [`docs/conformance.md`](https://github.com/vivaui/viva/blob/main/docs/conformance.md).
+- Measurements and the machines they were taken on: [`docs/benchmarks/`](https://github.com/vivaui/viva/tree/main/docs/benchmarks).

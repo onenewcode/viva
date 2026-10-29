@@ -101,6 +101,9 @@
 //   - Input group: `PaintInputGroup` paints an input with leading and
 //     trailing text, button, key-cap, or icon addons.
 //   - Select: `BeginSelect` paints the trigger and filtered list popup.
+//   - Single select: `PaintSingleSelect` combines one selected value, a native
+//     search editor and a filtered popup. `SingleSelectState` supports optional
+//     item creation, clearing, keyboard navigation and IME-safe confirmation.
 //   - Native select: `PaintNativeSelect` paints the platform-styled control
 //     and `PaintNativeSelectSemantics` declares its accessibility tree;
 //     `NativeSelectCommandForKey` maps key events.
@@ -126,6 +129,9 @@
 //     ratio inside bounds.
 //   - Resizable: `BeginResizable` paints a two-panel split with a draggable
 //     handle.
+//   - Reorder list: `BeginReorderList` reserves independent drag handles and
+//     content slots. `ReorderListState` returns completed pointer/keyboard moves
+//     while the application keeps ownership of the ordered data.
 //   - Tree: `BeginTree` paints caller-flattened hierarchical rows with stable
 //     disclosure and selection semantics while leaving content application-owned.
 //   - Scroll area: `BeginScrollArea` paints a clipped viewport and scrollbar

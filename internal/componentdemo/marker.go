@@ -29,7 +29,7 @@ components.MarkerProgress(canvas, theme, bounds, components.MarkerDefault, phase
 // Lucide's check and clock, compiled to the ui.Icon form.
 var (
 	markerCheckIcon = ui.Icon{ViewBox: 24, Stroke: 2, Cap: ui.CapRound, Join: ui.JoinRound, Commands: []ui.PathCommand{
-		ui.MoveTo(20, 6), ui.LineTo(9, 17), ui.LineTo(4, 12),
+		ui.MoveTo(20, 6.5), ui.LineTo(9, 17.5), ui.LineTo(4, 12.5),
 	}}
 	markerClockIcon = ui.Icon{ViewBox: 24, Stroke: 2, Cap: ui.CapRound, Join: ui.JoinRound, Commands: append(demoCircle(12, 12, 10),
 		ui.MoveTo(12, 6), ui.LineTo(12, 12), ui.LineTo(16, 14),

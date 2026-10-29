@@ -67,7 +67,10 @@ func TestReloadWorkerConfigForwardsInputHandlers(t *testing.T) {
 // A development host opens the window, so the custom titlebar's height has to
 // reach it from the worker's configuration, rounded to a whole pixel.
 func TestReloadWorkerCarriesTheTitlebarHeightToTheHost(t *testing.T) {
-	worker := newReloadWorkerConfig(Config{Title: "bar", Width: 100, Height: 100, WindowMode: WindowCustomTitlebar, TitlebarHeight: 36}, &ui.Canvas{})
+	worker := newReloadWorkerConfig(Config{Title: "bar", Width: 100, Height: 100, MinWidth: 80, MinHeight: 60, WindowMode: WindowCustomTitlebar, TitlebarHeight: 36}, &ui.Canvas{})
+	if worker.Window.MinWidth != 80 || worker.Window.MinHeight != 60 {
+		t.Fatalf("minimum lost by reload worker: %+v", worker.Window)
+	}
 	if worker.Window.TitlebarHeight != 36 || worker.Window.WindowMode != uint8(WindowCustomTitlebar) {
 		t.Fatalf("window = %+v", worker.Window)
 	}

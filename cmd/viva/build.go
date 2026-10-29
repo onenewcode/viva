@@ -109,6 +109,9 @@ func (plan buildPlan) run(output string, errorOutput io.Writer) error {
 	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
 		return err
 	}
+	if err := requireGo(errorOutput); err != nil {
+		return err
+	}
 	command := exec.Command("go", plan.arguments(output)...)
 	command.Dir = plan.manifest.Dir
 	command.Env = plan.environment(os.Environ())

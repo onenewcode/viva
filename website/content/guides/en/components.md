@@ -43,7 +43,7 @@ Two limits are deliberate. A chart draws every point it is given, so a very long
 If you want to change a component, copy it. `viva list` names the recipes the installer can copy, and `viva add` writes them into your project as ordinary Go files:
 
 ```sh
-go install github.com/vivaui/viva/cmd/viva@latest    # once: installs the viva command
+# install viva once (see "Build and package"); in a project made by viva init, use go tool viva
 viva list
 viva add --out ./components/ui button card badge
 ```

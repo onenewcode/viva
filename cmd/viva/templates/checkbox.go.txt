@@ -155,7 +155,9 @@ func (checkbox Checkbox) Paint() CheckboxResult {
 // platform (Segoe UI Symbol's is a tall calligraphic stroke, SF's a short one), and none
 // is the Lucide mark the other icons are drawn with. A path is the same on all of them.
 var checkIcon = ui.Icon{ViewBox: 24, Stroke: 2, Cap: ui.CapRound, Join: ui.JoinRound, Commands: []ui.PathCommand{
-	ui.MoveTo(20, 6), ui.LineTo(9, 17), ui.LineTo(4, 12),
+	// Center the visible path on y=12 too: the original y=6..17 glyph sits
+	// half a view-box unit above the center of its 24-unit canvas.
+	ui.MoveTo(20, 6.5), ui.LineTo(9, 17.5), ui.LineTo(4, 12.5),
 }}
 
 // paintCheck draws a check mark size pixels square, centered in bounds.

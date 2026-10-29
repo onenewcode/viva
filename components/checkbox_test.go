@@ -1,10 +1,65 @@
 package components
 
 import (
+	"math"
 	"testing"
 
 	"github.com/vivaui/viva/ui"
 )
+
+func TestCheckboxCheckIsCenteredAtDisplayScales(t *testing.T) {
+	// Display presets must land within half a device pixel: at these scales the
+	// box and the mark round to the same lattice. Custom fractional scales still
+	// snap the box and the icon independently, so they may end one pixel off;
+	// that is measured, not the icon adding an offset of its own.
+	for _, test := range []struct {
+		name      string
+		scales    []float32
+		tolerance float64
+	}{
+		{"presets", []float32{1, 1.25, 1.5, 2, 3}, 0.501},
+		{"custom", []float32{1.6, 1.75}, 1.01},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, scale := range test.scales {
+				for _, origin := range []ui.Point{{X: 16, Y: 16}, {X: 458, Y: 602}, {X: 82.4, Y: 94.4}} {
+					center, want := checkboxCheckCenter(scale, origin)
+					if math.Abs(float64((center.X-want.X)*scale)) > test.tolerance || math.Abs(float64((center.Y-want.Y)*scale)) > test.tolerance {
+						t.Errorf("scale %g at %v: visible mark centered at %v, checkbox center %v", scale, origin, center, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func checkboxCheckCenter(scale float32, origin ui.Point) (center, want ui.Point) {
+	var canvas ui.Canvas
+	canvas.SetPixelScale(scale)
+	BeginCheckbox(&canvas, ui.LightTheme(), ui.Item(1), ui.Rect{X: origin.X, Y: origin.Y}, true).Paint()
+	box := canvas.Rectangles()[0].Bounds
+	want = ui.Point{X: box.X + box.Width/2, Y: box.Y + box.Height/2}
+	least, greatest := ui.Point{X: 1e9, Y: 1e9}, ui.Point{X: -1e9, Y: -1e9}
+	for _, triangle := range canvas.Triangles() {
+		for _, point := range triangle.Points {
+			least.X, least.Y = min(least.X, point.X), min(least.Y, point.Y)
+			greatest.X, greatest.Y = max(greatest.X, point.X), max(greatest.Y, point.Y)
+		}
+	}
+	return ui.Point{X: (least.X + greatest.X) / 2, Y: (least.Y + greatest.Y) / 2}, want
+}
+
+func BenchmarkCheckboxPaint(b *testing.B) {
+	var canvas ui.Canvas
+	canvas.SetPixelScale(1.25)
+	theme := ui.DarkTheme()
+	BeginCheckbox(&canvas, theme, ui.Item(1), ui.Rect{X: 16, Y: 16}, true).Paint()
+	b.ReportAllocs()
+	for b.Loop() {
+		canvas.Reset()
+		BeginCheckbox(&canvas, theme, ui.Item(1), ui.Rect{X: 16, Y: 16}, true).Paint()
+	}
+}
 
 func TestCheckboxCheckedPaintAndTypedState(t *testing.T) {
 	theme := ui.DarkTheme()

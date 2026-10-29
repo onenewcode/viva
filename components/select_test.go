@@ -190,6 +190,66 @@ func TestSelectIconsShiftLabelsAndStayAllocationFree(t *testing.T) {
 	}
 }
 
+func TestSelectTextIconUsesTheIconSlot(t *testing.T) {
+	var canvas ui.Canvas
+	paint := func() {
+		canvas.Reset()
+		control := BeginSelect(&canvas, ui.LightTheme(), ui.Rect{Width: 200}, SelectOptions{
+			TriggerID: ui.Item(1), Label: "Language", Value: "繁體中文", IconText: "繁", Open: true,
+			Content: ui.Rect{Y: 36, Width: 200, Height: 80}, Layer: 6, Scope: ui.Item(10),
+		})
+		control.AddItem(SelectItem{ID: ui.Item(2), Label: "繁體中文", IconText: "繁"})
+		control.End()
+	}
+	paint()
+	texts := canvas.Texts()
+	if len(texts) != 4 || texts[0].Value != "繁" || texts[2].Value != "繁" {
+		t.Fatalf("missing text icons: %+v", texts)
+	}
+	if texts[1].Bounds.X != inputInsetX+selectIconSize+selectIconGap || texts[3].Bounds.X != 4+8+selectIconSize+selectIconGap {
+		t.Fatalf("text icons did not reserve the icon slot: %+v", texts)
+	}
+	if allocations := testing.AllocsPerRun(100, paint); allocations != 0 {
+		t.Fatalf("select with text icons allocations = %v", allocations)
+	}
+}
+
+func TestSelectImageIconPreservesItsAspectRatioAndStaysAllocationFree(t *testing.T) {
+	bitmap := ui.Bitmap{Pix: make([]byte, 4*3*4), Width: 4, Height: 3, Stride: 16, ID: 100}
+	var canvas ui.Canvas
+	paint := func() {
+		canvas.Reset()
+		control := BeginSelect(&canvas, ui.LightTheme(), ui.Rect{Width: 200}, SelectOptions{
+			TriggerID: ui.Item(1), Label: "Language", Value: "English", IconImage: bitmap, Open: true,
+			Content: ui.Rect{Y: 36, Width: 200, Height: 80}, Layer: 6, Scope: ui.Item(10),
+		})
+		control.AddItem(SelectItem{ID: ui.Item(2), Label: "English", IconImage: bitmap})
+		control.End()
+	}
+	paint()
+	images := canvas.Images()
+	if len(images) != 2 || images[0].Bounds != (ui.Rect{X: inputInsetX, Y: 10, Width: 16, Height: 12}) || images[1].Bounds != (ui.Rect{X: 12, Y: 50, Width: 16, Height: 12}) {
+		t.Fatalf("image icon geometry = %+v", images)
+	}
+	if images[0].Layer != 0 || images[1].Layer != 6 || images[0].Bitmap.ID != bitmap.ID || images[1].Bitmap.ID != bitmap.ID {
+		t.Fatalf("image icon identity or layer was lost: %+v", images)
+	}
+	if allocations := testing.AllocsPerRun(100, paint); allocations != 0 {
+		t.Fatalf("select with image icons allocations = %v", allocations)
+	}
+}
+
+func TestSelectInvalidImageKeepsItsTextFallback(t *testing.T) {
+	var canvas ui.Canvas
+	BeginSelect(&canvas, ui.LightTheme(), ui.Rect{Width: 200}, SelectOptions{
+		TriggerID: ui.Item(1), Value: "Traditional Chinese", IconText: "繁",
+		IconImage: ui.Bitmap{Pix: []byte{0, 0, 0, 0}, Width: 2, Height: 2, Stride: 8},
+	})
+	if len(canvas.Images()) != 0 || len(canvas.Texts()) != 2 || canvas.Texts()[0].Value != "繁" {
+		t.Fatal("an image with short pixel storage hid the text icon")
+	}
+}
+
 // The arrow of a select must sit on the vertical middle of its trigger. It was a
 // text glyph, which sits low in its line box, so it hung below the middle.
 func TestSelectChevronIsVerticallyCenteredInItsTrigger(t *testing.T) {

@@ -12,6 +12,10 @@ const guideSlugs = readdirSync(guideDirectory).filter(name => name.endsWith('.md
 const lang = locale => (locale === 'zh' ? 'zh-CN' : 'en');
 
 test('the root redirects to the Chinese home page', () => {
+  // Pages answers this at the edge; the page with the meta refresh is only a
+  // fallback for hosts that ignore _redirects.
+  const redirects = readFileSync(new URL('./_redirects', output), 'utf8');
+  assert.match(redirects, /^\/\s+\/zh\/\s+302$/m, 'no edge redirect for the root');
   assert.ok(readPage('').includes('/zh/'));
 });
 
@@ -54,6 +58,25 @@ test('unknown paths fail with a 404 page instead of the root redirect', () => {
   for (const language of ['zh', 'en']) {
     assert.ok(html.includes(`href="/${language}/"`), `404 page has no ${language} home link`);
     assert.ok(html.includes(`href="/${language}/components/"`), `404 page has no ${language} catalog link`);
+  }
+});
+
+test('theme tokens stay namespaced so an extension cannot repaint the page', () => {
+  // A browser extension that themes scrollbars declares its own
+  // `:root { --background: url(...) }`. Extension styles load after the page's,
+  // both selectors are `:root` at the same specificity, so a bare `--background`
+  // let it replace the whole page background with its artwork. Every token this
+  // site declares carries the product prefix for that reason, and these names
+  // are the ones a page-level stylesheet is most likely to collide with.
+  const cssDirectory = new URL('_astro/', output);
+  const css = readdirSync(cssDirectory)
+    .filter(name => name.endsWith('.css'))
+    .map(name => readFileSync(new URL(name, cssDirectory), 'utf8'))
+    .join('\n');
+  assert.ok(css.includes('--viva-background:'), 'no namespaced page background token');
+  for (const name of ['background', 'text', 'border', 'surface', 'surface-hover', 'muted', 'radius', 'strong-border', 'doc-secondary', 'brand', 'accent', 'accent-soft', 'error', 'success', 'mono', 'header-height']) {
+    assert.doesNotMatch(css, new RegExp(`(?<![\\w-])--${name}\\s*:`), `the bare token --${name} is declared again`);
+    assert.ok(!css.includes(`var(--${name})`), `something still reads the bare token --${name}`);
   }
 });
 
@@ -191,3 +214,108 @@ for (const locale of ['zh', 'en']) {
     }
   });
 }
+
+// A crawler or an assistant that has only one URL still needs to learn which URL
+// it is: the canonical, the translations and the language-neutral default.
+test('every page is its own canonical and names every translation', () => {
+  let checked = 0;
+  for (const file of htmlFiles(new URL('zh/', output)).concat(htmlFiles(new URL('en/', output)))) {
+    const html = readFileSync(file, 'utf8');
+    const path = file.pathname.slice(output.pathname.length).replace(/index\.html$/, '');
+    const source = `/${path}`;
+    assert.equal(html.match(/<link rel="canonical" href="([^"]+)"/)?.[1], `https://vivaui.dev${source}`, `${source}: wrong canonical`);
+    for (const language of ['zh', 'en']) {
+      const expected = `https://vivaui.dev/${language}/${path.replace(/^[a-z]{2}\//, '')}`;
+      assert.ok(html.includes(`hreflang="${lang(language)}" href="${expected}"`), `${source}: no ${language} alternate`);
+    }
+    assert.ok(html.includes(`hreflang="x-default" href="https://vivaui.dev/zh/${path.replace(/^[a-z]{2}\//, '')}"`), `${source}: no x-default`);
+    for (const property of ['og:title', 'og:description', 'og:url', 'og:locale']) assert.ok(html.includes(`property="${property}"`), `${source}: no ${property}`);
+    assert.ok(html.includes('name="twitter:card"'), `${source}: no twitter card`);
+    checked++;
+  }
+  assert.ok(checked > 900, `only ${checked} pages checked`);
+});
+
+const structuredData = html => {
+  const block = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(block, 'no JSON-LD block');
+  return JSON.parse(block)['@graph'];
+};
+
+test('structured data names the product on the home page and each guide', () => {
+  for (const locale of ['zh', 'en']) {
+    const home = structuredData(readPage(`${locale}/`));
+    const types = home.map(node => node['@type']);
+    for (const type of ['Organization', 'WebSite', 'SoftwareApplication']) assert.ok(types.includes(type), `${locale} home lacks ${type}`);
+    const software = home.find(node => node['@type'] === 'SoftwareApplication');
+    assert.equal(software.applicationCategory, 'DeveloperApplication');
+    assert.equal(software.operatingSystem, 'macOS, Windows, Linux');
+    assert.ok(software.codeRepository.endsWith('/vivaui/viva'));
+
+    const guide = structuredData(readPage(`${locale}/docs/getting-started/`));
+    const article = guide.find(node => node['@type'] === 'TechArticle');
+    assert.equal(article.headline, locale === 'zh' ? '开始使用' : 'Get started');
+    const breadcrumb = guide.find(node => node['@type'] === 'BreadcrumbList');
+    assert.deepEqual(breadcrumb.itemListElement.map(entry => entry.position), [1, 2, 3]);
+    assert.equal(new Set(guide.map(node => node['@id'])).size, guide.length, 'duplicate @id in one graph');
+  }
+});
+
+test('a guide leads with its h1, not with the sidebar labels', () => {
+  for (const locale of ['zh', 'en']) {
+    for (const slug of guideSlugs) {
+      const html = readPage(`${locale}/docs/${slug}/`);
+      assert.equal(html.match(/<h([1-6])[ >]/)?.[1], '1', `${locale}/${slug}: the first heading is not the h1`);
+    }
+  }
+});
+
+test('the home page defines the product in its body text, not only in metadata', () => {
+  assert.ok(readPage('en/').includes('is a Go framework for native desktop applications'), 'the English lead never defines Viva');
+  assert.ok(readPage('zh/').includes('是面向原生桌面应用的 Go 框架'), 'the Chinese lead never defines Viva');
+});
+
+test('every page opts out of Cloudflare email obfuscation around its body', () => {
+  // The zone setting rewrites anything that looks like an address, and the
+  // install command `go get github.com/vivaui/viva@v0.1.3` matches. The
+  // documented marker keeps the setting on for the rest of the site.
+  for (const locale of ['zh', 'en']) {
+    for (const path of [`${locale}/`, `${locale}/docs/getting-started/`, `${locale}/api/`]) {
+      const html = readPage(path);
+      const start = html.indexOf('<!--email_off-->');
+      const end = html.indexOf('<!--/email_off-->');
+      assert.ok(start > 0 && end > start, `${path}: no email_off marker around the body`);
+    }
+  }
+  assert.ok(readPage('en/docs/getting-started/').includes('viva@v0.1.3'), 'the install command lost its version');
+});
+
+test('the crawler files describe the site that was built', () => {
+  const sitemap = readFileSync(new URL('sitemap.xml', output), 'utf8');
+  for (const locale of ['zh', 'en']) {
+    for (const slug of ['', ...guideSlugs]) {
+      const path = slug ? `${locale}/docs/${slug}/` : `${locale}/`;
+      assert.ok(sitemap.includes(`<loc>https://vivaui.dev/${path}</loc>`), `sitemap lacks ${path}`);
+    }
+  }
+  assert.ok(sitemap.includes('hreflang="x-default"'), 'sitemap has no x-default alternate');
+
+  const robots = readFileSync(new URL('robots.txt', output), 'utf8');
+  assert.match(robots, /^User-agent: \*$/m, 'robots.txt allows no crawler explicitly');
+  assert.match(robots, /^Allow: \/$/m, 'robots.txt does not allow the site');
+  assert.match(robots, /^Sitemap: https:\/\/vivaui\.dev\/sitemap\.xml$/m, 'robots.txt names no sitemap');
+
+  // llms.txt is the map an assistant reads instead of crawling every page, so it
+  // lists the guides and the reference indexes and stops there.
+  const llms = readFileSync(new URL('llms.txt', output), 'utf8');
+  assert.ok(llms.startsWith('# Viva\n'), 'llms.txt has no title');
+  assert.match(llms, /^> Viva is a Go framework/m, 'llms.txt has no one-line summary');
+  for (const slug of guideSlugs) assert.ok(llms.includes(`https://vivaui.dev/en/docs/${slug}/`), `llms.txt lacks ${slug}`);
+  assert.ok(llms.includes('https://vivaui.dev/en/components/') && llms.includes('https://vivaui.dev/en/api/'), 'llms.txt lacks the reference indexes');
+  assert.ok(!llms.includes('/en/ui/button/'), 'llms.txt lists every component page instead of the catalog');
+
+  const headers = readFileSync(new URL('_headers', output), 'utf8');
+  assert.ok(headers.includes('Strict-Transport-Security: max-age=31536000'), 'no HSTS header');
+  assert.ok(headers.includes('X-Frame-Options: SAMEORIGIN'), 'no frame protection');
+  assert.ok(headers.includes('max-age=31536000, immutable'), 'hashed assets are not cached for a year');
+});

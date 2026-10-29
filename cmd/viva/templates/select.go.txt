@@ -23,7 +23,11 @@ type SelectOptions struct {
 	Size        SelectSize
 	// Icon, when it has any geometry, is painted before the trigger's value. A
 	// single-color icon takes the value's color; a multi-color one keeps its own.
-	Icon      ui.Icon
+	Icon ui.Icon
+	// IconImage is a full-color image in the icon slot when Icon is empty.
+	IconImage ui.Bitmap
+	// IconText is a short text glyph when Icon and IconImage are empty or invalid.
+	IconText  string
 	Content   ui.Rect
 	Layer     uint16
 	Scope     ui.ID
@@ -49,6 +53,10 @@ type SelectItem struct {
 	Disabled bool
 	// Icon, when it has any geometry, is painted before the label.
 	Icon ui.Icon
+	// IconImage is a full-color image in the icon slot when Icon is empty.
+	IconImage ui.Bitmap
+	// IconText is a short text glyph when Icon and IconImage are empty or invalid.
+	IconText string
 }
 
 // selectMinWidth is the popup's narrowest width: Vega's min-w-36.
@@ -239,7 +247,7 @@ func (selectControl Select) paintTrigger() {
 	// Vega: pl-2.5 and pr-2 inside the border, gap-1.5 before the 16px chevron.
 	const chevronSpan = 1 + 8 + selectIconSize
 	textX, textWidth := bounds.X+inputInsetX, bounds.Width-inputInsetX-chevronSpan-6
-	if paintSelectIcon(canvas, options.Icon, ui.Rect{X: textX, Y: bounds.Y, Width: selectIconSize, Height: bounds.Height}, foreground) {
+	if paintSelectIcon(canvas, options.Icon, options.IconImage, options.IconText, ui.Rect{X: textX, Y: bounds.Y, Width: selectIconSize, Height: bounds.Height}, foreground, selectControl.theme.Metrics.FontSizeM) {
 		textX += selectIconSize + selectIconGap
 		textWidth -= selectIconSize + selectIconGap
 	}
@@ -270,7 +278,7 @@ func (selectControl *Select) paintItem(bounds ui.Rect, item SelectItem) {
 		foreground.Alpha *= 0.50
 	}
 	textX, textWidth := bounds.X+8, bounds.Width-40
-	if paintSelectIcon(selectControl.canvas, item.Icon, ui.Rect{X: textX, Y: bounds.Y, Width: selectIconSize, Height: bounds.Height}, foreground) {
+	if paintSelectIcon(selectControl.canvas, item.Icon, item.IconImage, item.IconText, ui.Rect{X: textX, Y: bounds.Y, Width: selectIconSize, Height: bounds.Height}, foreground, selectControl.theme.Metrics.FontSizeM) {
 		textX += selectIconSize + selectIconGap
 		textWidth -= selectIconSize + selectIconGap
 	}
@@ -333,11 +341,24 @@ func (selectControl Select) popOverlay() {
 	selectControl.canvas.PopLayer()
 }
 
-// paintSelectIcon draws icon centered vertically in slot and reports whether it
-// had anything to draw.
-func paintSelectIcon(canvas *ui.Canvas, icon ui.Icon, slot ui.Rect, tint ui.Color) bool {
-	if len(icon.Commands) == 0 && len(icon.Layers) == 0 {
-		return false
+// paintSelectIcon centers a vector icon, image or text glyph in the slot, in
+// that order of preference, and reports whether it had anything to draw.
+func paintSelectIcon(canvas *ui.Canvas, icon ui.Icon, image ui.Bitmap, text string, slot ui.Rect, tint ui.Color, fontSize float32) bool {
+	if icon.ViewBox <= 0 || len(icon.Commands) == 0 && len(icon.Layers) == 0 {
+		if image.Width > 0 && image.Height > 0 && len(image.Pix) > 0 {
+			before := len(canvas.Images())
+			scale := min(slot.Width/float32(image.Width), slot.Height/float32(image.Height))
+			width, height := float32(image.Width)*scale, float32(image.Height)*scale
+			canvas.DrawBitmap(image, ui.Rect{X: slot.X + (slot.Width-width)/2, Y: slot.Y + (slot.Height-height)/2, Width: width, Height: height})
+			if len(canvas.Images()) > before {
+				return true
+			}
+		}
+		if text == "" {
+			return false
+		}
+		canvas.LabelCenter(text, slot, ui.TextStyle{Size: fontSize, Weight: ui.WeightMedium, Color: tint})
+		return true
 	}
 	side := min(slot.Width, slot.Height)
 	canvas.DrawIcon(icon, ui.Rect{X: slot.X, Y: slot.Y + (slot.Height-side)/2, Width: side, Height: side}, tint)

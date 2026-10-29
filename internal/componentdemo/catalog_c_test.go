@@ -20,7 +20,7 @@ func TestGroupCCatalogOrder(t *testing.T) {
 	expected := [...]string{
 		"navigation-menu", "pagination", "popover", "progress", "questionnaire",
 		"radio-group", "resizable", "scroll-area", "segmented-control", "select", "separator",
-		"sheet", "sidebar", "skeleton", "slider", "sonner", "spinner", "table", "tabs",
+		"sheet", "sidebar", "single-select", "skeleton", "slider", "sonner", "spinner", "table", "tabs",
 		"textarea", "toast", "toggle", "toggle-group", "tooltip", "tree", "typography",
 	}
 	if len(groupCComponents) != len(expected) {
@@ -78,7 +78,9 @@ func TestGroupCPaintLightDarkVisibleAndDeterministic(t *testing.T) {
 							t.Fatal("paint mutated component state")
 						}
 						for _, hit := range canvas.Hits() {
-							if hit.ID.IsZero() {
+							// Passive popup blockers and semantic containers do not
+							// dispatch actions and intentionally have no control ID.
+							if hit.ID.IsZero() && !hit.Block && !hit.Container && !hit.IsLabel {
 								t.Fatal("interactive hit used reserved ID 0")
 							}
 						}

@@ -40,6 +40,11 @@ jobs:
       - name: Windows console key records
         if: runner.os == 'Windows'
         run: go test ./internal/platform/windows -run 'TestTerminalControlKeysCarryConsoleCharacters|TestConsoleKeyCharacterTranslatesControlChords|TestAltGrLeavesPrintableCharactersToText|TestCharCompletesTheConsoleRecord' -count=1
+      # A space arrives as both VK_SPACE and WM_CHAR " "; taking both typed it
+      # twice in a terminal and sent a text field a key it had already typed.
+      - name: Windows space is one character
+        if: runner.os == 'Windows'
+        run: go test ./internal/platform/windows -run 'TestAPlainSpaceIsOneCharacter|TestATerminalGetsEditingKeysAndChordsAsRawKeys' -v -count=1
       - name: Native static checks
         run: go vet ./app/... ./internal/platform/...
       - name: Windows fixed-pitch text

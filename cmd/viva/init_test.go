@@ -74,6 +74,9 @@ func TestInitOutsideACheckoutUsesTheModulePath(t *testing.T) {
 	if !strings.Contains(goMod, "module my-app") {
 		t.Errorf("go.mod lost the module line:\n%s", goMod)
 	}
+	if !strings.Contains(goMod, "tool github.com/vivaui/viva/cmd/viva") {
+		t.Errorf("go.mod does not pin the viva command, so go tool viva would not work:\n%s", goMod)
+	}
 	main, err := os.ReadFile(filepath.Join(directory, "main.go"))
 	if err != nil {
 		t.Fatal(err)

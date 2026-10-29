@@ -14,6 +14,7 @@ var groupCComponents = []Component{
 	separatorComponent,
 	sheetComponent,
 	sidebarComponent,
+	singleSelectComponent,
 	skeletonComponent,
 	sliderComponent,
 	sonnerComponent,

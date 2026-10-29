@@ -36,6 +36,7 @@ func newSupervisor(worker *workerProcess, request reloadwire.PaintRequest, snaps
 func (value *supervisor) hostConfig() app.Config {
 	return app.Config{
 		Title: value.window.Title, Width: value.window.Width, Height: value.window.Height,
+		MinWidth: value.window.MinWidth, MinHeight: value.window.MinHeight,
 		WindowMode: app.WindowMode(value.window.WindowMode), TitlebarHeight: float32(value.window.TitlebarHeight),
 		ClearColor: app.Color{Red: value.window.ClearRed, Green: value.window.ClearGreen, Blue: value.window.ClearBlue, Alpha: value.window.ClearAlpha},
 		Paint:      value.paint, OnPointer: value.pointer,

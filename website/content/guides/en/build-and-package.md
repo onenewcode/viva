@@ -7,13 +7,44 @@ group: distribute
 
 The `viva` command builds, packages and develops applications. It is development tooling: nothing in it is linked into your program.
 
-Install it once, then run it from your project:
+Install it once, then run it from your project. Pick whichever fits your machine:
+
+| Where | Command |
+| --- | --- |
+| macOS, Linux | `brew install vivaui/tap/viva` |
+| Windows | `scoop bucket add vivaui https://github.com/vivaui/homebrew-tap`, then `scoop install viva` |
+| Any system | Download the archive for your platform from the [releases page](https://github.com/vivaui/viva/releases), check it against `SHA256SUMS`, and put `viva` on your `PATH`. |
+| You already use Go | `go install github.com/vivaui/viva/cmd/viva@latest` |
+
+Prebuilt archives and the Homebrew and Scoop packages start with `v0.1.3`; for `v0.1.2` and earlier use `go install`.
 
 ```sh
-go install github.com/vivaui/viva/cmd/viva@latest
+viva version           # what you installed
+viva doctor            # is this machine ready to build?
 viva help              # every command
 viva help package      # one command's flags
 ```
+
+### You do not need Go installed first
+
+`viva build`, `viva dev` and `viva init` run the `go` tool. When there is none, or it is older than Go 1.26, viva downloads the official toolchain once into your user cache (`~/Library/Caches/viva/go` on macOS, `~/.cache/viva/go` on Linux, `%LocalAppData%\viva\go` on Windows), checks it against the SHA-256 that go.dev publishes, and uses it for its own commands only. It says so before it downloads. Your `PATH` and any Go you installed are left alone. Three environment variables control it:
+
+- `VIVA_GO` names a `go` binary, or a Go installation directory, to use instead.
+- `VIVA_GO_DOWNLOAD=0` forbids downloading; viva then stops with instructions instead.
+- `VIVA_GO_MIRROR` is the download index to use instead of `https://go.dev/dl/`, for example `https://golang.google.cn/dl/`.
+
+The download goes through `HTTPS_PROXY` like any Go program. On macOS you still need the Xcode command-line tools, and on Linux the XCB and Vulkan libraries: those are system software viva cannot install for you, but `viva doctor` names what is missing and the command that fixes it.
+
+### Pin viva to the project
+
+The recipes `viva add` writes come with the command, so the command and the Viva your project requires should be the same version. `viva init` therefore adds a `tool` line to `go.mod`, and `go tool viva` runs exactly the version the project pins; upgrading Viva upgrades the command with it, and CI needs no separate install:
+
+```sh
+go tool viva add --out ./components/ui button
+go get -tool github.com/vivaui/viva/cmd/viva@v0.1.3   # pin an existing project
+```
+
+`viva doctor` and `viva add` warn when the command in your `PATH` and the project disagree.
 
 ## viva.toml
 

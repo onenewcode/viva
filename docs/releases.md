@@ -1,9 +1,11 @@
 # Releases
 
-Viva ships as a Go module tag: there are no prebuilt binaries and no release
-assets. A release is an annotated tag on `main` plus the GitHub Release that
-carries the notes, and `.github/workflows/release.yml` publishes that Release
-once the tag is pushed.
+Viva ships as a Go module tag. A release is an annotated tag on `main` plus the
+GitHub Release that carries the notes, and `.github/workflows/release.yml`
+publishes that Release once the tag is pushed. The only binaries are the `viva`
+command's archives, which the workflow builds and attaches itself: no agent or
+person uploads anything. They are what Homebrew, Scoop and a plain download use.
+Applications built with Viva are never part of a release.
 
 ## Who owns what
 
@@ -24,17 +26,56 @@ flips it from draft to published. Nothing is published by a local command.
      --title "Viva v<version>" --notes-file /path/to/notes.md
    ```
 
-4. The tag push starts `release.yml`. Its `gate` job calls `ci.yml`, and only if
-   that passes does the `publish` job run. It waits up to ten minutes for the
-   draft, requires the release name `Viva v<version>`, a non-empty body and no assets,
-   then sets `draft=false` by release id (and `prerelease=true` for a tag that contains `-`).
+4. The tag push starts `release.yml`. Its `gate` job calls `ci.yml`; only if that
+   passes do `build-darwin` (macOS runner: the program reaches Cocoa through cgo)
+   and `build-other` (Linux and Windows, no cgo) build the `viva` archives with
+   `tools/release/build.sh`. Then `publish` waits up to ten minutes for the draft,
+   requires the release name `Viva v<version>` and a non-empty body, writes
+   `SHA256SUMS` (`tools/release/sums.sh`) and, for a final release, the Homebrew
+   formula and Scoop manifest (`tools/releasepkg`), checks that the linux program
+   reports the tag in `viva version`, uploads everything to the draft, requires the
+   draft's asset list to be exactly what was built, and sets `draft=false` by
+   release id (and `prerelease=true` for a tag that contains `-`). The `tap` job
+   then copies the manifests into `vivaui/homebrew-tap` (below).
 5. The agent verifies the live release: body identical to the approved notes,
-   published state, zero assets, annotated tag pointing at the release commit.
-   Then it commits the three "current release" references (`README.md` and the
-   two `getting-started` guides) and records the release in its ledger.
+   published state, the asset list (six archives, `SHA256SUMS`, and `viva.rb` and
+   `viva.json` unless it is a prerelease), annotated tag pointing at the release commit.
+   For a final release it also checks `brew install vivaui/tap/viva` or the tap's
+   commit, and that `viva version` prints the tag.
+   Then it commits the "current release" references (`README.md`,
+   `README.zh-CN.md` and the two `getting-started` guides) and records the
+   release in its ledger.
 
 A release is a straight sequence: the notes are written before the tag, and the
 tag never waits on a background notes task.
+
+## The viva archives
+
+Six archives, `viva_<tag>_<os>_<arch>.tar.gz` (`.zip` on Windows) for darwin,
+linux and windows on amd64 and arm64, each holding `viva` (or `viva.exe`) and
+`LICENSE`. They are stripped, `-trimpath` builds with the tag linked in
+(`-X main.version`), and byte-for-byte reproducible from the same source and Go
+toolchain. They are not code-signed or notarized: a browser download on macOS
+carries a quarantine flag that Gatekeeper checks, while `brew`, `curl` and
+`go install` do not set it. Notarizing them is a separate, optional step that
+needs the Apple credentials `viva package` already documents; `SHA256SUMS` and
+the digests inside the formula and manifest are the integrity check today.
+`build.sh` also runs locally, for any target the host can build:
+`tools/release/build.sh v0.1.3 /tmp/dist linux/amd64`.
+
+## The tap
+
+`vivaui/homebrew-tap` is one repository serving both package managers:
+`Formula/viva.rb` for `brew install vivaui/tap/viva` and `bucket/viva.json` for
+`scoop bucket add vivaui https://github.com/vivaui/homebrew-tap`. It must exist
+before the first release that carries archives (create it empty, public), and the
+Viva repository needs an Actions secret `TAP_TOKEN` holding a token that can push
+to it. Without the secret the `tap` job only says so and the release is still
+complete: commit the output of a local `go run ./tools/releasepkg -version
+v<version> -sums <SHA256SUMS> -out <dir>` into the tap by hand. Prereleases are
+never sent to the tap. winget is not automated; submit a manifest to
+`microsoft/winget-pkgs` (for example with `komac`) from the published archives
+when someone asks for it.
 
 ## What the workflow cannot check
 
@@ -45,7 +86,7 @@ tag never waits on a background notes task.
 - The release notes' wording and their consistency with the committed tree. The
   workflow can only require a non-empty body; the agent compares the published
   body with the approved notes byte for byte afterwards.
-- The three "current release" references. They are a separate commit after the
+- The "current release" references. They are a separate commit after the
   release exists, so the published notes can be the only place that names a
   version for a few minutes.
 
@@ -59,8 +100,10 @@ gh workflow run release.yml -f tag=v<version>
 ```
 
 A release that is already published is left alone (the job records "already
-published" and skips). If the draft was never created the publish job fails
-after ten minutes with the `gh release create --draft` command to run.
+published" and skips, and does not touch its assets). If the draft was never
+created the publish job fails after ten minutes with the `gh release create
+--draft` command to run. A draft that already carries archives from an earlier
+failed run has them replaced; any other asset on it stops the job.
 
 ## Rolling back
 
@@ -75,5 +118,5 @@ git tag -d "v<version>"
 Once a downstream `go.mod` has pinned the version, do not delete the tag. Ship a
 patch release, explain the problem in its notes, and only mark the old release
 as a prerelease if it must stop resolving as latest. After either path, check
-that `releases/latest` and the three version references point at the release you
-meant to keep.
+that `releases/latest` and the version references point at the release you meant
+to keep.

@@ -69,11 +69,19 @@ func runInit(arguments []string, output io.Writer) error {
 	if viva != "" {
 		// A checkout is in play, so the project builds against it directly.
 		goMod += fmt.Sprintf("\nrequire github.com/vivaui/viva v0.0.0\n\nreplace github.com/vivaui/viva => %s\n", viva)
+	} else {
+		// The project takes Viva from the module path, and pins the viva command
+		// to the same version: go tool viva runs exactly the library's release,
+		// so the recipes viva add writes are the ones that library accepts.
+		goMod += "\ntool " + vivaModule + "/cmd/viva\n"
 	}
 	if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte(goMod), 0o644); err != nil {
 		return err
 	}
 	if *tidy {
+		if err := requireGo(os.Stderr); err != nil {
+			return err
+		}
 		command := exec.Command("go", "mod", "tidy")
 		command.Dir = directory
 		if combined, err := command.CombinedOutput(); err != nil {
@@ -81,6 +89,9 @@ func runInit(arguments []string, output io.Writer) error {
 		}
 	}
 	fmt.Fprintf(output, "Created %s.\n  cd %s && viva dev .     run it with hot reload\n  go test ./...          test it without a window\n  AGENTS.md              how to write the UI (for you and for a coding assistant)\n", directory, directory)
+	if viva == "" {
+		fmt.Fprintln(output, "  go tool viva ...       the viva command pinned to this project's Viva version")
+	}
 	return nil
 }
 

@@ -78,10 +78,19 @@ func modifierKey(first, second uintptr) input.Key {
 	return input.KeyUnknown
 }
 
-// printableKey reports whether a virtual key types a character.
+// printableKey reports whether a virtual key types a character, the space
+// included: Win32 reports a space as both VK_SPACE and WM_CHAR " ".
 func printableKey(vk uintptr) bool {
-	return vk >= '0' && vk <= '9' || vk >= 'A' && vk <= 'Z' || vk >= 0x60 && vk <= 0x6f ||
+	return vk == 0x20 || vk >= '0' && vk <= '9' || vk >= 'A' && vk <= 'Z' || vk >= 0x60 && vk <= 0x6f ||
 		vk >= 0xba && vk <= 0xc0 || vk >= 0xdb && vk <= 0xdf || vk == 0xe2
+}
+
+// spaceIsText reports whether a space press is the character the text system
+// inserts rather than a key the application handles. Windows sends a plain
+// space twice, as the VK_SPACE key and as the character " "; a modifier makes
+// it a chord (Control+Space is NUL, Alt+Space an Escape and a space).
+func spaceIsText(vk uintptr, mods input.Modifiers) bool {
+	return vk == 0x20 && mods&(input.ModifierControl|input.ModifierAlt|input.ModifierMeta) == 0
 }
 
 // baseCharacter is the character a virtual key types with no modifiers, and
@@ -105,7 +114,9 @@ func typedText(char uintptr) string {
 }
 
 // keyDown handles WM_KEYDOWN and WM_SYSKEYDOWN for a terminal that wants
-// presses and releases, and reports whether it consumed the message.
+// presses and releases, and reports whether it consumed the message. A plain
+// space is held for its WM_CHAR like any other character, so the release can
+// carry the press's identity.
 func (state *windowState) keyDown(first, second uintptr, mods input.Modifiers) bool {
 	repeat := second&(1<<30) != 0
 	state.pendingKey = pendingKey{}
@@ -117,7 +128,7 @@ func (state *windowState) keyDown(first, second uintptr, mods input.Modifiers) b
 		return true
 	}
 	code := keyCode(first, second)
-	if key := normalizedKey(first); key != input.KeyUnknown {
+	if key := normalizedKey(first); key != input.KeyUnknown && !spaceIsText(first, mods) {
 		if key == input.KeyF4 && mods&input.ModifierAlt != 0 {
 			return false // Alt+F4 closes the window
 		}
@@ -195,7 +206,7 @@ func (state *windowState) textKey(first, second uintptr, mods input.Modifiers) b
 // character.
 func (state *windowState) terminalKeyEvent(first, second uintptr, mods input.Modifiers) (platform.KeyEvent, bool) {
 	repeat := second&(1<<30) != 0
-	if key := normalizedKey(first); key != input.KeyUnknown {
+	if key := normalizedKey(first); key != input.KeyUnknown && !spaceIsText(first, mods) {
 		return platform.KeyEvent{Key: key, Modifiers: mods, Repeat: repeat, Code: keyCode(first, second), Win32: win32Key(first, second, 0, uint16(second&0xffff))}, true
 	}
 	if mods&(input.ModifierControl|input.ModifierMeta) != 0 && mods&input.ModifierAlt == 0 {

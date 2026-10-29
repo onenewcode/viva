@@ -2246,6 +2246,8 @@ func TestPainterDropsLabelsWithoutAreaOrFontSize(t *testing.T) {
 	config := Config{Title: "invalid labels", Width: 120, Height: 60}
 	config.Paint = func(canvas *ui.Canvas, size ui.Size) {
 		canvas.Label("no area", ui.Rect{Width: 0, Height: 12}, ui.TextStyle{Size: 12})
+		canvas.Label("subpixel width", ui.Rect{Width: 0.3, Height: 12}, ui.TextStyle{Size: 12})
+		canvas.Label("subpixel height", ui.Rect{Width: 40, Height: 0.3}, ui.TextStyle{Size: 12})
 		canvas.Label("no font", ui.Rect{Width: 40, Height: 12}, ui.TextStyle{})
 		canvas.Label("visible", ui.Rect{Width: 40, Height: 12}, ui.TextStyle{Size: 12})
 	}
@@ -2255,5 +2257,100 @@ func TestPainterDropsLabelsWithoutAreaOrFontSize(t *testing.T) {
 	}
 	if _, err := painter.repaint(); err != nil {
 		t.Fatalf("repaint failed: %v", err)
+	}
+}
+
+func TestPainterDropsSubpixelAndClippedImages(t *testing.T) {
+	var canvas ui.Canvas
+	pixels := make([]byte, 4*4*4)
+	bitmap := ui.Bitmap{Pix: pixels, Width: 4, Height: 4, Stride: 16, ID: 1}
+
+	config := Config{Title: "invalid images", Width: 120, Height: 60}
+	config.Paint = func(canvas *ui.Canvas, size ui.Size) {
+		// Zero area image
+		canvas.DrawBitmap(bitmap, ui.Rect{Width: 0, Height: 20})
+		// Subpixel width directly
+		canvas.DrawBitmap(bitmap, ui.Rect{Width: 0.3, Height: 20})
+		// Subpixel height directly
+		canvas.DrawBitmap(bitmap, ui.Rect{Width: 20, Height: 0.4})
+		// Large image clipped to subpixel width (< 0.5) by scissor
+		canvas.Clip(ui.Rect{X: 0, Y: 0, Width: 0.3, Height: 20})
+		canvas.DrawBitmap(bitmap, ui.Rect{Width: 20, Height: 20})
+		canvas.Unclip()
+		// Visible image
+		canvas.DrawBitmap(bitmap, ui.Rect{X: 10, Y: 10, Width: 20, Height: 20})
+	}
+	painter := newTestPainter(t, &canvas, config)
+	if len(painter.labels) != 1 {
+		t.Fatalf("labels count = %d, want 1; labels = %+v", len(painter.labels), painter.labels)
+	}
+	if painter.labels[0].Width <= 0 || painter.labels[0].Height <= 0 {
+		t.Fatalf("visible image label has non-positive dimensions: %+v", painter.labels[0])
+	}
+	if _, err := painter.repaint(); err != nil {
+		t.Fatalf("repaint failed: %v", err)
+	}
+}
+
+func TestPainterDisablesTextInputOnSubpixelBounds(t *testing.T) {
+	var canvas ui.Canvas
+	editor := text.NewEditor("Hello")
+	fieldWidth := float32(100)
+
+	config := Config{
+		Title:  "subpixel text input",
+		Width:  200,
+		Height: 100,
+		Paint: func(c *ui.Canvas, _ ui.Size) {
+			c.HitWithOptions(ui.Item(1), ui.Rect{X: 10, Y: 10, Width: fieldWidth, Height: 24}, "field", ui.HitOptions{Role: ui.RoleTextField})
+		},
+		TextInput: func(got TextInputContext) *TextInput {
+			return &TextInput{
+				Editor:   editor,
+				Bounds:   ui.Rect{X: 10, Y: 10, Width: fieldWidth, Height: 24},
+				FontSize: 13,
+			}
+		},
+	}
+	painter := newTestPainter(t, &canvas, config)
+
+	// Focus the text field
+	for _, kind := range []platform.PointerEventKind{platform.PointerMove, platform.PointerDown, platform.PointerUp} {
+		frame, err := painter.pointer(platform.PointerEvent{Kind: kind, X: 15, Y: 15})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if frame.TextInput.Changed && frame.TextInput.Input != nil {
+			// focused and enabled
+		}
+	}
+	if !painter.textEnabled || painter.activeText == nil {
+		t.Fatal("expected text input to be enabled when bounds are normal")
+	}
+
+	// Shrink the text field bounds to subpixel (< 0.5) to simulate extreme resize compression
+	fieldWidth = 0.3
+	frame, err := painter.repaint()
+	if err != nil {
+		t.Fatalf("repaint failed when field is subpixel: %v", err)
+	}
+	if painter.textEnabled {
+		t.Fatal("expected text input to be disabled when bounds are subpixel")
+	}
+	if !frame.TextInput.Changed || frame.TextInput.Input != nil {
+		t.Fatalf("expected TextInput update to report disabled (Changed=true, Input=nil), got %+v", frame.TextInput)
+	}
+
+	// Expand the text field bounds back to normal
+	fieldWidth = 100
+	frame, err = painter.repaint()
+	if err != nil {
+		t.Fatalf("repaint failed after restoring field bounds: %v", err)
+	}
+	if !painter.textEnabled {
+		t.Fatal("expected text input to be re-enabled after bounds restored")
+	}
+	if !frame.TextInput.Changed || frame.TextInput.Input == nil || frame.TextInput.Input.Width <= 0 {
+		t.Fatalf("expected TextInput update to report re-enabled, got %+v", frame.TextInput)
 	}
 }

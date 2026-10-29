@@ -60,6 +60,12 @@ type Config struct {
 	Icon   WindowIcon
 	Width  int
 	Height int
+	// MinWidth and MinHeight limit user resizing of the content area, in logical
+	// pixels, independently of display DPI. Zero leaves that axis unrestricted.
+	// Native adapters cap these limits to the current screen's work area when it
+	// is smaller. Initial dimensions below the requested minimum are enlarged.
+	MinWidth  int
+	MinHeight int
 	// Origin, when set, is where the top-left of the content area opens, in
 	// screen coordinates (see Window.Frame). Nil leaves the placement to the
 	// system. It is a request: on Windows and macOS the content area lands there
@@ -203,6 +209,11 @@ func (config Config) normalize() (Config, error) {
 	if config.Width < 1 || config.Height < 1 {
 		return Config{}, fmt.Errorf("app: window dimensions must be positive, got %dx%d", config.Width, config.Height)
 	}
+	if config.MinWidth < 0 || config.MinHeight < 0 {
+		return Config{}, fmt.Errorf("app: minimum window dimensions must not be negative")
+	}
+	config.Width = max(config.Width, config.MinWidth)
+	config.Height = max(config.Height, config.MinHeight)
 
 	if err := config.Icon.validate(); err != nil {
 		return Config{}, err

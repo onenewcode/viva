@@ -84,6 +84,41 @@ func TestValidateTextInput(t *testing.T) {
 	}
 }
 
+func TestMakeNativeTextLabelsFiltersInvalidDimensions(t *testing.T) {
+	labels := []TextLabel{
+		{Value: "zero width", Width: 0, Height: 16, FontSize: 14},
+		{Value: "negative width", Width: -10, Height: 16, FontSize: 14},
+		{Value: "zero height", Width: 100, Height: 0, FontSize: 14},
+		{Value: "zero font", Width: 100, Height: 16, FontSize: 0},
+		{Value: "valid text", Width: 100, Height: 16, FontSize: 14},
+		{Value: "valid bitmap", Width: 20, Height: 20, Bitmap: make([]byte, 20*20*4), BitmapWidth: 20, BitmapHeight: 20, BitmapStride: 20 * 4},
+		{Value: "invalid bitmap dims", Width: 0, Height: 20, Bitmap: make([]byte, 20*20*4), BitmapWidth: 20, BitmapHeight: 20, BitmapStride: 20 * 4},
+	}
+	memory, strings, count, err := makeNativeTextLabels(labels)
+	if err != nil {
+		t.Fatalf("makeNativeTextLabels failed: %v", err)
+	}
+	defer freeNativeTextLabels(memory, strings)
+	if count != 2 {
+		t.Fatalf("valid count = %d, want 2", count)
+	}
+}
+
+func TestMakeNativeTextLabelsAllInvalidReturnsNil(t *testing.T) {
+	labels := []TextLabel{
+		{Value: "zero width", Width: 0, Height: 16, FontSize: 14},
+		{Value: "zero height", Width: 100, Height: 0, FontSize: 14},
+	}
+	memory, strings, count, err := makeNativeTextLabels(labels)
+	if err != nil {
+		t.Fatalf("makeNativeTextLabels failed: %v", err)
+	}
+	defer freeNativeTextLabels(memory, strings)
+	if count != 0 || memory != nil {
+		t.Fatalf("count = %d, memory = %p; want count=0 and memory=nil", count, memory)
+	}
+}
+
 func TestDynamicTextInputRequiresSceneShaderWithoutInitialEditor(t *testing.T) {
 	if !needsSceneShader(Config{DynamicTextInput: true}) {
 		t.Fatal("dynamic text input did not request the text rendering pipeline")

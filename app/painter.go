@@ -770,7 +770,14 @@ func (painter *painter) paintCanvas() {
 	if painter.scale > 0 {
 		painter.canvas.SetPixelScale(painter.scale)
 	}
-	painter.canvas.SetInteraction(painter.hovered, painter.pressed, painter.focused, painter.keyboardFocus)
+	focused, visible := painter.focused, painter.keyboardFocus
+	if !painter.pendingFocus.IsZero() {
+		// A virtualized list needs the requested focus while laying out the
+		// reveal. Painting the old focus can scroll it back into view before
+		// the pending target has had a chance to enter the hit list.
+		focused, visible = painter.pendingFocus, painter.pendingVisible
+	}
+	painter.canvas.SetInteraction(painter.hovered, painter.pressed, focused, visible)
 	painter.canvas.SetScroll(painter.scrollX, painter.scrollY)
 	painter.canvas.BeginFrame()
 	painter.paint(painter.canvas, painter.size)
@@ -1056,6 +1063,15 @@ func (painter *painter) syncTextInput() platform.TextInputUpdate {
 	if tint == (ui.Color{}) {
 		tint = context.TextColor
 	}
+	if bounds.Width <= 0 || bounds.Height <= 0 ||
+		roundPixel(bounds.Width) <= 0 || roundPixel(bounds.Height) <= 0 {
+		painter.activeText = nil
+		if !painter.textEnabled {
+			return platform.TextInputUpdate{}
+		}
+		painter.textEnabled = false
+		return platform.TextInputUpdate{Changed: true}
+	}
 	native := platform.TextInput{
 		Target: context.ID,
 		X:      bounds.X, Y: bounds.Y,
@@ -1238,7 +1254,7 @@ func (painter *painter) applyClipping() {
 		// label backends require positive values. Transient layouts (a closing
 		// drawer, a pane squeezed to nothing) can produce one; drop it here
 		// rather than failing the whole frame.
-		if text.Bounds.Width <= 0 || text.Bounds.Height <= 0 || text.Style.Size <= 0 {
+		if roundPixel(text.Bounds.Width) <= 0 || roundPixel(text.Bounds.Height) <= 0 || text.Style.Size <= 0 {
 			continue
 		}
 		if !text.HasClip {
@@ -1251,6 +1267,9 @@ func (painter *painter) applyClipping() {
 	}
 	painter.layerShift = 0
 	for _, image := range painter.canvas.Images() {
+		if roundPixel(image.Bounds.Width) <= 0 || roundPixel(image.Bounds.Height) <= 0 {
+			continue
+		}
 		if image.Backdrop {
 			painter.layerShift = 1
 			painter.clippedImages = append(painter.clippedImages, image)
@@ -1894,13 +1913,18 @@ func (painter *painter) syncLabels() {
 		if offset < 0 || length <= 0 || offset > len(bitmap.Pix) || length > len(bitmap.Pix)-offset {
 			continue
 		}
+		width := roundPixel(image.Bounds.Width)
+		height := roundPixel(image.Bounds.Height)
+		if width <= 0 || height <= 0 {
+			continue
+		}
 		layer := painter.platformLayer(image.Layer)
 		if image.Backdrop {
 			layer = 0
 		}
 		painter.labels = append(painter.labels, platform.TextLabel{
 			X: float32(roundPixel(image.Bounds.X)), Y: float32(roundPixel(image.Bounds.Y)),
-			Width: float32(roundPixel(image.Bounds.Width)), Height: float32(roundPixel(image.Bounds.Height)),
+			Width: float32(width), Height: float32(height),
 			Layer:  layer,
 			Bitmap: bitmap.Pix[offset : offset+length], BitmapWidth: right - left, BitmapHeight: bottom - top,
 			BitmapStride: bitmap.Stride, BitmapID: bitmap.ID, BitmapVersion: bitmap.Version,
@@ -1908,12 +1932,17 @@ func (painter *painter) syncLabels() {
 		})
 	}
 	for _, label := range texts {
+		width := roundPixel(label.Bounds.Width)
+		height := roundPixel(label.Bounds.Height)
+		if width <= 0 || height <= 0 {
+			continue
+		}
 		// Integer logical-pixel bounds keep the texture exactly one texel per
 		// physical pixel so linear sampling stays crisp on scaled displays.
 		entry := platform.TextLabel{
 			Value: label.Value,
 			X:     float32(roundPixel(label.Bounds.X)), Y: float32(roundPixel(label.Bounds.Y)),
-			Width: float32(roundPixel(label.Bounds.Width)), Height: float32(roundPixel(label.Bounds.Height)),
+			Width: float32(width), Height: float32(height),
 			OriginX: roundingRemainder(label.Bounds.X), OriginY: roundingRemainder(label.Bounds.Y),
 			FontSize: label.Style.Size, Weight: label.Style.Weight,
 			Color: platform.Color{

@@ -369,6 +369,10 @@ func windowProc(window, kind, first, second uintptr) (result uintptr) {
 		}
 	}()
 	switch kind {
+	case wmGetMinMaxInfo:
+		defaultWindowProc.Call(window, kind, first, second)
+		state.constrainTracking((*minMaxInfo)(pointer(second)))
+		return 0
 	case wmDestroy:
 		state.stopCaretTimer()
 		state.closeDrop()
@@ -699,7 +703,10 @@ func windowProc(window, kind, first, second uintptr) (result uintptr) {
 			return 0
 		}
 		key := normalizedKey(first)
-		if state.config.OnKey != nil && key != input.KeyUnknown {
+		// A plain space with the text system focused is the character WM_CHAR
+		// inserts; sending VK_SPACE as well would type it twice. Space stays a
+		// key for a control that takes no text, so it still activates one.
+		if state.config.OnKey != nil && key != input.KeyUnknown && !(spaceIsText(first, modifiers) && state.textEnabled) {
 			state.keyEvents++
 			frame, err := state.config.OnKey(platform.KeyEvent{Key: key, Modifiers: modifiers, Repeat: second&(1<<30) != 0})
 			state.frame(frame, err)

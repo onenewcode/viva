@@ -47,6 +47,7 @@ func TestATerminalGetsEditingKeysAndChordsAsRawKeys(t *testing.T) {
 		{"Shift+Right", 39, input.ModifierShift, input.KeyRight, ""},
 		{"Enter", 13, 0, input.KeyEnter, ""},
 		{"Ctrl+R", 'R', input.ModifierControl, input.KeyUnknown, "r"},
+		{"Ctrl+Space", 0x20, input.ModifierControl, input.KeySpace, ""},
 	} {
 		events = events[:0]
 		if !state.textKey(test.vk, 0, test.mods) {
@@ -64,6 +65,7 @@ func TestATerminalGetsEditingKeysAndChordsAsRawKeys(t *testing.T) {
 		mods input.Modifiers
 	}{
 		{"a", 'A', 0},
+		{"space", 0x20, 0},
 		{"AltGr+a", 'A', input.ModifierControl | input.ModifierAlt},
 	} {
 		events = events[:0]
@@ -226,5 +228,41 @@ func TestCharCompletesTheConsoleRecord(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Win32.Unicode != 'a' || events[0].Win32.VirtualKey != 'A' || events[0].Win32.ScanCode != 0x1e {
 		t.Fatalf("character = %+v", events)
+	}
+}
+
+// A plain space is one character, not a key and a character. Win32 reports it
+// as VK_SPACE and as WM_CHAR " ", and taking both typed it twice: a terminal
+// took the key as the space it sends and then inserted the character too.
+func TestAPlainSpaceIsOneCharacter(t *testing.T) {
+	state := &windowState{textEnabled: true}
+	state.textInput.Terminal = true
+	state.textInput.KeyReleases = true
+	var events []platform.KeyEvent
+	state.config.OnKey = func(event platform.KeyEvent) (platform.Frame, error) {
+		events = append(events, event)
+		return platform.Frame{}, nil
+	}
+	if state.keyDown(0x20, 0, 0) {
+		t.Fatal("a plain space was taken as a key at WM_KEYDOWN")
+	}
+	if len(events) != 0 {
+		t.Fatalf("a plain space sent %+v before its character", events)
+	}
+	if !state.character(0x20, 0) {
+		t.Fatal("the space did not complete its key")
+	}
+	if len(events) != 1 || events[0].Key != input.KeyUnknown || events[0].Text != " " || events[0].Typed != " " || events[0].Code == 0 {
+		t.Fatalf("space = %+v", events)
+	}
+	// Without key releases a terminal takes the space from WM_CHAR alone: no
+	// named key, or the shell would read two.
+	state.textInput.KeyReleases = false
+	events = events[:0]
+	if state.textKey(0x20, 0, 0) {
+		t.Fatal("a plain space was consumed as a terminal key")
+	}
+	if len(events) != 0 {
+		t.Fatalf("a terminal keyed a plain space: %+v", events)
 	}
 }

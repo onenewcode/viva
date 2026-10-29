@@ -34,9 +34,31 @@ const leadSplit = text.lead.split('Viva');
 const [leadBefore, ...leadRest] = leadSplit;
 const leadAfter = leadRest.join('Viva');
 const alternates = Object.fromEntries(locales.map(language => [language, homePath(language)])) as Record<Locale, string>;
+// The landing page is the product's identity: what it is, which category it
+// belongs to, what it runs on and where its source lives. No softwareVersion:
+// the release tag is written in the guides, and a second copy here would drift.
+const origin = (Astro.site?.href ?? 'https://vivaui.dev/').replace(/\/$/, '');
+const software = {
+  '@type': 'SoftwareApplication',
+  '@id': `${origin}/#software`,
+  name: 'Viva',
+  alternateName: 'Viva Go desktop framework',
+  url: `${origin}/`,
+  description: text.summary,
+  applicationCategory: 'DeveloperApplication',
+  applicationSubCategory: 'Desktop application framework',
+  operatingSystem: 'macOS, Windows, Linux',
+  programmingLanguage: 'Go',
+  license: 'https://www.apache.org/licenses/LICENSE-2.0',
+  isAccessibleForFree: true,
+  codeRepository: 'https://github.com/vivaui/viva',
+  inLanguage: locale === 'zh' ? 'zh-CN' : 'en',
+  publisher: { '@id': `${origin}/#organization` },
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+};
 ---
 
-<BaseLayout {locale} title={text.title} summary={text.summary} section="home" {alternates}>
+<BaseLayout {locale} title={text.title} summary={text.summary} section="home" {alternates} schema={[software]}>
   <main class="home" id="main-content" tabindex="-1">
     <section class="home-hero">
       <div class="home-hero-copy">

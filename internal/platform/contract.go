@@ -33,6 +33,9 @@ type Config struct {
 	Icon   WindowIcon
 	Width  int
 	Height int
+	// MinWidth and MinHeight constrain the content area in logical pixels.
+	MinWidth  int
+	MinHeight int
 	// Origin, when HasOrigin, is where the top-left of the content area opens, in
 	// screen coordinates. Without one the system places the window.
 	Origin     ui.Point

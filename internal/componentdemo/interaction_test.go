@@ -181,7 +181,7 @@ func TestEditorOnlyResolvesEditablePlatformInput(t *testing.T) {
 					continue
 				}
 				editor, ok := state.Editor(hit.ID)
-				want := (hit.Role == ui.RoleTextField || component.ID == "multi-select" && hit.Role == ui.RoleCombobox) && !hit.Disabled && !hit.ReadOnly
+				want := (hit.Role == ui.RoleTextField || component.editable != nil && hit.Role == ui.RoleCombobox) && !hit.Disabled && !hit.ReadOnly
 				if ok != want || (editor != nil) != want {
 					t.Fatalf("%s/%s: incorrect editor resolution for %+v", component.ID, example.ID, hit)
 				}

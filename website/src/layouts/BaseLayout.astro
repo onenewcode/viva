@@ -8,7 +8,7 @@ import markOnly from '../assets/viva-mark-only.svg?url';
 import BrandLockup from '../components/BrandLockup.astro';
 import SearchDialog from '../components/SearchDialog.svelte';
 import '../styles/global.css';
-import { locales, languageNames, componentsPath, type Locale } from '../lib/i18n';
+import { locales, languageNames, defaultLocale, componentsPath, type Locale } from '../lib/i18n';
 import { siteText } from '../lib/site';
 import { homePath, docsPath, apiPath, type Section } from '../lib/routes';
 
@@ -19,15 +19,53 @@ interface Props {
   section: Section;
   // The same page in every language, so the language switch keeps the reader here.
   alternates: Record<Locale, string>;
+  // The page's own schema.org nodes. The layout adds the Organization and
+  // WebSite that every page carries, so a page only describes itself.
+  schema?: Record<string, unknown>[];
 }
 
-const { title, summary, locale, section, alternates } = Astro.props;
+const { title, summary, locale, section, alternates, schema = [] } = Astro.props;
 const text = siteText(locale);
 const navigation = [
   { section: 'docs', href: docsPath(locale), label: text.navDocs },
   { section: 'components', href: componentsPath(locale), label: text.navComponents },
   { section: 'api', href: apiPath(locale), label: text.navApi },
 ] as const;
+
+// Search engines and assistants read whole pages, never a language switch: the
+// canonical names this language's URL, and every alternate names its own.
+const canonical = new URL(Astro.url.pathname, Astro.site).href;
+const alternateURLs = Object.fromEntries(locales.map(language => [language, new URL(alternates[language], Astro.site).href])) as Record<Locale, string>;
+const pageTitle = section === 'home' ? title : `${title} · Viva`;
+const origin = Astro.site!.href.replace(/\/$/, '');
+// One graph per page, so an assistant that reads a single page still learns what
+// the product is, where it lives and which page it is looking at.
+const graph = [
+  {
+    '@type': 'Organization',
+    '@id': `${origin}/#organization`,
+    name: 'Viva',
+    url: `${origin}/`,
+    logo: { '@type': 'ImageObject', url: new URL(appleTouchIcon, Astro.site).href },
+    description: 'Viva is an open-source, Go-native desktop application framework and runtime, maintained in the vivaui/viva repository.',
+    sameAs: ['https://github.com/vivaui/viva', 'https://pkg.go.dev/github.com/vivaui/viva'],
+  },
+  {
+    '@type': 'WebSite',
+    '@id': `${origin}/#website`,
+    name: 'Viva',
+    url: `${origin}/`,
+    inLanguage: locale === 'zh' ? 'zh-CN' : 'en',
+    publisher: { '@id': `${origin}/#organization` },
+  },
+  ...schema,
+];
+const structuredData = JSON.stringify({ '@context': 'https://schema.org', '@graph': graph }).replace(/</g, '\\u003c');
+// Cloudflare's Email Address Obfuscation rewrites anything that looks like an
+// address, and `go get github.com/vivaui/viva@v0.1.3` was being served to
+// readers and crawlers as `github.com/vivaui/[email protected]`. The documented
+// <!--email_off--> marker switches it off for this document while the zone
+// setting stays on, and it survives someone toggling that setting again.
 ---
 
 <!doctype html>
@@ -39,9 +77,24 @@ const navigation = [
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" type="image/svg+xml" href={favicon} />
     <link rel="apple-touch-icon" href={appleTouchIcon} />
-    <title>{section === 'home' ? title : `${title} · Viva`}</title>
+    <title>{pageTitle}</title>
+    <link rel="canonical" href={canonical} />
     <ClientRouter />
-    {locales.map(language => <link rel="alternate" hreflang={language === 'zh' ? 'zh-CN' : 'en'} href={alternates[language]} />)}
+    {locales.map(language => <link rel="alternate" hreflang={language === 'zh' ? 'zh-CN' : 'en'} href={alternateURLs[language]} />)}
+    <link rel="alternate" hreflang="x-default" href={alternateURLs[defaultLocale]} />
+    <meta property="og:type" content={section === 'home' ? 'website' : 'article'} />
+    <meta property="og:site_name" content="Viva" />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={summary} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:locale" content={locale === 'zh' ? 'zh_CN' : 'en_US'} />
+    {locales.filter(language => language !== locale).map(language => <meta property="og:locale:alternate" content={language === 'zh' ? 'zh_CN' : 'en_US'} />)}
+    <meta property="og:image" content={new URL(appleTouchIcon, Astro.site).href} />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content={pageTitle} />
+    <meta name="twitter:description" content={summary} />
+    <meta name="twitter:image" content={new URL(appleTouchIcon, Astro.site).href} />
+    <script type="application/ld+json" is:inline set:html={structuredData}></script>
     <script is:inline>
       // The client router swaps the document, which restores the markup's
       // data-theme="light" and drops the reader's choice. Reapply it before the
@@ -62,6 +115,7 @@ const navigation = [
     </script>
   </head>
   <body>
+    <Fragment set:html="<!--email_off-->" />
     <a class="skip-link" href="#main-content">{text.skip}</a>
     <header class="site-header">
       <div class="header-inner">
@@ -91,7 +145,7 @@ const navigation = [
           <h2>{text.footerResources}</h2>
           <ul>
             <li><a href="https://github.com/vivaui/viva" target="_blank" rel="noopener noreferrer">{text.footerRepo}</a></li>
-            <li><a href={docsPath(locale, 'performance')}>{text.footerBenchmarks}</a></li>
+            <li><a href={docsPath(locale, 'coding-agents')}>{text.footerAgents}</a></li>
             <li><a href={docsPath(locale, 'platforms')}>{text.footerPlatforms}</a></li>
             <li><a href="https://github.com/vivaui/viva/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">{text.footerLicense}</a></li>
           </ul>
@@ -102,5 +156,6 @@ const navigation = [
         <span>{text.footerBuilt}</span>
       </div>
     </footer>
+    <Fragment set:html="<!--/email_off-->" />
   </body>
 </html>

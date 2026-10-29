@@ -13,6 +13,48 @@ import (
 	"github.com/vivaui/viva/ui"
 )
 
+func TestDriverMenuRevealsPendingKeyboardFocus(t *testing.T) {
+	scroll := components.MenuScroll{Offset: 340}
+	config := Config{Title: "scrolling select", Width: 300, Height: 200}
+	config.Paint = func(canvas *ui.Canvas, size ui.Size) {
+		canvas.SetInitialFocus(ui.Item(14))
+		selectControl := components.BeginSelect(canvas, ui.LightTheme(), ui.Rect{Width: 220, Height: 32}, components.SelectOptions{
+			TriggerID: ui.Item(90), Label: "Language", Value: "Last", Open: true,
+			Content: ui.Rect{Y: 40, Width: 220, Height: 110}, Layer: 1,
+			Scope: ui.Item(100), DismissID: ui.Item(101), Scroll: &scroll,
+		})
+		for index := 1; index <= 14; index++ {
+			selectControl.AddItem(components.SelectItem{ID: ui.Item(index), Label: "Language", Selected: index == 14})
+		}
+		selectControl.End()
+	}
+	config.OnKey = func(event ui.KeyEvent) ui.EventResult {
+		if target, handled := scroll.Navigate(event.Key, event.Target, true); handled {
+			return ui.EventResult{Focus: target, FocusVisible: true, Handled: true, Repaint: true}
+		}
+		return ui.EventResult{}
+	}
+	driver, err := NewDriver(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+	if driver.Snapshot().Focused != ui.Item(14) {
+		t.Fatal("did not open at the selected row")
+	}
+	for _, step := range []struct {
+		key    ui.Key
+		target ui.ID
+	}{{ui.KeyHome, ui.Item(1)}, {ui.KeyEnd, ui.Item(14)}, {ui.KeyHome, ui.Item(1)}} {
+		if err := driver.Key(step.key, 0); err != nil {
+			t.Fatal(err)
+		}
+		if got := driver.Snapshot().Focused; got != step.target {
+			t.Fatalf("key %v focused %v, want newly revealed %v", step.key, got, step.target)
+		}
+	}
+}
+
 func TestDriverClicksTabsAndReportsFocusWithoutAWindow(t *testing.T) {
 	var clicked []ui.ID
 	config := Config{Title: "driver", Width: 300, Height: 100}

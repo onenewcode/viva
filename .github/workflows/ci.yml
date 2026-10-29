@@ -52,7 +52,7 @@ jobs:
       - name: vet ${{ matrix.target }}
         run: |
           export GOOS="${TARGET%/*}" GOARCH="${TARGET#*/}"
-          go vet ./internal/... ./app/ ./cmd/...
+          go vet ./internal/... ./app/ ./cmd/... ./components/...
         env:
           TARGET: ${{ matrix.target }}
 

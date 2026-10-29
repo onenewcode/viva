@@ -7,13 +7,44 @@ group: distribute
 
 `viva` 命令负责构建、打包和开发应用。它是开发工具：里面没有任何东西会链接进你的程序。
 
-安装一次，然后在项目里运行：
+安装一次，然后在项目里运行。选适合你机器的方式：
+
+| 环境 | 命令 |
+| --- | --- |
+| macOS、Linux | `brew install vivaui/tap/viva` |
+| Windows | `scoop bucket add vivaui https://github.com/vivaui/homebrew-tap`，再 `scoop install viva` |
+| 任意系统 | 从[发布页](https://github.com/vivaui/viva/releases)下载对应平台的压缩包，用 `SHA256SUMS` 校验，把 `viva` 放进 `PATH`。 |
+| 已经在用 Go | `go install github.com/vivaui/viva/cmd/viva@latest` |
+
+预编译压缩包以及 Homebrew、Scoop 包从 `v0.1.3` 起提供；`v0.1.2` 及更早版本请用 `go install`。
 
 ```sh
-go install github.com/vivaui/viva/cmd/viva@latest
+viva version           # 当前安装的版本
+viva doctor            # 这台机器能不能构建？
 viva help              # 所有命令
 viva help package      # 某个命令的参数
 ```
+
+### 不必先装 Go
+
+`viva build`、`viva dev` 和 `viva init` 会调用 `go` 工具。找不到 Go，或者版本低于 Go 1.26 时，viva 会把官方工具链下载一次到用户缓存目录（macOS 是 `~/Library/Caches/viva/go`，Linux 是 `~/.cache/viva/go`，Windows 是 `%LocalAppData%\viva\go`），用 go.dev 公布的 SHA-256 校验，并且只给它自己的命令使用。下载前它会先告诉你。你的 `PATH` 和已经装好的 Go 都不会被改动。三个环境变量可以控制它：
+
+- `VIVA_GO` 指向一个 `go` 可执行文件或 Go 安装目录，改用它。
+- `VIVA_GO_DOWNLOAD=0` 禁止下载；此时 viva 会停下并给出说明。
+- `VIVA_GO_MIRROR` 是代替 `https://go.dev/dl/` 的下载索引，例如 `https://golang.google.cn/dl/`。
+
+下载和任何 Go 程序一样遵循 `HTTPS_PROXY`。macOS 上仍然需要 Xcode 命令行工具，Linux 上需要 XCB 和 Vulkan 库：这些是系统软件，viva 没法替你安装，但 `viva doctor` 会指出缺什么以及用哪条命令补上。
+
+### 把 viva 固定在项目里
+
+`viva add` 写出的配方随命令一起发布，所以命令和项目所依赖的 Viva 应该是同一个版本。`viva init` 因此会在 `go.mod` 里加一行 `tool`，`go tool viva` 运行的就是项目锁定的那个版本；升级 Viva 时命令一起升级，CI 也不需要另外安装：
+
+```sh
+go tool viva add --out ./components/ui button
+go get -tool github.com/vivaui/viva/cmd/viva@v0.1.3   # 给已有项目锁定
+```
+
+`PATH` 里的命令和项目版本不一致时，`viva doctor` 和 `viva add` 会提醒。
 
 ## viva.toml
 

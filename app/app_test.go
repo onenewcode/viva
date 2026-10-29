@@ -30,12 +30,28 @@ func TestConfigNormalizeRejectsInvalidValues(t *testing.T) {
 	tests := []Config{
 		{Width: -1},
 		{Height: -1},
+		{MinWidth: -1},
+		{MinHeight: -1},
 		{ClearColor: Color{Red: 2, Alpha: 1}},
 	}
 	for _, config := range tests {
 		if _, err := config.normalize(); err == nil {
 			t.Fatalf("normalize accepted invalid config: %+v", config)
 		}
+	}
+}
+
+func TestConfigRestoresATinyWindowAtItsMinimum(t *testing.T) {
+	config, err := (Config{Width: 160, Height: 90, MinWidth: 960, MinHeight: 600}).normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Width != 960 || config.Height != 600 {
+		t.Fatalf("restored window = %dx%d", config.Width, config.Height)
+	}
+	config, err = (Config{Width: 1200, Height: 800, MinWidth: 960}).normalize()
+	if err != nil || config.Width != 1200 || config.Height != 800 || config.MinHeight != 0 {
+		t.Fatalf("larger/unrestricted axes changed: %+v, %v", config, err)
 	}
 }
 

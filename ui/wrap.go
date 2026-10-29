@@ -109,7 +109,15 @@ func (canvas *Canvas) FitLine(line string, size, weight, width float32) string {
 	for index := 0; index < len(line); index++ {
 		hash = (hash ^ uint32(line[index])) * 16777619
 	}
-	hash = (hash ^ math.Float32bits(width)) * 16777619
+	// Mix every byte: integer widths usually have identical low float bits.
+	// Hashing the whole word at once sends the same label at distinct widths
+	// to the same slot, making an input and its popup evict each other.
+	for _, dimension := range [3]float32{width, size, weight} {
+		bits := math.Float32bits(dimension)
+		for shift := uint(0); shift < 32; shift += 8 {
+			hash = (hash ^ uint32(byte(bits>>shift))) * 16777619
+		}
+	}
 	if canvas.fits == nil {
 		canvas.fits = make([]fitEntry, fitMemoSize)
 	}

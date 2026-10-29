@@ -17,7 +17,7 @@ const groups = navigation.map(group => ({ heading: group.heading, cards: group.l
 ---
 
 <DocPageLayout {locale} title={text.docsTitle} summary={text.docsSummary} section="docs" {alternates} {navigation}>
-  <div class="page-heading"><h1>{text.docsTitle}</h1><p class="page-summary">{text.docsSummary}</p></div>
+  <div class="page-heading"><h1>{text.docsTitle}</h1><p class="page-summary">{text.docsSummary}</p><p class="page-summary docs-intro">{text.docsIntro}</p></div>
   {groups.map(group => <section>
     <h2 class="list-heading">{group.heading}</h2>
     <div class="guide-cards">{group.cards.map(entry => <a class="guide-card" href={docsPath(locale, guideSlug(entry))}><h3>{entry.data.title}</h3><p>{entry.data.summary}</p></a>)}</div>

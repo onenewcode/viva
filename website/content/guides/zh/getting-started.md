@@ -7,7 +7,7 @@ group: start
 
 ## 环境要求
 
-- **Go 1.26 或更新版本。**
+- **Go 1.26 或更新版本。** 使用 `viva` 命令时如果机器上没有，它会替你下载；见[构建与打包](/zh/docs/build-and-package/)。
 - **macOS：** Xcode 命令行工具。Viva 通过 cgo 调用 Cocoa 和 Metal。
 - **Linux：** X11，以及系统自带的 XCB 和 Vulkan 加载库。Viva 在运行时加载它们，自身不捆绑任何一个。
 - **Windows：** Win32，以及系统自带的 Direct3D 11 和 DirectWrite 库。
@@ -22,7 +22,7 @@ go mod init example.com/hello
 go get github.com/vivaui/viva
 ```
 
-`go get` 不带版本号时取最新的正式版本，目前就是 `v0.1.2`。要固定版本就写明：`go get github.com/vivaui/viva@v0.1.2`。Viva 还没有到 1.0，所以小版本之间 `go.mod` 的 API 仍可能变化；升级前看一眼发版说明。
+`go get` 不带版本号时取最新的正式版本，目前就是 `v0.1.3`。要固定版本就写明：`go get github.com/vivaui/viva@v0.1.3`。Viva 还没有到 1.0，所以小版本之间 `go.mod` 的 API 仍可能变化；升级前看一眼发版说明。
 
 如果你是在 Viva 仓库里改框架本身、而不是使用它，改用 `replace` 指向检出目录：
 

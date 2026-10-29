@@ -49,6 +49,7 @@ var coreComponents = []Component{
 	buttonComponent, badgeComponent, checkboxComponent, colorSwatchComponent, colorPickerComponent,
 	switchComponent, inputComponent, dialogComponent,
 	codeEditorComponent, imageViewComponent,
+	reorderListComponent,
 }
 
 var catalog = buildCatalog()
@@ -88,13 +89,15 @@ type State struct {
 	switches    switchState
 	// editor is the Go-owned text behind the example's editable field once a
 	// runner has called EnableTextEditing; fieldID is the hit that edits it.
-	editor      *text.Editor
-	multiSelect *components.MultiSelectState
-	fieldID     ui.ID
-	editing     bool
+	editor       *text.Editor
+	multiSelect  *components.MultiSelectState
+	singleSelect *components.SingleSelectState
+	fieldID      ui.ID
+	editing      bool
 	// textarea keeps the rows and scroll of the Textarea example.
 	textarea    *components.TextareaLayout
 	codeEditor  *components.CodeEditor
+	reorder     *reorderDemoState
 	imageBitmap *ui.Bitmap
 	dialog      dialogState
 	slider      sliderDemoState

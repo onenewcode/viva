@@ -112,14 +112,20 @@ func (canvas *Canvas) iconTarget(icon Icon, bounds Rect) (Rect, bool) {
 	if width <= 0 || height <= 0 {
 		return Rect{}, false
 	}
-	// The size is the pixels the icon covers, so a fractional scale does not leave its edges
-	// half a pixel in; the height follows, keeping the icon's proportions.
-	if snapped := canvas.snapToDevice(width); snapped > 0 {
-		width, height = snapped, height*snapped/width
+	// Stay in device pixels until placement is rounded. Converting a snapped
+	// width back to float32 first can turn an exact half-pixel origin into a
+	// value just below the tie (e.g. a 14px icon at 125%), shifting it up/left.
+	scale := float64(canvas.PixelScale())
+	pixelWidth, pixelHeight := float64(width)*scale, float64(height)*scale
+	if snapped := math.Floor(pixelWidth + 0.5); snapped > 0 {
+		pixelHeight *= snapped / pixelWidth
+		pixelWidth = snapped
 	}
+	x := (float64(bounds.X)+float64(bounds.Width)*0.5)*scale - pixelWidth*0.5
+	y := (float64(bounds.Y)+float64(bounds.Height)*0.5)*scale - pixelHeight*0.5
 	return Rect{
-		X: canvas.snapToDevice(bounds.X + (bounds.Width-width)*0.5), Y: canvas.snapToDevice(bounds.Y + (bounds.Height-height)*0.5),
-		Width: width, Height: height,
+		X: float32(math.Floor(x+0.5) / scale), Y: float32(math.Floor(y+0.5) / scale),
+		Width: float32(pixelWidth / scale), Height: float32(pixelHeight / scale),
 	}, true
 }
 

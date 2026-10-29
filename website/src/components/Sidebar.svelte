@@ -106,7 +106,7 @@
       <nav id="component-navigation" aria-label={text.components} bind:this={navigation}>
         {#each groups as group (group.category)}
           <div class="component-group">
-            <h3 class="component-group-title">{group.category}</h3>
+            <p class="component-group-title">{group.category}</p>
             <ul class="component-list">
               {#each group.items as item (item.ID)}
                 <li><a href={componentPath(locale, item.ID)} class="nav-link" onclick={rememberScroll} onkeydown={(event) => { escape(event); navigationKey(event); }} aria-current={currentID === item.ID ? 'page' : undefined}><span>{item.Title}</span>{#if currentID === item.ID}<span class="nav-active-mark" aria-hidden="true"></span>{/if}</a></li>

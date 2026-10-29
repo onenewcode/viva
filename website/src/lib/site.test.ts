@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import { site } from './site.ts';
 import { home } from './home.ts';
+import { skillNames, skillPath } from './skills.ts';
 
 const guides = new URL('../../content/guides/', import.meta.url);
 const slugs = (locale: string) => readdirSync(new URL(`${locale}/`, guides)).filter(name => name.endsWith('.md')).map(name => name.slice(0, -3)).sort();
@@ -110,4 +111,23 @@ test('guides link only within their own language', () => {
     const other = locale === 'zh' ? 'en' : 'zh';
     for (const slug of slugs(locale)) assert.doesNotMatch(read(locale, slug), new RegExp(`\\]\\(/${other}/`), `${locale}/${slug} links into /${other}/`);
   }
+});
+
+test('every skill is named like its directory and the coding-agent guide installs it from the path the site serves', () => {
+  const names = skillNames();
+  assert.ok(names.length >= 1);
+  for (const name of names) {
+    const text = readFileSync(new URL(`../../../docs/skills/${name}/SKILL.md`, import.meta.url), 'utf8');
+    assert.match(text, new RegExp(`^---\\nname: ${name}\\n`), `${name}: front matter name`);
+    for (const locale of ['zh', 'en']) {
+      const guide = read(locale, 'coding-agents');
+      assert.ok(guide.includes(`https://vivaui.dev${skillPath(name)}`), `${locale}: install URL for ${name}`);
+      assert.ok(guide.includes(`.claude/skills/${name}/SKILL.md`), `${locale}: install target for ${name}`);
+    }
+  }
+});
+
+test('a skill shown inside a guide gives up its title and nests its sections', async () => {
+  const { nestSkillHtml } = await import('./skills.ts');
+  assert.equal(nestSkillHtml('<h1 id="a">Title</h1>\n<p>x</p><h2 id="b">One</h2>'), '<p>x</p><h3 id="b">One</h3>');
 });

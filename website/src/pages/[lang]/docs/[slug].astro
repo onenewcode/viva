@@ -1,10 +1,13 @@
 ---
 import type { GetStaticPaths } from 'astro';
-import { render } from 'astro:content';
+import { getEntry, render } from 'astro:content';
 import DocPageLayout from '../../../layouts/DocPageLayout.astro';
 import { locales, isLocale, type Locale } from '../../../lib/i18n';
-import { docsPath } from '../../../lib/routes';
+import { docsPath, type Heading } from '../../../lib/routes';
 import { guidesFor, guideSlug, guideNavigation } from '../../../lib/content';
+import { siteText } from '../../../lib/site';
+import { nestSkillHtml, readSkill, skillPath } from '../../../lib/skills';
+import CopyButton from '../../../components/CopyButton.svelte';
 
 export const getStaticPaths = (async () => {
   const paths = [];
@@ -15,12 +18,44 @@ const locale = Astro.params.lang;
 if (!isLocale(locale)) throw new Error('Unsupported locale');
 const guides = await guidesFor(locale);
 const entry = guides.find(guide => guideSlug(guide) === Astro.params.slug)!;
-const { Content, headings } = await render(entry);
+const { Content, headings: guideHeadings } = await render(entry);
+const text = siteText(locale);
+const skillName = entry.data.skill;
+const skillEntry = skillName ? await getEntry('skills', skillName) : undefined;
+if (skillName && !skillEntry) throw new Error(`${entry.id} shows the skill ${skillName}, which does not exist in docs/skills`);
+const skillHtml = skillEntry?.rendered?.html;
+if (skillName && !skillHtml) throw new Error(`The skill ${skillName} has no rendered text`);
+// The skill's sections are listed in the outline one level below its heading.
+const skillHeadings = (skillEntry?.rendered?.metadata?.headings ?? []) as Heading[];
+const headings = skillName
+  ? [...guideHeadings, { depth: 2, slug: 'skill-text', text: text.skillHeading }, ...skillHeadings.filter(heading => heading.depth === 2).map(heading => ({ ...heading, depth: 3 }))]
+  : guideHeadings;
 const alternates = Object.fromEntries(locales.map(language => [language, docsPath(language, Astro.params.slug)])) as Record<Locale, string>;
 const navigation = guideNavigation(guides, locale, entry.id);
+// The guide describes itself. There is no publication date to state yet, so it
+// claims none rather than inventing one.
+const origin = (Astro.site?.href ?? 'https://vivaui.dev/').replace(/\/$/, '');
+const article = {
+  '@type': 'TechArticle',
+  '@id': `${origin}${Astro.url.pathname}#article`,
+  headline: entry.data.title,
+  description: entry.data.summary,
+  url: `${origin}${Astro.url.pathname}`,
+  inLanguage: locale === 'zh' ? 'zh-CN' : 'en',
+  isPartOf: { '@id': `${origin}/#website` },
+  author: { '@id': `${origin}/#organization` },
+  publisher: { '@id': `${origin}/#organization` },
+};
 ---
 
-<DocPageLayout {locale} title={entry.data.title} summary={entry.data.summary} section="docs" {alternates} {navigation} {headings}>
+<DocPageLayout {locale} title={entry.data.title} summary={entry.data.summary} section="docs" {alternates} {navigation} {headings} schema={[article]}>
   <div class="page-heading"><h1>{entry.data.title}</h1><p class="page-summary">{entry.data.summary}</p></div>
-  <div class="markdown"><Content /></div>
+  <div class="markdown"><Content />
+  {skillName && skillHtml && <section class="skill-text" aria-labelledby="skill-text">
+    <h2 id="skill-text">{text.skillHeading}</h2>
+    <p>{text.skillNote}</p>
+    <div class="code-toolbar"><a href={skillPath(skillName)}>{text.skillRaw}</a><CopyButton text={readSkill(skillName)} label={text.skillCopy} {locale} client:load /></div>
+    <Fragment set:html={nestSkillHtml(skillHtml)} />
+  </section>}
+  </div>
 </DocPageLayout>

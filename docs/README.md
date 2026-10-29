@@ -10,7 +10,7 @@ can run its programs.
 | Look up an API | the API reference on that site, generated from the Go source and its comments |
 | Build the framework itself | [../CONTRIBUTING.md](../CONTRIBUTING.md) and [../README.md](../README.md) |
 | Check platform behaviour | [conformance.md](conformance.md) |
-| Have a coding agent build on Viva | [skills/building-with-viva](skills/building-with-viva/SKILL.md): copy or symlink the directory into your project's `.claude/skills` or `.agents/skills` |
+| Have a coding agent build on Viva | [skills/building-with-viva](skills/building-with-viva/SKILL.md), published on the website as the [coding agents guide](../website/content/guides/en/coding-agents.md) and at `/skills/building-with-viva/SKILL.md`: copy or symlink the directory into your project's `.claude/skills` or `.agents/skills` |
 | See what was measured | [benchmarks/](benchmarks/) |
 
 ## What is here

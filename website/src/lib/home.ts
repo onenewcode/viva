@@ -13,7 +13,9 @@ const english = {
   heading: 'Native desktop applications, written in Go.',
   headingMark: 'Go',
   headingKey: 'Native',
-  lead: 'Viva draws windows, text and components straight through each operating system\'s own APIs and the GPU. There is no WebView, no browser engine and no bundled runtime, and an idle application does no work at all.',
+  // The first sentence is the definition a reader or an assistant quotes, so it
+  // names the product, the language and the category before the copy argues.
+  lead: 'Viva is a Go framework for native desktop applications. It draws windows, text and components straight through each operating system\'s own APIs and the GPU: there is no WebView, no browser engine and no bundled runtime, and an idle application does no work at all.',
   start: 'Get started', browse: 'Browse components',
   heroStats: [
     { value: '1.6 MiB', label: 'stripped executable' },
@@ -58,7 +60,7 @@ const chinese: typeof english = {
   heading: '用 Go 写原生桌面应用。',
   headingMark: 'Go',
   headingKey: '原生',
-  lead: 'Viva 直接通过各操作系统自己的接口和 GPU 绘制窗口、文字与组件。没有 WebView，没有浏览器引擎，也没有捆绑的运行时；应用空闲时完全不做事。',
+  lead: 'Viva 是面向原生桌面应用的 Go 框架。它直接通过各操作系统自己的接口和 GPU 绘制窗口、文字与组件：没有 WebView，没有浏览器引擎，也没有捆绑的运行时；应用空闲时完全不做事。',
   start: '开始使用', browse: '浏览组件',
   heroStats: [
     { value: '1.6 MiB', label: '剥离后的可执行文件' },

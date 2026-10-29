@@ -28,6 +28,7 @@ func newReloadWorkerConfig(config Config, canvas *ui.Canvas) reloadwire.WorkerCo
 	worker := reloadwire.WorkerConfig{
 		Window: reloadwire.WindowConfig{
 			Title: config.Title, Width: config.Width, Height: config.Height,
+			MinWidth: config.MinWidth, MinHeight: config.MinHeight,
 			WindowMode: uint8(config.WindowMode), TitlebarHeight: uint16(max(config.TitlebarHeight+0.5, 0)),
 			ClearRed: config.ClearColor.Red, ClearGreen: config.ClearColor.Green,
 			ClearBlue: config.ClearColor.Blue, ClearAlpha: config.ClearColor.Alpha,

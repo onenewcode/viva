@@ -253,10 +253,11 @@ func (v *MarkdownView) CaretBounds() (ui.Rect, bool) { return ui.Rect{}, false }
 // to a synthetic byte.
 func (v *MarkdownView) codeOffsetAt(piece *mdPiece, x float32) int {
 	source := v.plain[piece.plainLo:piece.plainHi]
-	if len(source) == 0 || x <= 0 {
+	if len(source) == 0 || x <= piece.padX {
 		return 0
 	}
-	if x >= piece.w {
+	x -= piece.padX
+	if x >= piece.w-2*piece.padX {
 		return len(source)
 	}
 	cell := piece.cell
@@ -345,6 +346,7 @@ const (
 	markdownQuoteStep = 14
 	markdownListStep  = 20
 	markdownMarkerW   = 24
+	markdownInlinePad = 2
 	markdownCodePadX  = 10
 	markdownCodePadY  = 8
 	markdownCellPadX  = 8
@@ -367,17 +369,19 @@ type mdCodeRun struct {
 }
 
 type mdPiece struct {
-	runLo, runHi int32 // the stretches of a highlighted line of code, in View.runs
+	runLo, runHi int32 // the fixed-grid runs of the piece, in View.runs
 	// plainLo and plainHi are the bytes of View.plain this piece draws, or -1
 	// when it is decoration (a list marker) that is not part of the copied text.
 	plainLo, plainHi int32
 	// codeCol is where a fixed-pitch piece starts in the cells of its source
 	// line, needed to expand the tabs in its plain range for painting. spread
-	// marks a fenced-code piece, whose text has its tabs already expanded; the
-	// cell is that piece's own cell width, which differs between a fenced block
-	// and smaller inline code (and between body text and a heading).
+	// marks a fenced-code piece, whose text has its tabs already expanded. cell
+	// is the piece's cell width and padX is its visual inset: each differs
+	// between a fenced block and smaller inline code, and between body text and
+	// a heading.
 	codeCol    int32
 	cell       float32
+	padX       float32
 	spread     bool
 	text       string
 	x, y, w, h float32
@@ -755,13 +759,10 @@ func tabRun(bound []int32, at int) (start, end int, inside bool) {
 	return start, end, start < at && at < end
 }
 
-// appendCodeRuns records the stretches of line[from:to] that marked colors, and
-// the plain code between them, if there is any marking at all. Each character
+// appendCodeRuns records fixed-grid runs covering line[from:to], with the
+// stretches that marked colors and the plain code between them. Each character
 // that is not ASCII is a stretch of its own, as LabelRuns wants.
 func (v *MarkdownView) appendCodeRuns(line string, from, to int, marked []MarkdownCodeRun) {
-	if len(marked) == 0 {
-		return
-	}
 	at := from
 	emit := func(start, end int, class MarkdownCodeClass) {
 		for start < end {
@@ -1039,7 +1040,7 @@ func (l *mdLayout) atomize(spans []markdown.Span, t mdFont) {
 			pending = 0
 			var w float32
 			if mono {
-				w = float32(monoCells(text[i:j])) * cell
+				w = float32(monoCells(text[i:j]))*cell + 2*markdownInlinePad
 			} else {
 				w = l.canvas.TextWidthWeight(text[i:j], size, weight)
 			}
@@ -1068,6 +1069,15 @@ type mdLine struct {
 	pieceP int // first piece, box and link of the line, for alignment
 	pieceB int
 	pieceL int
+	// grew reports that the open piece took a second atom, so its width is a
+	// running sum that closePiece must settle.
+	grew bool
+	// measured* remembers candidateWidth's complete-piece measurement so that
+	// place can commit the same fragment without measuring it again.
+	measuredSpan int32
+	measuredLo   int32
+	measuredHi   int32
+	measuredEnd  float32
 }
 
 // inline lays spans out as wrapped lines from y and returns where the text ends.
@@ -1086,43 +1096,216 @@ func (l *mdLayout) inline(spans []markdown.Span, x, width, y float32, t mdFont, 
 			m.endLine()
 			continue
 		}
-		if m.has && !a.glue && m.x+a.w > width {
-			m.endLine()
+		// Most atoms sit well inside the line. They fit without consulting the
+		// shaped width, which is what keeps filling a line from costing one
+		// shaping per atom.
+		if !a.glue && a.w <= m.width && m.x+a.w <= m.width-2*m.t.size {
+			m.place(a)
+			continue
 		}
-		if a.w > width && !a.glue {
-			a = m.split(a)
+		a, place := m.fit(a)
+		if place {
+			m.place(a)
 		}
-		m.place(a)
 	}
 	m.endLine()
 	return m.y
+}
+
+// fit decides which atoms stay on the current line. An ordinary token that
+// does not fit moves whole to the next line. A token wider than an empty line
+// is split first; if even one decorated character does not fit, it is placed
+// as the unavoidable minimum so the loop always makes progress.
+func (m *mdLine) fit(a mdAtom) (mdAtom, bool) {
+	if a.brk {
+		return a, false
+	}
+	if a.glue && m.has && m.candidateWidth(a) > m.width {
+		// Closing punctuation may not start a line. Move the preceding piece
+		// with it when the pair fits; otherwise move the shortest suffix that
+		// can carry it. When neither works, nothing on this line can hold the
+		// punctuation, so it starts the next one: painting it past the column,
+		// where the clip cuts it in silence, is worse.
+		if !m.rewindForGlue(a) && !m.splitForGlue(a) {
+			m.endLine()
+		}
+	}
+	if m.has && m.candidateWidth(a) > m.width {
+		m.endLine()
+	}
+	if a.w <= m.width {
+		return a, true
+	}
+	if !a.glue && m.exactWidth(a) > m.width {
+		return m.split(a), true
+	}
+	if m.exactWidth(a) > m.width {
+		// Punctuation wider than a line cannot use the ordinary split path,
+		// but it still has to consume one character or fit would loop.
+		return m.split(a), true
+	}
+	return a, true
 }
 
 func (m *mdLine) reset() {
 	v := m.l.v
 	m.x, m.w, m.has, m.piece = 0, 0, false, -1
 	m.pieceP, m.pieceB, m.pieceL = len(v.pieces), len(v.boxes), len(v.links)
+	m.measuredSpan, m.measuredLo, m.measuredHi, m.measuredEnd = -1, 0, 0, 0
+	m.grew = false
+}
+
+func (m *mdLine) spanWidth(sp markdown.Span, text string) float32 {
+	size, weight := m.t.size, spanWeight(m.t.weight, sp.Style)
+	if sp.Style&markdown.Mono == 0 {
+		return m.l.canvas.TextWidthWeight(text, size, weight)
+	}
+	size = max(size-1, 9)
+	cell, _ := m.l.canvas.MonoCellSize(size, m.l.style.MonoFace)
+	if cell <= 0 {
+		cell = size * 0.6
+	}
+	return float32(monoCells(text)) * cell
+}
+
+func (m *mdLine) spanPad(sp markdown.Span) float32 {
+	if sp.Style&markdown.Mono != 0 {
+		return markdownInlinePad
+	}
+	return 0
+}
+
+func (m *mdLine) exactWidth(a mdAtom) float32 {
+	if a.hi <= a.lo {
+		return 0
+	}
+	sp := m.spans[a.span]
+	return m.spanWidth(sp, sp.Text[a.lo:a.hi]) + 2*m.spanPad(sp)
+}
+
+// candidateWidth is where atom a would end if it continued the current line.
+// A piece is remeasured as the complete string it will paint, so shaped text
+// cannot change the right edge after the line has been committed. Shaping the
+// growing piece once per atom would make a line quadratic in its length, so
+// only an atom that may cross the edge is measured that way: further inside the
+// line the running width cannot decide the break.
+func (m *mdLine) candidateWidth(a mdAtom) float32 {
+	sp := m.spans[a.span]
+	if m.piece >= 0 && m.span == a.span {
+		p := &m.l.v.pieces[m.piece]
+		// Either side of the edge is decided as well by the running width; only
+		// the band around it needs the shaped one.
+		if approx := m.x + a.w; approx <= m.width-2*m.t.size || approx >= m.width+2*m.t.size {
+			m.measuredSpan = -1
+			return approx
+		}
+		end := p.x - m.x0 + m.spanWidth(sp, sp.Text[m.lo:a.hi]) + 2*p.padX
+		m.measuredSpan, m.measuredLo, m.measuredHi, m.measuredEnd = a.span, m.lo, a.hi, end
+		return end
+	}
+	m.measuredSpan = -1
+	return m.x + a.w
+}
+
+// joinedWidth measures prefix and atom a as they will be painted. Text from one
+// span shares a piece, so its complete string must be shaped together.
+func (m *mdLine) joinedWidth(a mdAtom, prefix string) float32 {
+	if m.piece >= 0 && m.span == a.span {
+		sp := m.spans[a.span]
+		p := &m.l.v.pieces[m.piece]
+		// prefix is a suffix ending at a.lo, so measure the original text in place.
+		start := a.lo - int32(len(prefix))
+		return m.spanWidth(sp, sp.Text[start:a.hi]) + 2*p.padX
+	}
+	prefixSpan := m.spans[m.span]
+	return m.spanWidth(prefixSpan, prefix) + 2*m.spanPad(prefixSpan) + m.exactWidth(a)
+}
+
+// rewindForGlue moves the open piece and the punctuation after it to a new
+// line when their combined width fits. The piece has not been closed, so it
+// has no background or link yet to remove.
+func (m *mdLine) rewindForGlue(a mdAtom) bool {
+	if m.piece < 0 {
+		return false
+	}
+	m.settlePiece()
+	v := m.l.v
+	prev := v.pieces[m.piece]
+	start := prev.x - m.x0
+	if start <= 0 || m.joinedWidth(a, prev.text) > m.width {
+		return false
+	}
+	span, lo := m.span, m.lo
+	v.pieces = v.pieces[:m.piece]
+	m.piece = -1
+	m.x, m.w = start, start
+	m.measuredSpan = -1
+	m.endLine()
+	prev.x, prev.y = m.x0, m.y
+	v.pieces = append(v.pieces, prev)
+	m.piece, m.span, m.lo = len(v.pieces)-1, span, lo
+	m.x = prev.w
+	m.w = m.x
+	m.has = true
+	return true
+}
+
+// splitForGlue is the fallback when the open piece is too long to move whole.
+// It leaves the longest fitting prefix on the current line and moves the
+// shortest suffix that can carry the punctuation to the next one. The piece
+// is still open, so there is no background or link to duplicate.
+func (m *mdLine) splitForGlue(a mdAtom) bool {
+	if m.piece < 0 {
+		return false
+	}
+	m.settlePiece()
+	v := m.l.v
+	prev := v.pieces[m.piece]
+	sp := m.spans[m.span]
+	if len(prev.text) == 0 {
+		return false
+	}
+	cut := len(prev.text)
+	for cut > 0 {
+		_, size := utf8.DecodeLastRuneInString(prev.text[:cut])
+		cut -= size
+		if cut == 0 {
+			break
+		}
+		suffix := prev.text[cut:]
+		if m.joinedWidth(a, suffix) <= m.width {
+			prefix := prev.text[:cut]
+			p := &v.pieces[m.piece]
+			p.text = prefix
+			p.plainHi = p.plainLo + int32(len(prefix))
+			p.w = m.spanWidth(sp, prefix) + 2*p.padX
+			m.x = p.x - m.x0 + p.w
+			m.w = m.x
+			m.closePiece()
+			m.endLine()
+
+			next := prev
+			next.text = suffix
+			next.plainLo = prev.plainLo + int32(len(prefix))
+			next.plainHi = prev.plainHi
+			next.x, next.y = m.x0, m.y
+			next.w = m.spanWidth(sp, suffix) + 2*next.padX
+			v.pieces = append(v.pieces, next)
+			m.piece, m.lo = len(v.pieces)-1, m.lo+int32(cut)
+			m.x, m.w, m.has = next.w, next.w, true
+			return true
+		}
+	}
+	return false
 }
 
 // split places the leading chunks of an atom wider than a whole line, each on a
 // line of its own, and returns the rest.
 func (m *mdLine) split(a mdAtom) mdAtom {
-	l := m.l
 	sp := m.spans[a.span]
-	mono := sp.Style&markdown.Mono != 0
-	size, weight := m.t.size, spanWeight(m.t.weight, sp.Style)
-	if mono {
-		size = max(size-1, 9)
-	}
-	cell, _ := l.canvas.MonoCellSize(size, l.style.MonoFace)
-	measure := func(text string) float32 {
-		if mono {
-			return float32(monoCells(text)) * cell
-		}
-		return l.canvas.TextWidthWeight(text, size, weight)
-	}
+	pad := m.spanPad(sp)
 	m.endLine()
-	for a.w > m.width {
+	for m.exactWidth(a) > m.width {
 		text := sp.Text[a.lo:a.hi]
 		// The longest prefix that fits, by bisection on rune boundaries.
 		lo, hi := 0, len(text)
@@ -1134,22 +1317,24 @@ func (m *mdLine) split(a mdAtom) mdAtom {
 			if mid <= lo {
 				break
 			}
-			if measure(text[:mid]) <= m.width {
+			if m.spanWidth(sp, text[:mid])+2*pad <= m.width {
 				lo = mid
 			} else {
 				hi = mid
 			}
 		}
 		if lo == 0 {
+			// No whole character fits. Consume one anyway so an extremely
+			// narrow column makes progress; clipping is preferable to a loop.
 			_, lo = utf8.DecodeRuneInString(text)
 		}
 		chunk := a
 		chunk.hi = a.lo + int32(lo)
-		chunk.w, chunk.space = measure(text[:lo]), 0
+		chunk.w, chunk.space = m.spanWidth(sp, text[:lo])+2*pad, 0
 		m.place(chunk)
 		m.endLine()
 		a.lo += int32(lo)
-		a.w = measure(sp.Text[a.lo:a.hi])
+		a.w = m.spanWidth(sp, sp.Text[a.lo:a.hi]) + 2*pad
 	}
 	return a
 }
@@ -1169,33 +1354,68 @@ func (m *mdLine) place(a mdAtom) {
 		p := &v.pieces[m.piece]
 		p.text = sp.Text[m.lo:a.hi]
 		p.plainHi = base + int32(a.hi)
-		p.w = m.x + a.w - (p.x - m.x0)
-	} else {
-		m.closePiece()
-		size, weight, color := m.t.size, spanWeight(m.t.weight, sp.Style), m.t.color
-		var cell float32
-		if mono {
-			size = max(size-1, 9)
-			m.x += 2
-			cell, _ = l.canvas.MonoCellSize(size, l.style.MonoFace)
-			if cell <= 0 {
-				cell = size * 0.6
-			}
+		if m.measuredSpan == a.span && m.measuredLo == m.lo && m.measuredHi == a.hi {
+			p.w = m.measuredEnd - (p.x - m.x0)
+			m.grew = false
+		} else {
+			// Growing the open piece costs no shaping: the cursor already holds
+			// what the piece covers, so its width is that plus the atom. Only
+			// shaping that is not a sum of its atoms can move the result, and
+			// settlePiece corrects that once, when the piece stops growing.
+			p.w = m.x - (p.x - m.x0) + a.w
+			m.grew = true
 		}
-		if sp.Link != "" {
-			color = mdColLink
-		}
-		v.pieces = append(v.pieces, mdPiece{
-			plainLo: base + int32(a.lo), plainHi: base + int32(a.hi), cell: cell,
-			text: sp.Text[a.lo:a.hi], x: m.x0 + m.x, y: m.y, w: a.w, h: m.t.line,
-			size: size, weight: weight, color: color, mono: mono, strike: sp.Style&markdown.Strike != 0, link: -1,
-		})
-		m.piece, m.span, m.lo = len(v.pieces)-1, a.span, a.lo
+		m.x = p.x - m.x0 + p.w
+		m.w = m.x
+		m.x += a.space
+		m.has = true
+		return
 	}
-	m.x += a.w
+	m.closePiece()
+	size, weight, color := m.t.size, spanWeight(m.t.weight, sp.Style), m.t.color
+	var cell, padX float32
+	if mono {
+		size = max(size-1, 9)
+		padX = markdownInlinePad
+		cell, _ = l.canvas.MonoCellSize(size, l.style.MonoFace)
+		if cell <= 0 {
+			cell = size * 0.6
+		}
+	}
+	if sp.Link != "" {
+		color = mdColLink
+	}
+	v.pieces = append(v.pieces, mdPiece{
+		plainLo: base + int32(a.lo), plainHi: base + int32(a.hi), cell: cell, padX: padX,
+		text: sp.Text[a.lo:a.hi], x: m.x0 + m.x, y: m.y, w: a.w, h: m.t.line,
+		size: size, weight: weight, color: color, mono: mono, strike: sp.Style&markdown.Strike != 0, link: -1,
+	})
+	m.piece, m.span, m.lo = len(v.pieces)-1, a.span, a.lo
+	m.measuredSpan, m.grew = -1, false
+	p := &v.pieces[m.piece]
+	m.x = p.x - m.x0 + p.w
 	m.w = m.x
 	m.x += a.space
 	m.has = true
+}
+
+// settlePiece makes the open piece's width exact, which place leaves running
+// while the piece grows. Only the open piece is last on its line, so the
+// correction moves nothing that is already placed.
+func (m *mdLine) settlePiece() {
+	if m.piece < 0 || !m.grew {
+		return
+	}
+	v := m.l.v
+	p := &v.pieces[m.piece]
+	sp := m.spans[m.span]
+	exact := m.spanWidth(sp, p.text) + 2*p.padX
+	m.grew = false
+	if delta := exact - p.w; delta != 0 {
+		p.w = exact
+		m.x += delta
+		m.w += delta
+	}
 }
 
 // closePiece finishes the open piece: the box behind inline code, the region of a link.
@@ -1203,24 +1423,24 @@ func (m *mdLine) closePiece() {
 	if m.piece < 0 {
 		return
 	}
+	m.settlePiece()
 	v := m.l.v
 	p := &v.pieces[m.piece]
 	sp := m.spans[m.span]
-	if !p.mono {
-		// The atoms were measured one by one; the text is drawn as one run, and
-		// a long run of ideographs drifts from the sum of its parts.
-		if real := m.l.canvas.TextWidthWeight(p.text, p.size, p.weight); real != p.w {
-			m.x += real - p.w
-			m.w += real - p.w
-			p.w = real
-		}
-	}
 	if p.mono {
+		if p.runLo == p.runHi && p.text != "" {
+			p.runLo = int32(len(v.runs))
+			v.appendCodeRuns(p.text, 0, len(p.text), nil)
+			p.runHi = int32(len(v.runs))
+		}
 		h := p.size * 1.5
-		v.boxes = append(v.boxes, mdBox{kind: mdBoxInlineCode, x: p.x - 2, y: p.y + (p.h-h)/2, w: p.w + 4, h: h})
+		v.boxes = append(v.boxes, mdBox{kind: mdBoxInlineCode, x: p.x, y: p.y + (p.h-h)/2, w: p.w, h: h})
 	}
 	if sp.Link != "" {
-		v.links = append(v.links, mdLink{x: p.x, y: p.y, w: p.w, h: p.h, size: p.size, text: p.text, dest: sp.Link})
+		v.links = append(v.links, mdLink{
+			x: p.x + p.padX, y: p.y, w: p.w - 2*p.padX, h: p.h,
+			size: p.size, text: p.text, dest: sp.Link,
+		})
 		p.link = int32(len(v.links) - 1)
 	}
 	m.piece = -1
@@ -1263,6 +1483,12 @@ func (v *MarkdownView) Paint(canvas *ui.Canvas, p MarkdownPaint) {
 	visible := func(y, h float32) bool {
 		return !clipped || (y+h >= p.Clip.Y && y <= p.Clip.Y+p.Clip.Height)
 	}
+	if clipped {
+		canvas.Clip(ui.Rect{
+			X: p.Clip.X, Y: p.Clip.Y, Width: p.Clip.Width, Height: p.Clip.Height,
+		})
+		defer canvas.Unclip()
+	}
 	for _, box := range v.boxes {
 		rect := ui.Rect{X: p.X + box.x, Y: p.Y + box.y, Width: box.w, Height: box.h}
 		if !visible(rect.Y, rect.Height) {
@@ -1302,7 +1528,7 @@ func (v *MarkdownView) Paint(canvas *ui.Canvas, p MarkdownPaint) {
 					if cell <= 0 {
 						cell = 1
 					}
-					x := p.X + piece.x + float32(monoCells(piece.text[:from]))*cell
+					x := p.X + piece.x + piece.padX + float32(monoCells(piece.text[:from]))*cell
 					width := float32(monoCells(piece.text[from:to])) * cell
 					canvas.Fill(ui.Rect{X: x, Y: p.Y + piece.y, Width: width, Height: piece.h}, look.Selection)
 				}
@@ -1317,7 +1543,10 @@ func (v *MarkdownView) Paint(canvas *ui.Canvas, p MarkdownPaint) {
 	}
 	for index := range v.pieces {
 		piece := &v.pieces[index]
-		rect := ui.Rect{X: p.X + piece.x, Y: p.Y + piece.y, Width: piece.w + 3, Height: piece.h}
+		rect := ui.Rect{
+			X: p.X + piece.x + piece.padX, Y: p.Y + piece.y,
+			Width: piece.w - 2*piece.padX, Height: piece.h,
+		}
 		if !visible(rect.Y, rect.Height) {
 			continue
 		}
@@ -1336,15 +1565,19 @@ func (v *MarkdownView) Paint(canvas *ui.Canvas, p MarkdownPaint) {
 				if run.class > 0 && int(run.class) < len(look.Code) && look.Code[run.class].Alpha > 0 {
 					stretch = look.Code[run.class]
 				}
-				v.scratch = append(v.scratch, ui.TextRun{Column: column, Bytes: run.bytes, Cells: run.cells, Color: stretch})
+				v.scratch = append(v.scratch, ui.TextRun{
+					Column: column, Bytes: run.bytes, Cells: run.cells, Color: stretch, Weight: piece.weight,
+				})
 				column += run.cells
 			}
-			canvas.LabelRuns(piece.text, rect, ui.TextStyle{Size: piece.size, Color: color, Mono: true, MonoFace: v.face}, piece.cell, v.scratch)
+			canvas.LabelRuns(piece.text, rect, ui.TextStyle{
+				Size: piece.size, Weight: piece.weight, Color: color, Mono: true, MonoFace: v.face,
+			}, piece.cell, v.scratch)
 		} else {
 			canvas.Label(piece.text, rect, ui.TextStyle{Size: piece.size, Weight: piece.weight, Color: color, Mono: piece.mono, MonoFace: v.face})
 		}
 		if piece.strike {
-			canvas.Fill(ui.Rect{X: rect.X, Y: rect.Y + rect.Height/2, Width: piece.w, Height: 1}, color)
+			canvas.Fill(ui.Rect{X: rect.X, Y: rect.Y + rect.Height/2, Width: rect.Width, Height: 1}, color)
 		}
 	}
 	for index := range v.links {

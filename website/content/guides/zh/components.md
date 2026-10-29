@@ -43,7 +43,7 @@ plot := components.PaintAreaChart(canvas, theme, bounds, chartID, chart, &state)
 想修改组件时，就复制它。`viva list` 列出安装器能复制的配方，`viva add` 把它们作为普通 Go 文件写进你的项目：
 
 ```sh
-go install github.com/vivaui/viva/cmd/viva@latest    # 只需一次：安装 viva 命令
+# 先安装 viva（见「构建与打包」）；viva init 生成的项目里用 go tool viva
 viva list
 viva add --out ./components/ui button card badge
 ```

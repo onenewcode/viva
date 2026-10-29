@@ -4268,6 +4268,8 @@ static void viva_set_secure_event_input(BOOL on) {
     NSString *_title;
     int _width;
     int _height;
+    int _minWidth;
+    int _minHeight;
     MTLClearColor _clearColor;
     id<MTLDevice> _device;
     id<MTLCommandQueue> _commandQueue;
@@ -4298,6 +4300,8 @@ static void viva_set_secure_event_input(BOOL on) {
     BOOL _running;
     int _status;
 }
+
+- (void)updateMinimumSize;
 
 - (instancetype)initWithConfig:(viva_window_config)config
                          device:(id<MTLDevice>)device
@@ -4361,6 +4365,8 @@ static void viva_set_secure_event_input(BOOL on) {
         _title = [[NSString alloc] initWithUTF8String:config.title];
         _width = config.width;
         _height = config.height;
+        _minWidth = config.min_width;
+        _minHeight = config.min_height;
         _clearColor = MTLClearColorMake(
             config.clear_red,
             config.clear_green,
@@ -4405,6 +4411,7 @@ static void viva_set_secure_event_input(BOOL on) {
 }
 
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     if ([_window.contentView isKindOfClass:[VivaMetalView class]]) {
         [(VivaMetalView *)_window.contentView shutdownTextInput];
     }
@@ -4445,6 +4452,8 @@ static void viva_set_secure_event_input(BOOL on) {
                                                  defer:NO];
     _window.title = _title;
     _window.delegate = self;
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(screenParametersChanged:)
+                                                 name:NSApplicationDidChangeScreenParametersNotification object:nil];
     _window.releasedWhenClosed = NO;
     if (_windowMode == VIVA_WINDOW_PANEL) {
         _window.minSize = NSMakeSize(1, 1);
@@ -4512,6 +4521,16 @@ static void viva_set_secure_event_input(BOOL on) {
         [self placeAtOrigin];
     } else {
         [_window center];
+    }
+    [self updateMinimumSize];
+    if (_minWidth > 0 || _minHeight > 0) {
+        NSScreen *screen = _window.screen ?: [NSScreen mainScreen];
+        if (screen != nil) {
+            NSRect fitted = _window.frame;
+            fitted.size.width = MIN(fitted.size.width, screen.visibleFrame.size.width);
+            fitted.size.height = MIN(fitted.size.height, screen.visibleFrame.size.height);
+            [_window setFrame:[_window constrainFrameRect:fitted toScreen:screen] display:NO];
+        }
     }
     [_window makeKeyAndOrderFront:nil];
     [_window makeFirstResponder:view];
@@ -4720,6 +4739,43 @@ static void viva_set_secure_event_input(BOOL on) {
         viva_place_traffic_lights(_window, _titlebarHeight);
     }
     [self reportFrameChange];
+}
+
+/* AppKit uses logical points; the backing scale must not be applied twice.
+ * A smaller display's visible content area is the upper bound for the limit. */
+- (void)updateMinimumSize {
+    if (_window == nil || (_minWidth <= 0 && _minHeight <= 0)) {
+        return;
+    }
+    NSSize minimum = _window.contentMinSize;
+    if (_minWidth > 0) minimum.width = _minWidth;
+    if (_minHeight > 0) minimum.height = _minHeight;
+    NSScreen *screen = _window.screen ?: [NSScreen mainScreen];
+    if (screen != nil) {
+        NSSize available = [_window contentRectForFrameRect:screen.visibleFrame].size;
+        minimum.width = MIN(minimum.width, MAX(1, available.width));
+        minimum.height = MIN(minimum.height, MAX(1, available.height));
+    }
+    if (!NSEqualSizes(_window.contentMinSize, minimum)) {
+        _window.contentMinSize = minimum;
+    }
+}
+
+- (void)windowDidChangeScreen:(NSNotification *)notification {
+    (void)notification;
+    [self updateMinimumSize];
+}
+
+- (void)windowDidChangeScreenProfile:(NSNotification *)notification {
+    (void)notification;
+    [self updateMinimumSize];
+}
+
+/* A resolution, arrangement, Dock or menu-bar change does not change the
+ * window's screen, so windowDidChangeScreen does not fire for it. */
+- (void)screenParametersChanged:(NSNotification *)notification {
+    (void)notification;
+    [self updateMinimumSize];
 }
 
 /* Reports the content rectangle on screen after a move or a resize. The frame is

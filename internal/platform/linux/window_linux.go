@@ -18,6 +18,7 @@ import (
 )
 
 type window struct {
+	minimumSize               *minimumSizeCache
 	mu                        sync.Mutex
 	api                       *xcbAPI
 	connection                uintptr
@@ -525,10 +526,13 @@ func (application *linuxApplication) fail(err error) {
 // reportFrame tells the application where its content area is now, in logical
 // pixels. It asks the X server for the window's origin inside the frame the
 // window manager may have put it in, and reports only changes.
-func (state *linuxWindowState) reportFrame() {
+// reportFrame reports the content rectangle to OnFrameChange. It returns the
+// content's root position when it had to read it, so a caller that also needs
+// the position (the minimum-size constraint) shares one query.
+func (state *linuxWindowState) reportFrame() (int32, int32, bool) {
 	win, config := state.win, state.config
 	if config.OnFrameChange == nil || win.frame.maximized {
-		return
+		return 0, 0, false
 	}
 	x, y := win.contentOrigin()
 	scale := win.displayScale()
@@ -537,10 +541,11 @@ func (state *linuxWindowState) reportFrame() {
 		Width: float32(contentSize(win.width, win.margin)) / scale, Height: float32(contentSize(win.height, win.margin)) / scale,
 	}
 	if frame == win.lastFrame {
-		return
+		return x, y, true
 	}
 	win.lastFrame = frame
 	config.OnFrameChange(frame)
+	return x, y, true
 }
 
 func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
@@ -593,6 +598,7 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 		if win.incrEvent((*xcbPropertyEvent)(event)) {
 			return false, nil
 		}
+		win.minimumSizeProperty(config, (*xcbPropertyEvent)(event))
 		if win.tracker != nil && win.tracker.settingsEvent((*xcbPropertyEvent)(event)) {
 			// The desktop's settings changed: the user may have chosen another scale.
 			return false, state.refreshScale(true)
@@ -662,8 +668,13 @@ func (state *linuxWindowState) handleEvent(event unsafe.Pointer) (bool, error) {
 				return false, err
 			}
 		}
-		state.reportFrame()
+		x, y, frameKnown := state.reportFrame()
 		win.answerSync()
+		if frameKnown {
+			win.updateMinimumSizeAt(config, x, y)
+		} else {
+			win.updateMinimumSize(config)
+		}
 	case xcbButtonPress:
 		inputEvent := (*xcbInputEvent)(event)
 		if win.beginWindowMove(config, inputEvent) {
@@ -826,6 +837,7 @@ func (state *linuxWindowState) applyScale(scale float32) error {
 			return err
 		}
 	}
+	win.updateMinimumSize(state.config)
 	size := [2]uint32{deviceLength(logicalWidth, scale) + 2*margin, deviceLength(logicalHeight, scale) + 2*margin}
 	win.api.configureWindow(win.connection, win.id, xcbConfigWindowWidth|xcbConfigWindowHeight, &size[0])
 	win.api.flush(win.connection)
@@ -914,7 +926,7 @@ func openWindow(config platform.Config) (*window, error) {
 	// keyboard is its own, and gaining it is when a desktop that does not
 	// announce its light or dark switch is asked again which it is.
 	eventMask |= xcbEventFocusChange
-	if config.WindowMode == platform.WindowCustomTitlebar || config.OnMinimize != nil || config.OnMaximize != nil {
+	if config.WindowMode == platform.WindowCustomTitlebar || config.OnMinimize != nil || config.OnMaximize != nil || config.MinWidth > 0 || config.MinHeight > 0 {
 		eventMask |= xcbEventPropertyChange
 	}
 	if config.OnPointer != nil {
@@ -973,8 +985,12 @@ func openWindow(config platform.Config) (*window, error) {
 		// window as it likes and ignores where it was created.
 		const usPosition = 1
 		hints := [18]uint32{usPosition, uint32(int32(x)), uint32(int32(y))}
+		if config.MinWidth > 0 || config.MinHeight > 0 {
+			win.minimumSize = &minimumSizeCache{normalHints: hints}
+		}
 		api.changeProperty(connection, xcbPropertyReplace, win.id, xcbAtomWMNormalHints, xcbAtomWMSizeHints, 32, uint32(len(hints)), unsafe.Pointer(&hints[0]))
 	}
+	win.updateMinimumSize(config)
 	if class := wmClass(config.Class); class != nil {
 		api.changeProperty(connection, xcbPropertyReplace, win.id, xcbAtomWMClass, xcbAtomString, 8, uint32(len(class)), unsafe.Pointer(&class[0]))
 	}

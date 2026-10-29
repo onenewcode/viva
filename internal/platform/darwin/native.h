@@ -258,6 +258,8 @@ typedef struct {
     const char *title;
     int width;
     int height;
+    int min_width;
+    int min_height;
     double clear_red;
     double clear_green;
     double clear_blue;

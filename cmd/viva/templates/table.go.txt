@@ -150,18 +150,26 @@ const (
 	tableRowFooter
 )
 
-func (table *Table) paintRow(id ui.ID, cells []string, state TableRowState, kind tableRowKind, cellsOut []ui.Rect) TableRowLayout {
+// rowHeightFor fits height into the room left below the cursor, so a row never
+// paints past the table's bottom edge.
+func (table *Table) rowHeightFor(height float32) float32 {
 	bottom := table.bounds.Y + table.bounds.Height
-	if table.y >= bottom || len(table.columns) == 0 {
+	if table.y >= bottom || height <= 0 {
+		return 0
+	}
+	return max(min(height, bottom-table.y), 0)
+}
+
+func (table *Table) paintRow(id ui.ID, cells []string, state TableRowState, kind tableRowKind, cellsOut []ui.Rect) TableRowLayout {
+	if len(table.columns) == 0 {
 		return TableRowLayout{}
 	}
+	bottom := table.bounds.Y + table.bounds.Height
 	height := table.rowHeight
 	if kind == tableRowHeader {
 		height = table.headerHeight
 	}
-	if table.y+height > bottom {
-		height = bottom - table.y
-	}
+	height = table.rowHeightFor(height)
 	if height <= 0 {
 		return TableRowLayout{}
 	}
@@ -341,3 +349,175 @@ func tableMax32(left, right float32) float32 {
 	}
 	return right
 }
+
+// TableSortDirection is the ordering indicated by a sortable header. The
+// application owns the comparison and the data; Table only paints its state.
+type TableSortDirection uint8
+
+const (
+	TableSortNone TableSortDirection = iota
+	TableSortAscending
+	TableSortDescending
+)
+
+// TableSortState is caller-owned single-column ordering. Its zero value has no
+// active column; Toggle selects ascending first, then alternates both ways.
+type TableSortState struct {
+	Column    int
+	Direction TableSortDirection
+}
+
+func (state TableSortState) Toggle(column int) TableSortState {
+	if column < 0 {
+		return state
+	}
+	next := TableSortState{Column: column, Direction: TableSortAscending}
+	if state.Column == column && state.Direction == TableSortAscending {
+		next.Direction = TableSortDescending
+	}
+	return next
+}
+
+// TableHeader describes one header cell. A non-zero ID makes it sortable and
+// keyboard-activatable; a zero ID remains an ordinary text heading. Description
+// optionally localizes the accessible sort-state description (the default is
+// English). Disabled headers keep their direction visible but cannot activate.
+type TableHeader struct {
+	ID       ui.ID
+	Label    string
+	Sort     TableSortDirection
+	Disabled bool
+	// FocusableWhenDisabled lets a header retain keyboard focus while its
+	// application is refreshing. Activation is still disabled.
+	FocusableWhenDisabled bool
+	Description           string
+}
+
+const tableSortIconSize, tableSortIconGap = float32(14), float32(4)
+
+// FitSortableTableHeadings is FitTableHeadings for SortableHeader. It reserves
+// room for the direction icon on interactive columns as well as their labels.
+func FitSortableTableHeadings(canvas *ui.Canvas, theme ui.Theme, columns []TableColumn, headings []TableHeader) {
+	for index := range columns {
+		column := &columns[index]
+		if column.Width <= 0 || index >= len(headings) || headings[index].Label == "" {
+			continue
+		}
+		need := canvas.TextWidthWeight(headings[index].Label, theme.Metrics.FontSizeM, ui.WeightMedium)
+		need = float32(math.Ceil(float64(need))) + 2*theme.Metrics.GapItem
+		if column.Alignment == TableAlignLeft {
+			need += max(column.Inset, 0)
+		}
+		if !headings[index].ID.IsZero() {
+			need += tableSortIconSize + tableSortIconGap
+		}
+		column.Width = max(column.Width, need)
+	}
+}
+
+// SortableHeader paints one header row using the table's column widths,
+// alignments, clipping and HeaderHeight. IDs activate through the usual click
+// event pass, including Enter/Space on a focused header. The application toggles
+// its TableSortState and sorts its complete loaded dataset before paginating.
+// Like Header, a second header declaration on this table does nothing.
+func (table *Table) SortableHeader(cells []TableHeader) {
+	if table.headerSet {
+		return
+	}
+	height := table.rowHeightFor(table.headerHeight)
+	if len(table.columns) == 0 || height <= 0 {
+		table.headerSet = true
+		return
+	}
+	y := table.y
+	x, remaining := table.bounds.X, table.bounds.Width
+	for index, column := range table.columns {
+		width := tableColumnWidth(column, index == len(table.columns)-1, remaining)
+		if width <= 0 {
+			break
+		}
+		if index < len(cells) {
+			table.paintSortableHeaderCell(ui.Rect{X: x, Y: y, Width: width, Height: height}, column, cells[index])
+		}
+		x, remaining = x+width, remaining-width
+	}
+	// Header owns the row's height and its rule; painting it last keeps the rule
+	// above the cell backgrounds a hover leaves behind, as a body row does.
+	table.Header(nil)
+}
+
+func (table *Table) paintSortableHeaderCell(bounds ui.Rect, column TableColumn, cell TableHeader) {
+	canvas, theme := table.canvas, table.theme
+	interactive := !cell.ID.IsZero()
+	color := theme.Foreground
+	if cell.Disabled {
+		color.Alpha *= 0.5
+	}
+	if interactive {
+		if !cell.Disabled && (canvas.Hovered() == cell.ID || canvas.Pressed() == cell.ID) {
+			canvas.Fill(bounds, theme.Hover)
+		}
+		if !cell.Disabled && canvas.FocusVisible() == cell.ID {
+			canvas.RoundedBorder(bounds.Inset(ui.All(1)), theme.Metrics.RadiusControl, 1, theme.Ring, ui.Color{})
+		}
+		description := cell.Description
+		if description == "" {
+			switch cell.Sort {
+			case TableSortAscending:
+				description = "Sorted ascending"
+			case TableSortDescending:
+				description = "Sorted descending"
+			default:
+				description = "Activate to sort"
+			}
+		}
+		canvas.HitWithOptions(cell.ID, bounds, cell.Label, ui.HitOptions{Role: ui.RoleButton, Disabled: cell.Disabled, FocusableWhenDisabled: cell.FocusableWhenDisabled, Description: description})
+	}
+	canvas.Clip(bounds)
+	defer canvas.Unclip()
+	pad := theme.Metrics.GapItem
+	text := bounds.Inset(ui.Insets{Left: pad, Right: pad})
+	if column.Alignment == TableAlignLeft {
+		inset := min(max(column.Inset, 0), max(text.Width, 0))
+		text.X, text.Width = text.X+inset, max(text.Width-inset, 0)
+	}
+	if !interactive {
+		label := canvas.FitLine(cell.Label, theme.Metrics.FontSizeM, ui.WeightMedium, text.Width)
+		tableLabel(canvas, label, text, column.Alignment, ui.TextStyle{Size: theme.Metrics.FontSizeM, Weight: ui.WeightMedium, Color: color})
+		return
+	}
+	const iconSize, gap = tableSortIconSize, tableSortIconGap
+	label := canvas.FitLine(cell.Label, theme.Metrics.FontSizeM, ui.WeightMedium, max(text.Width-iconSize-gap, 0))
+	labelWidth := min(canvas.TextWidthWeight(label, theme.Metrics.FontSizeM, ui.WeightMedium), max(text.Width-iconSize-gap, 0))
+	groupWidth := min(labelWidth+gap+iconSize, max(text.Width, 0))
+	switch column.Alignment {
+	case TableAlignRight:
+		text.X += max(text.Width-groupWidth, 0)
+	case TableAlignCenter:
+		text.X += max(text.Width-groupWidth, 0) / 2
+	}
+	text.Width = labelWidth
+	canvas.Label(label, text, ui.TextStyle{Size: theme.Metrics.FontSizeM, Weight: ui.WeightMedium, Color: color})
+	icon := tableUnsortedIcon
+	if cell.Sort == TableSortAscending {
+		icon = tableAscendingIcon
+	} else if cell.Sort == TableSortDescending {
+		icon = tableDescendingIcon
+	}
+	canvas.DrawIcon(icon, ui.Rect{X: text.X + labelWidth + gap, Y: bounds.Y + (bounds.Height-iconSize)/2, Width: iconSize, Height: iconSize}, color)
+}
+
+var tableUnsortedIcon = ui.Icon{ViewBox: 24, Stroke: 2, Cap: ui.CapRound, Join: ui.JoinRound, Commands: []ui.PathCommand{
+	{Kind: ui.PathCommandMove, Point: ui.Point{X: 8, Y: 9}}, {Kind: ui.PathCommandLine, Point: ui.Point{X: 12, Y: 5}}, {Kind: ui.PathCommandLine, Point: ui.Point{X: 16, Y: 9}},
+	{Kind: ui.PathCommandMove, Point: ui.Point{X: 8, Y: 15}}, {Kind: ui.PathCommandLine, Point: ui.Point{X: 12, Y: 19}}, {Kind: ui.PathCommandLine, Point: ui.Point{X: 16, Y: 15}},
+}}
+
+var tableAscendingIcon = ui.Icon{ViewBox: 24, Stroke: 2, Cap: ui.CapRound, Join: ui.JoinRound, Commands: []ui.PathCommand{
+	{Kind: ui.PathCommandMove, Point: ui.Point{X: 12, Y: 19}}, {Kind: ui.PathCommandLine, Point: ui.Point{X: 12, Y: 5}},
+	{Kind: ui.PathCommandMove, Point: ui.Point{X: 7, Y: 10}}, {Kind: ui.PathCommandLine, Point: ui.Point{X: 12, Y: 5}}, {Kind: ui.PathCommandLine, Point: ui.Point{X: 17, Y: 10}},
+}}
+
+var tableDescendingIcon = ui.Icon{ViewBox: 24, Stroke: 2, Cap: ui.CapRound, Join: ui.JoinRound, Commands: []ui.PathCommand{
+	{Kind: ui.PathCommandMove, Point: ui.Point{X: 12, Y: 5}}, {Kind: ui.PathCommandLine, Point: ui.Point{X: 12, Y: 19}},
+	{Kind: ui.PathCommandMove, Point: ui.Point{X: 7, Y: 14}}, {Kind: ui.PathCommandLine, Point: ui.Point{X: 12, Y: 19}}, {Kind: ui.PathCommandLine, Point: ui.Point{X: 17, Y: 14}},
+}}

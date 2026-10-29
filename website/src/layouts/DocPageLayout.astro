@@ -1,8 +1,8 @@
 ---
 import BaseLayout from './BaseLayout.astro';
 import { siteText } from '../lib/site';
-import type { Locale } from '../lib/i18n';
-import type { Heading, NavGroup, Section } from '../lib/routes';
+import { componentsPath, type Locale } from '../lib/i18n';
+import { apiPath, docsPath, homePath, type Heading, type NavGroup, type Section } from '../lib/routes';
 
 // Guides and API pages: a navigation list, the prose, and its headings.
 interface Props {
@@ -13,19 +13,42 @@ interface Props {
   alternates: Record<Locale, string>;
   navigation: NavGroup[];
   headings?: Heading[];
+  // The page's own schema.org node, such as a TechArticle. Breadcrumbs are
+  // derived here because every page in this layout has the same trail shape.
+  schema?: Record<string, unknown>[];
 }
 
-const { title, summary, locale, section, alternates, navigation, headings = [] } = Astro.props;
+const { title, summary, locale, section, alternates, navigation, headings = [], schema = [] } = Astro.props;
 const text = siteText(locale);
 const outline = headings.filter(heading => heading.depth === 2 || heading.depth === 3);
+
+// The trail is the reader's, not the URL's: home, the section, then this page.
+// A section landing page is its own trail entry, so it is not repeated.
+const origin = (Astro.site?.href ?? 'https://vivaui.dev/').replace(/\/$/, '');
+const path = Astro.url.pathname;
+const root = { name: 'Viva', item: `${origin}${homePath(locale)}` };
+const sections: Record<Section, { name: string; href: string }> = {
+  home: { name: 'Viva', href: homePath(locale) },
+  docs: { name: text.navDocs, href: docsPath(locale) },
+  components: { name: text.navComponents, href: componentsPath(locale) },
+  api: { name: text.navApi, href: apiPath(locale) },
+};
+const current = sections[section];
+const trail = [root];
+if (current.href !== path) trail.push({ name: current.name, item: `${origin}${current.href}` });
+trail.push({ name: title, item: `${origin}${path}` });
+const breadcrumb = {
+  '@type': 'BreadcrumbList',
+  itemListElement: trail.map((entry, index) => ({ '@type': 'ListItem', position: index + 1, name: entry.name, item: entry.item })),
+};
 ---
 
-<BaseLayout {locale} {title} {summary} {section} {alternates}>
+<BaseLayout {locale} {title} {summary} {section} {alternates} schema={[breadcrumb, ...schema]}>
   <div class="docs-grid docs-grid-guide">
     <aside class="sidebar">
       <div class="sidebar-shell"><nav class="sidebar-panel guide-navigation" aria-label={navigation[0]?.heading}>
         {navigation.map(group => <div class="component-group">
-          <h2 class="component-group-title">{group.heading}</h2>
+          <p class="component-group-title">{group.heading}</p>
           <ul class="component-list">{group.links.map(link => <li><a class="nav-link" href={link.href} aria-current={link.current ? 'page' : undefined}><span>{link.label}</span>{link.current && <span class="nav-active-mark" aria-hidden="true"></span>}</a></li>)}</ul>
         </div>)}
       </nav></div>

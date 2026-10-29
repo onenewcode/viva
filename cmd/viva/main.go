@@ -45,6 +45,9 @@ func runCLI(arguments []string, output, errorOutput io.Writer) error {
 		printOverview(output)
 		return nil
 	}
+	if arguments[0] == "--version" || arguments[0] == "-version" {
+		return runVersion(nil, output)
+	}
 	c, ok := findCommand(arguments[0])
 	if !ok {
 		return fmt.Errorf("unknown command %q; run 'viva help' for the list", arguments[0])
@@ -80,6 +83,9 @@ func runDev(arguments []string, output, errorOutput io.Writer) error {
 	if *debounce <= 0 || *poll <= 0 || *buildTimeout <= 0 || *workerTimeout <= 0 {
 		return errors.New("dev durations must be positive")
 	}
+	if err := requireGo(errorOutput); err != nil {
+		return err
+	}
 	return devreload.Run(context.Background(), devreload.Options{
 		Directory: directory, Package: packages[0], Arguments: appArguments,
 		Debounce: *debounce, PollInterval: *poll, BuildTimeout: *buildTimeout, WorkerTimeout: *workerTimeout,
@@ -87,7 +93,7 @@ func runDev(arguments []string, output, errorOutput io.Writer) error {
 	})
 }
 
-func addComponents(arguments []string, output io.Writer) error {
+func addComponents(arguments []string, output, errorOutput io.Writer) error {
 	flags := flag.NewFlagSet("add", flag.ContinueOnError)
 	destination := flags.String("out", "components/ui", "component output directory")
 	packageName := flags.String("package", "ui", "generated Go package name")
@@ -108,6 +114,7 @@ func addComponents(arguments []string, output io.Writer) error {
 			return fmt.Errorf("unknown component %q; available: %s", name, strings.Join(componentNames(), ", "))
 		}
 	}
+	warnVersionMismatch(errorOutput)
 	if err := os.MkdirAll(*destination, 0o755); err != nil {
 		return err
 	}
@@ -203,4 +210,16 @@ func validPackageName(value string) bool {
 		}
 	}
 	return true
+}
+
+// warnVersionMismatch tells the user when the project in the working directory
+// builds against a different Viva than this command's recipes were written for.
+func warnVersionMismatch(errorOutput io.Writer) {
+	data, err := os.ReadFile("go.mod")
+	if err != nil {
+		return
+	}
+	if result := vivaVersionCheck(parseVivaDependency(string(data))); result.level == checkWarn {
+		fmt.Fprintf(errorOutput, "viva: warning: %s\n  %s\n", result.detail, result.fix)
+	}
 }

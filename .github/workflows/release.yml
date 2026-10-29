@@ -2,9 +2,11 @@ name: release
 
 # Publishes the Draft Release the releasing agent created for a version tag.
 # The agent owns the tag and the notes; this workflow owns going public: the full
-# gate from ci.yml must pass first, then the draft's title, body and empty asset
-# list are checked and the draft is flipped to published. The process this
-# implements is docs/releases.md; re-running a single tag is
+# gate from ci.yml must pass first, then the viva command is built for every
+# platform and attached to the draft with its checksums and the Homebrew and
+# Scoop manifests, the draft's title, body and exact asset list are checked, and
+# the draft is flipped to published. The process this implements is
+# docs/releases.md; re-running a single tag is
 #   gh workflow run release.yml -f tag=v<version>
 on:
   push:
@@ -28,8 +30,48 @@ jobs:
   gate:
     uses: ./.github/workflows/ci.yml
 
-  publish:
+  # The viva command, one archive per platform. A macOS program reaches Cocoa
+  # through cgo, so the darwin archives are built on macOS; the rest need no cgo.
+  build-darwin:
     needs: gate
+    runs-on: macos-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: tools/release/build.sh "$TAG" dist darwin/arm64 darwin/amd64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archives-darwin
+          path: dist/
+          if-no-files-found: error
+
+  build-other:
+    needs: gate
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: tools/release/build.sh "$TAG" dist linux/amd64 linux/arm64 windows/amd64 windows/arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archives-other
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [gate, build-darwin, build-other]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -41,6 +83,9 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
       - name: the tag is annotated and points into main
         run: |
@@ -77,12 +122,51 @@ jobs:
           fi
           test "$(jq -r '.name' <<<"$release")" = "Viva $TAG" || {
             echo "release name must be 'Viva $TAG'" >&2; exit 1; }
-          test "$(jq '.assets | length' <<<"$release")" = 0 || {
-            echo "release has assets; Viva publishes none" >&2; exit 1; }
+          # A rerun finds the archives a failed run already attached; anything
+          # else on the draft is not ours to publish.
+          unexpected=$(jq -r '.assets[].name' <<<"$release" | grep -Ev '^(viva_v[^/]+_(darwin|linux|windows)_(amd64|arm64)\.(tar\.gz|zip)|SHA256SUMS|viva\.rb|viva\.json)$' || true)
+          test -z "$unexpected" || {
+            echo "release has assets Viva does not publish: $unexpected" >&2; exit 1; }
           test -n "$(jq -r '.body' <<<"$release")" || {
             echo "release body is empty" >&2; exit 1; }
           echo "draft=true" >> "$GITHUB_OUTPUT"
           echo "id=$(jq -r '.databaseId' <<<"$release")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        if: steps.draft.outputs.draft == 'true'
+        with:
+          pattern: archives-*
+          path: dist
+          merge-multiple: true
+
+      - name: checksums and package manifests
+        if: steps.draft.outputs.draft == 'true'
+        run: |
+          tools/release/sums.sh dist
+          # Homebrew and Scoop only carry final releases.
+          case "$TAG" in
+            *-*) ;;
+            *) go run ./tools/releasepkg -version "$TAG" -sums dist/SHA256SUMS -out packages
+               cp packages/Formula/viva.rb packages/bucket/viva.json dist/ ;;
+          esac
+
+      - name: the built program reports the tag
+        if: steps.draft.outputs.draft == 'true'
+        run: |
+          tar -xzf "dist/viva_${TAG}_linux_amd64.tar.gz" -C "$RUNNER_TEMP"
+          test "$("$RUNNER_TEMP/viva" version | cut -d' ' -f2)" = "$TAG" || {
+            echo "viva version does not say $TAG" >&2; exit 1; }
+
+      - name: attach the assets
+        if: steps.draft.outputs.draft == 'true'
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber dist/*
+          want=$(cd dist && ls | LC_ALL=C sort)
+          got=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | LC_ALL=C sort)
+          test "$want" = "$got" || {
+            echo "release assets differ from what was built" >&2
+            diff <(echo "$want") <(echo "$got") >&2 || true
+            exit 1; }
 
       - name: publish
         if: steps.draft.outputs.draft == 'true'
@@ -96,3 +180,54 @@ jobs:
             --json name,tagName,isDraft,isPrerelease,assets,url \
             --jq '"published \(.url) name=\(.name) draft=\(.isDraft) prerelease=\(.isPrerelease)"' \
             | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: keep the package manifests for the tap
+        if: steps.draft.outputs.draft == 'true' && !contains(env.TAG, '-')
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-manifests
+          path: packages/
+          if-no-files-found: error
+
+  # Updates the Homebrew and Scoop manifests in vivaui/homebrew-tap, one
+  # repository serving both: `brew install vivaui/tap/viva` and
+  # `scoop bucket add vivaui https://github.com/vivaui/homebrew-tap`. It runs
+  # only for a final release, after the release is public (the manifests name
+  # its URLs), and only when the repository has a TAP_TOKEN secret: a token with
+  # contents:write on that repository. Without it the release is complete and
+  # this job reports that it had nothing to do.
+  tap:
+    needs: publish
+    if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    env:
+      TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: manifests
+        id: manifests
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: package-manifests
+          path: packages
+      - name: push to the tap
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "no TAP_TOKEN secret; the tap was not updated" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          if [ "${{ steps.manifests.outcome }}" != success ]; then
+            echo "no manifests for $TAG (it was published by an earlier run); rerun is not needed" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/vivaui/homebrew-tap.git" tap
+          mkdir -p tap/Formula tap/bucket
+          cp packages/Formula/viva.rb tap/Formula/viva.rb
+          cp packages/bucket/viva.json tap/bucket/viva.json
+          cd tap
+          git add Formula/viva.rb bucket/viva.json
+          if git diff --cached --quiet; then
+            echo "the tap already has $TAG" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          git -c user.name="viva release" -c user.email="release@vivaui.dev" commit -m "viva $TAG"
+          git push origin HEAD
+          echo "tap updated to $TAG" | tee -a "$GITHUB_STEP_SUMMARY"

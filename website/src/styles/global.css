@@ -10,25 +10,21 @@
 @theme inline {
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  --color-background: var(--background);
-  --color-foreground: var(--text);
-  --color-primary: var(--text);
-  --color-primary-foreground: var(--background);
-  --color-secondary: var(--surface);
-  --color-secondary-foreground: var(--text);
-  --color-muted: var(--surface-hover);
-  --color-muted-foreground: var(--muted);
-  --color-accent: var(--surface-hover);
-  --color-accent-foreground: var(--text);
-  --color-destructive: var(--error);
-  --color-border: var(--border);
-  --color-input: var(--strong-border);
-  --color-ring: var(--muted);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-}
-
-@layer base {
-  :root { --foreground: var(--text); --secondary: var(--surface); --input: var(--strong-border); }
+  --color-background: var(--viva-background);
+  --color-foreground: var(--viva-text);
+  --color-primary: var(--viva-text);
+  --color-primary-foreground: var(--viva-background);
+  --color-secondary: var(--viva-surface);
+  --color-secondary-foreground: var(--viva-text);
+  --color-muted: var(--viva-surface-hover);
+  --color-muted-foreground: var(--viva-muted);
+  --color-accent: var(--viva-surface-hover);
+  --color-accent-foreground: var(--viva-text);
+  --color-destructive: var(--viva-error);
+  --color-border: var(--viva-border);
+  --color-input: var(--viva-strong-border);
+  --color-ring: var(--viva-muted);
+  --radius-sm: calc(var(--viva-radius) - 4px);
+  --radius-md: calc(var(--viva-radius) - 2px);
+  --radius-lg: var(--viva-radius);
 }

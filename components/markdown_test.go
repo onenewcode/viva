@@ -1,6 +1,7 @@
 package components
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -17,6 +18,17 @@ func markdownCanvas() *ui.Canvas {
 		return float32(utf8.RuneCountInString(value)) * size / 2
 	})
 	canvas.SetCellMeasurer(func(size float32, face ui.MonoFace) (float32, float32) { return size / 2, size * 1.25 })
+	return canvas
+}
+
+// nonlinearMarkdownCanvas makes a full run wider than the sum of its runes,
+// as native shaping can do. It keeps fixed-pitch measurement linear.
+func nonlinearMarkdownCanvas() *ui.Canvas {
+	canvas := markdownCanvas()
+	canvas.SetMeasurer(func(value string, size, weight float32) float32 {
+		n := float32(utf8.RuneCountInString(value))
+		return n*size/2 + max(n-1, 0)
+	})
 	return canvas
 }
 
@@ -350,6 +362,22 @@ func markdownSelectionRects(canvas *ui.Canvas, color ui.Color) []ui.Rectangle {
 	return found
 }
 
+func markdownTextRunsCoverValue(canvas *ui.Canvas, text ui.Text) bool {
+	runs := canvas.TextRuns(text)
+	if len(runs) == 0 || text.CellWidth <= 0 {
+		return false
+	}
+	bytes, columns := 0, int32(0)
+	for _, run := range runs {
+		if run.Column != columns {
+			return false
+		}
+		bytes += int(run.Bytes)
+		columns += run.Cells
+	}
+	return bytes == len(text.Value) && columns == int32(monoCells(text.Value))
+}
+
 func TestMarkdownPaintsPaintedSelection(t *testing.T) {
 	canvas := markdownCanvas()
 	var doc markdown.Document
@@ -601,6 +629,708 @@ func TestMarkdownLayoutAndPaintDoNotAllocateOnceWarm(t *testing.T) {
 	}
 }
 
+func TestMarkdownWrappedPunctuationDoesNotAllocateOnceWarm(t *testing.T) {
+	var doc markdown.Document
+	doc.Parse("x**bcdef。**")
+	canvas := nonlinearMarkdownCanvas()
+	var view MarkdownView
+	run := func() {
+		view.Layout(canvas, MarkdownStyle{Size: 12}, &doc, 40)
+	}
+	run()
+	if allocs := testing.AllocsPerRun(10, run); allocs != 0 {
+		t.Errorf("a warm layout with shaped punctuation allocates %v times", allocs)
+	}
+}
+
+func TestMarkdownCandidateLineMeasurementsMatchWhatIsPainted(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{name: "plain", src: "端口绑定在容器地址，外部访问仍要从宿主机转发。"},
+		{name: "style boundary", src: "端口绑定在 **容器地址**，外部访问仍要从宿主机转发。"},
+		{name: "closing punctuation", src: "端口绑定在容器地址，外部访问仍要从宿主机转发。"},
+		{name: "inline code boundary", src: "端口绑定在 `127.0.0.1`，外部访问仍要从宿主机转发。"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var doc markdown.Document
+			doc.Parse(test.src)
+			var view MarkdownView
+			const width = 132
+			view.Layout(nonlinearMarkdownCanvas(), MarkdownStyle{Size: 12}, &doc, width)
+			want := strings.NewReplacer("**", "", "`", "").Replace(test.src)
+			if got := view.SelectedText(MarkdownSelection{Focus: view.TextLen()}); got != want {
+				t.Fatalf("rendered text = %q, want %q", got, want)
+			}
+			for _, piece := range view.pieces {
+				if piece.x < 0 || piece.x+piece.w > width {
+					t.Errorf("piece %q is at %v..%v in a %v-wide column", piece.text, piece.x, piece.x+piece.w, width)
+				}
+			}
+			for i, a := range view.pieces {
+				for _, b := range view.pieces[i+1:] {
+					if a.y == b.y && a.x < b.x+b.w && b.x < a.x+a.w {
+						t.Errorf("%q at %v..%v overlaps %q at %v..%v", a.text, a.x, a.x+a.w, b.text, b.x, b.x+b.w)
+					}
+				}
+			}
+			if !t.Failed() {
+				return
+			}
+			for _, piece := range view.pieces {
+				t.Logf("piece %q: x=%v w=%v y=%v mono=%v", piece.text, piece.x, piece.w, piece.y, piece.mono)
+			}
+		})
+	}
+}
+
+func TestMarkdownClosingPunctuationMovesWithThePrecedingText(t *testing.T) {
+	// The bold word starts after one character. It and the punctuation do not
+	// fit after that character, but they fit together on the next line.
+	var doc markdown.Document
+	doc.Parse("a**bcdef**。")
+	var view MarkdownView
+	const width = 40
+	view.Layout(markdownCanvas(), MarkdownStyle{Size: 12}, &doc, width)
+	var moved *mdPiece
+	for index := range view.pieces {
+		piece := &view.pieces[index]
+		if piece.text == "bcdef" {
+			moved = piece
+		}
+	}
+	if moved == nil || moved.x != 0 || moved.y == 0 {
+		t.Fatalf("punctuation was not moved with its preceding text: %+v", view.pieces)
+	}
+	if got := view.SelectedText(MarkdownSelection{Focus: view.TextLen()}); got != "abcdef。" {
+		t.Fatalf("rendered text = %q", got)
+	}
+}
+
+func TestMarkdownLongClosingRunKeepsPunctuationInsideTheColumn(t *testing.T) {
+	// The bold word starts on its own line but is still too long for the
+	// punctuation, so only the shortest suffix that fits moves with it.
+	var doc markdown.Document
+	doc.Parse("a**bcdefg**。")
+	var view MarkdownView
+	const width = 40
+	view.Layout(markdownCanvas(), MarkdownStyle{Size: 12}, &doc, width)
+	if got := view.SelectedText(MarkdownSelection{Focus: view.TextLen()}); got != "abcdefg。" {
+		t.Fatalf("rendered text = %q", got)
+	}
+	for _, piece := range view.pieces {
+		if piece.x < 0 || piece.x+piece.w > width {
+			t.Errorf("piece %q is at %v..%v in a %v-wide column", piece.text, piece.x, piece.x+piece.w, width)
+		}
+	}
+	var punct *mdPiece
+	for index := range view.pieces {
+		piece := &view.pieces[index]
+		if piece.text == "。" {
+			punct = piece
+		}
+	}
+	if punct == nil || punct.x != 6 || punct.y == 0 {
+		t.Fatalf("punctuation did not follow a short suffix on a new line: %+v", view.pieces)
+	}
+}
+
+func TestMarkdownMonoClosingRunMovesItsSuffixWithThePunctuation(t *testing.T) {
+	const width = 40
+	view, canvas := paintedMarkdown(t, "a`bcdefgh`。", width)
+	if got := view.SelectedText(MarkdownSelection{Focus: view.TextLen()}); got != "abcdefgh。" {
+		t.Fatalf("rendered text = %q, want %q", got, "abcdefgh。")
+	}
+	var code []*mdPiece
+	var punct *mdPiece
+	for index := range view.pieces {
+		piece := &view.pieces[index]
+		if piece.x < 0 || piece.x+piece.w > width {
+			t.Errorf("piece %q is at %v..%v in a %v-wide column", piece.text, piece.x, piece.x+piece.w, width)
+		}
+		if piece.mono {
+			code = append(code, piece)
+			found := false
+			for _, text := range canvas.Texts() {
+				if text.Value == piece.text && markdownTextRunsCoverValue(canvas, text) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("inline-code piece %q has incomplete grid runs", piece.text)
+			}
+			found = false
+			for _, box := range view.boxes {
+				if box.kind == mdBoxInlineCode && box.x == piece.x && box.w == piece.w {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("inline-code piece %q has no full-width background", piece.text)
+			}
+		}
+		if piece.text == "。" {
+			punct = piece
+		}
+	}
+	if len(code) != 2 || code[0].text != "bcdefg" || code[1].text != "h" {
+		t.Fatalf("inline-code fragments = %+v, want bcdefg and h", code)
+	}
+	if punct == nil || punct.y != code[1].y || punct.x != code[1].x+code[1].w {
+		t.Fatalf("punctuation %+v does not follow the moved suffix %+v", punct, code[1])
+	}
+}
+
+func TestMarkdownClosingPunctuationUsesTheJoinedShapedWidth(t *testing.T) {
+	var doc markdown.Document
+	doc.Parse("x**bcdef。**")
+	var view MarkdownView
+	const width = 40
+	view.Layout(nonlinearMarkdownCanvas(), MarkdownStyle{Size: 12}, &doc, width)
+	if got := view.SelectedText(MarkdownSelection{Focus: view.TextLen()}); got != "xbcdef。" {
+		t.Fatalf("rendered text = %q", got)
+	}
+	for _, piece := range view.pieces {
+		if piece.text == "。" {
+			t.Fatalf("punctuation starts a line alone: %+v", view.pieces)
+		}
+	}
+	var punctuation *mdPiece
+	for index := range view.pieces {
+		piece := &view.pieces[index]
+		if strings.HasSuffix(piece.text, "。") {
+			punctuation = piece
+		}
+	}
+	if punctuation == nil || len(punctuation.text) == len("。") || punctuation.x+punctuation.w > width {
+		t.Fatalf("punctuation did not stay with a fitting suffix: %+v", view.pieces)
+	}
+}
+
+func TestMarkdownClosingPunctuationKeepsThePrecedingSpanStyle(t *testing.T) {
+	canvas := &ui.Canvas{}
+	canvas.SetMeasurer(func(value string, _ float32, weight float32) float32 {
+		width := float32(utf8.RuneCountInString(value))
+		if weight > ui.WeightRegular {
+			width *= 10
+		}
+		return width
+	})
+	canvas.SetCellMeasurer(func(size float32, _ ui.MonoFace) (float32, float32) { return size / 2, size * 1.25 })
+	var doc markdown.Document
+	doc.Parse("x**abc**。。。。。。。。。。。")
+	var view MarkdownView
+	const width = 40
+	view.Layout(canvas, MarkdownStyle{Size: 12}, &doc, width)
+	var punctuation *mdPiece
+	for index := range view.pieces {
+		if strings.HasPrefix(view.pieces[index].text, "。") {
+			punctuation = &view.pieces[index]
+		}
+	}
+	if punctuation == nil {
+		t.Fatalf("punctuation did not stay with the styled suffix: %+v", view.pieces)
+	}
+	for index := range view.pieces {
+		piece := &view.pieces[index]
+		if piece != punctuation && piece.y == punctuation.y && piece.x+piece.w == punctuation.x {
+			return
+		}
+	}
+	t.Fatalf("punctuation has no preceding text on its line: %+v", view.pieces)
+}
+
+func TestMarkdownBreakpointRewindPaintsEachPieceBackgroundAndLinkOnce(t *testing.T) {
+	src := "a**bcdef**。 [link](https://example.com)"
+	view, _ := layoutMarkdown(t, src, 40, MarkdownStyle{Size: 12})
+	if got := view.SelectedText(MarkdownSelection{Focus: view.TextLen()}); got != "abcdef。 link" {
+		t.Fatalf("rendered text = %q", got)
+	}
+	paintedFor := func(label string) map[string]int {
+		t.Helper()
+		var canvas ui.Canvas
+		view.Paint(&canvas, MarkdownPaint{Links: ui.Scope(1)})
+		counts := map[string]int{}
+		for _, text := range canvas.Texts() {
+			counts[label+":text:"+text.Value]++
+		}
+		for _, box := range canvas.Rectangles() {
+			counts[label+":rectangle"]++
+			if !box.HasClip {
+				t.Errorf("%s: background is not clipped", label)
+			}
+		}
+		for range canvas.Hits() {
+			counts[label+":hit"]++
+		}
+		return counts
+	}
+	counts := paintedFor("paint")
+	for value, count := range counts {
+		if count != 1 {
+			t.Errorf("%s painted %d times", value, count)
+		}
+	}
+	if counts["paint:text:a"] != 1 || counts["paint:text:bcdef"] != 1 || counts["paint:text:。"] != 1 ||
+		counts["paint:text:link"] != 1 || counts["paint:hit"] != 1 {
+		t.Errorf("rewound paint is missing the expected pieces: %+v", counts)
+	}
+}
+
+func TestMarkdownInlineCodePaddingParticipatesInTheBreak(t *testing.T) {
+	var doc markdown.Document
+	doc.Parse("ab cd `e`")
+	var view MarkdownView
+	const width = 20
+	view.Layout(markdownCanvas(), MarkdownStyle{Size: 12}, &doc, width)
+	for _, box := range view.boxes {
+		if box.kind == mdBoxInlineCode {
+			if box.x < 0 || box.x+box.w > width {
+				t.Errorf("inline-code background is at %v..%v in a %v-wide column", box.x, box.x+box.w, width)
+			}
+		}
+	}
+}
+
+func TestMarkdownReflowKeepsShapedTextInsideTheColumn(t *testing.T) {
+	var doc markdown.Document
+	doc.Parse("端口绑定在 `127.0.0.1`，外部访问仍要从宿主机转发。")
+	var view MarkdownView
+	for _, width := range []float32{132, 100, 80, 60} {
+		view.Layout(nonlinearMarkdownCanvas(), MarkdownStyle{Size: 12}, &doc, width)
+		for _, p := range view.pieces {
+			if p.x < 0 || p.x+p.w > width {
+				t.Errorf("at %v wide, piece %q is at %v..%v", width, p.text, p.x, p.x+p.w)
+			}
+		}
+		if got, want := view.SelectedText(MarkdownSelection{Focus: view.TextLen()}), "端口绑定在 127.0.0.1，外部访问仍要从宿主机转发。"; got != want {
+			t.Errorf("at %v wide, rendered text = %q, want %q", width, got, want)
+		}
+	}
+}
+
+func TestLongTokensWrapByCompleteUTF8Characters(t *testing.T) {
+	const token = "超级长的不可分割地址docker.1panel.live超级长的不可分割地址"
+	var doc markdown.Document
+	doc.Parse(token)
+	var view MarkdownView
+	const width = 72
+	view.Layout(nonlinearMarkdownCanvas(), MarkdownStyle{Size: 12}, &doc, width)
+	if got := view.SelectedText(MarkdownSelection{Focus: view.TextLen()}); got != token {
+		t.Fatalf("rendered text = %q, want %q", got, token)
+	}
+	for _, p := range view.pieces {
+		if !utf8.ValidString(p.text) {
+			t.Errorf("piece %q is not valid UTF-8", p.text)
+		}
+		if p.x < 0 || p.x+p.w > width {
+			t.Errorf("piece %q is at %v..%v", p.text, p.x, p.x+p.w)
+		}
+	}
+}
+
+func TestInlineCodePaddingIsTheSameInHeadingsTablesAndAlignedText(t *testing.T) {
+	src := "## Heading `code`\n\n| center | right |\n|:-:|--:|\n| `中` | `127.0.0.1` |\n"
+	view, _ := layoutMarkdown(t, src, 220, MarkdownStyle{Size: 12})
+	var boxes []mdBox
+	for _, box := range view.boxes {
+		if box.kind == mdBoxInlineCode {
+			boxes = append(boxes, box)
+		}
+	}
+	if len(boxes) != 3 {
+		t.Fatalf("want inline-code backgrounds in the heading and both table cells, got %+v", boxes)
+	}
+	for _, box := range boxes {
+		var text *mdPiece
+		for index := range view.pieces {
+			p := &view.pieces[index]
+			center := p.y + p.h/2
+			if p.mono && center >= box.y && center <= box.y+box.h && p.x >= box.x && p.x+p.w <= box.x+box.w {
+				text = p
+				break
+			}
+		}
+		if text == nil {
+			t.Fatalf("no text belongs to background %+v", box)
+		}
+		if text.padX != markdownInlinePad || text.x != box.x || text.w != box.w {
+			t.Errorf("background %+v and text %+v do not share padding %v", box, text, markdownInlinePad)
+		}
+	}
+}
+
+func TestMarkdownTableAlignsDecoratedInlineCodeInEveryColumn(t *testing.T) {
+	src := "| left | center | right |\n|:--|:-:|--:|\n| `a` | `bb` | `ccc` |\n"
+	view, _ := layoutMarkdown(t, src, 300, MarkdownStyle{Size: 12})
+	var head mdBox
+	for _, box := range view.boxes {
+		if box.kind == mdBoxHead {
+			head = box
+			break
+		}
+	}
+	if head.w == 0 {
+		t.Fatal("the table has no header frame")
+	}
+	cellWidth := head.w / 3
+	for column, text := range []string{"a", "bb", "ccc"} {
+		piece, background := markdownInlineCode(t, view, text)
+		left := head.x + float32(column)*cellWidth + markdownCellPadX
+		right := head.x + float32(column+1)*cellWidth - markdownCellPadX
+		switch column {
+		case 1:
+			if background.x < left || background.x+background.w > right {
+				t.Errorf("centered code %q is at %+v in %v..%v", text, background, left, right)
+			}
+		case 2:
+			if abs32(background.x+background.w-right) > 0.5 {
+				t.Errorf("right-aligned code %q ends at %v, want %v", text, background.x+background.w, right)
+			}
+		default:
+			if abs32(background.x-left) > 0.5 {
+				t.Errorf("left-aligned code %q starts at %v, want %v", text, background.x, left)
+			}
+		}
+		if piece.x != background.x || piece.w != background.w || piece.padX != markdownInlinePad {
+			t.Errorf("code %q has text %+v and background %+v", text, piece, background)
+		}
+	}
+}
+
+func markdownInlineCode(t *testing.T, view *MarkdownView, text string) (*mdPiece, mdBox) {
+	t.Helper()
+	var piece *mdPiece
+	for index := range view.pieces {
+		p := &view.pieces[index]
+		if p.mono && p.text == text {
+			piece = p
+			break
+		}
+	}
+	if piece == nil {
+		t.Fatalf("no inline-code piece %q", text)
+	}
+	for _, box := range view.boxes {
+		if box.kind == mdBoxInlineCode && box.x == piece.x && box.w == piece.w &&
+			box.y <= piece.y+piece.h/2 && piece.y+piece.h/2 <= box.y+box.h {
+			return piece, box
+		}
+	}
+	t.Fatalf("no inline-code background for %q", text)
+	return nil, mdBox{}
+}
+
+func abs32(value float32) float32 {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func TestMarkdownMonoPiecesAlwaysUseFixedGridRuns(t *testing.T) {
+	for _, face := range []ui.MonoFace{ui.MonoSystem, ui.MonoClassic} {
+		t.Run(fmt.Sprintf("face %d", face), func(t *testing.T) {
+			canvas := markdownCanvas()
+			var doc markdown.Document
+			doc.Parse("text `inline` and\n\n## Heading `heading`\n\n```sh\necho 你好\n```\n")
+			var view MarkdownView
+			view.Layout(canvas, MarkdownStyle{Size: 12, MonoFace: face}, &doc, 220)
+			view.Paint(canvas, MarkdownPaint{})
+			mono := 0
+			for _, piece := range view.pieces {
+				if !piece.mono {
+					continue
+				}
+				mono++
+				found := false
+				for _, text := range canvas.Texts() {
+					if text.Value == piece.text {
+						runs, bytes := canvas.TextRuns(text), 0
+						columns := int32(0)
+						for _, run := range runs {
+							bytes += int(run.Bytes)
+							if run.Column != columns {
+								t.Errorf("piece %q run starts at cell %d, want %d", piece.text, run.Column, columns)
+							}
+							columns += run.Cells
+						}
+						found = bytes == len(piece.text) && text.CellWidth == piece.cell &&
+							text.Style.MonoFace == face && columns == int32(monoCells(piece.text))
+						if found {
+							break
+						}
+					}
+				}
+				if !found {
+					t.Errorf("mono piece %q was not painted through complete grid runs", piece.text)
+				}
+			}
+			if mono < 3 {
+				t.Errorf("test fixture has %d mono pieces", mono)
+			}
+		})
+	}
+}
+
+func TestMarkdownInlineCodeKeepsItsWeightInGridRuns(t *testing.T) {
+	view, canvas := paintedMarkdown(t, "## Heading `code`", 220)
+	var piece *mdPiece
+	for index := range view.pieces {
+		if view.pieces[index].mono && view.pieces[index].text == "code" {
+			piece = &view.pieces[index]
+		}
+	}
+	if piece == nil || piece.weight <= ui.WeightRegular {
+		t.Fatalf("inline-code piece has no styled weight: %+v", piece)
+	}
+	var label *ui.Text
+	for index := range canvas.Texts() {
+		if canvas.Texts()[index].Value == piece.text {
+			label = &canvas.Texts()[index]
+		}
+	}
+	if label == nil {
+		t.Fatal("inline code painted no label")
+	}
+	if label.Style.Weight != piece.weight {
+		t.Errorf("label weight = %v, want %v", label.Style.Weight, piece.weight)
+	}
+	runs := canvas.TextRuns(*label)
+	if len(runs) == 0 {
+		t.Fatal("inline code painted no grid runs")
+	}
+	for _, run := range runs {
+		if run.Weight != piece.weight {
+			t.Errorf("run weight = %v, want %v", run.Weight, piece.weight)
+		}
+	}
+}
+
+func TestMarkdownStrikeOnInlineCodeCoversOnlyTheTextArea(t *testing.T) {
+	var doc markdown.Document
+	doc.Parse("~~`code`~~")
+	var view MarkdownView
+	view.Layout(markdownCanvas(), MarkdownStyle{Size: 12}, &doc, 220)
+	var canvas ui.Canvas
+	strike := ui.Color{Red: 1, Alpha: 1}
+	view.Paint(&canvas, MarkdownPaint{Look: MarkdownLook{Text: strike}})
+	var label *ui.Text
+	for index := range canvas.Texts() {
+		if canvas.Texts()[index].Value == "code" {
+			label = &canvas.Texts()[index]
+		}
+	}
+	if label == nil {
+		t.Fatal("inline code painted no label")
+	}
+	found := false
+	for _, rectangle := range canvas.Rectangles() {
+		if rectangle.Color != strike {
+			continue
+		}
+		found = true
+		if rectangle.Bounds.X != label.Bounds.X || rectangle.Bounds.Width != label.Bounds.Width {
+			t.Errorf("strike %+v does not match text area %+v", rectangle.Bounds, label.Bounds)
+		}
+	}
+	if !found {
+		t.Fatal("inline code painted no strike")
+	}
+}
+
+func TestInlineCodeCopyDoesNotIncludeVisualPadding(t *testing.T) {
+	src := "端口绑`127.0.0.1`还是"
+	view, _ := layoutMarkdown(t, src, 220, MarkdownStyle{Size: 12})
+	if got := view.SelectedText(MarkdownSelection{Focus: view.TextLen()}); got != "端口绑127.0.0.1还是" {
+		t.Errorf("copied text = %q", got)
+	}
+	var piece *mdPiece
+	for index := range view.pieces {
+		if view.pieces[index].mono {
+			piece = &view.pieces[index]
+			break
+		}
+	}
+	if piece == nil {
+		t.Fatal("no inline code piece")
+	}
+	selected := view.SelectedText(MarkdownSelection{Anchor: int(piece.plainLo), Focus: int(piece.plainHi)})
+	if selected != "127.0.0.1" {
+		t.Errorf("selected inline code = %q", selected)
+	}
+}
+
+func TestMarkdownAdjacentInlineCodeAndPunctuationKeepFullFragments(t *testing.T) {
+	view, _ := layoutMarkdown(t, "`a` `bb`，前`127.0.0.1`后", 220, MarkdownStyle{Size: 12})
+	const want = "a bb，前127.0.0.1后"
+	if got := view.SelectedText(MarkdownSelection{Focus: view.TextLen()}); got != want {
+		t.Fatalf("rendered text = %q, want %q", got, want)
+	}
+	for _, text := range []string{"a", "bb", "127.0.0.1"} {
+		piece, background := markdownInlineCode(t, view, text)
+		if piece.padX != markdownInlinePad || piece.x != background.x || piece.w != background.w {
+			t.Errorf("code %q has text %+v and background %+v", text, piece, background)
+		}
+	}
+	for i, current := range view.pieces {
+		for _, next := range view.pieces[i+1:] {
+			if current.y == next.y && current.x < next.x+next.w && next.x < current.x+current.w {
+				t.Errorf("%q at %v..%v overlaps %q at %v..%v", current.text, current.x, current.x+current.w, next.text, next.x, next.x+next.w)
+			}
+		}
+	}
+	code, _ := markdownInlineCode(t, view, "127.0.0.1")
+	for _, piece := range view.pieces {
+		if piece.text == "，" && piece.y == code.y && piece.x < code.x+code.w {
+			t.Errorf("punctuation at %v starts inside code background ending at %v", piece.x, code.x+code.w)
+		}
+		if piece.text == "后" && piece.y == code.y && piece.x < code.x+code.w {
+			t.Errorf("following text at %v starts inside code background ending at %v", piece.x, code.x+code.w)
+		}
+	}
+}
+
+func TestMarkdownTinyWidthsTerminateWithValidText(t *testing.T) {
+	tests := []struct {
+		name, src, want string
+	}{
+		{name: "quoted code", src: "> `中中中中中中`，尾", want: "中中中中中中，尾"},
+		{name: "nested quote", src: "> - `中中中中中中`。后面", want: "中中中中中中。后面"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var doc markdown.Document
+			doc.Parse(test.src)
+			var view MarkdownView
+			view.Layout(nonlinearMarkdownCanvas(), MarkdownStyle{Size: 12}, &doc, 40)
+			got := view.SelectedText(MarkdownSelection{Focus: view.TextLen()})
+			if got != test.want {
+				t.Fatalf("rendered text = %q, want %q", got, test.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("rendered text is not valid UTF-8: %q", got)
+			}
+			if len(view.pieces) == 0 {
+				t.Fatal("tiny layout produced no pieces")
+			}
+		})
+	}
+}
+
+func TestInlineCodeSelectionRectsStayInsideThePaddedBackground(t *testing.T) {
+	view, canvas := paintedMarkdown(t, "alpha `code` beta", 300)
+	var piece *mdPiece
+	var background mdBox
+	for index := range view.pieces {
+		if view.pieces[index].mono {
+			piece = &view.pieces[index]
+		}
+	}
+	for _, box := range view.boxes {
+		if box.kind == mdBoxInlineCode {
+			background = box
+		}
+	}
+	if piece == nil || background.w == 0 {
+		t.Fatalf("fixture has piece %+v and background %+v", piece, background)
+	}
+	selected := ui.Color{Red: 1, Alpha: 1}
+	var painted ui.Canvas
+	view.Paint(&painted, MarkdownPaint{
+		Look:      MarkdownLook{Selection: selected},
+		Selection: MarkdownSelection{Anchor: int(piece.plainLo), Focus: int(piece.plainHi)},
+	})
+	rects := markdownSelectionRects(&painted, selected)
+	if len(rects) != 1 {
+		t.Fatalf("%d selection rectangles, want 1: %+v", len(rects), rects)
+	}
+	start := piece.x + piece.padX
+	if rects[0].Bounds.X != start || rects[0].Bounds.X+rects[0].Bounds.Width > background.x+background.w-piece.padX {
+		t.Errorf("selection %+v is outside text part of background %+v", rects[0].Bounds, background)
+	}
+	_ = canvas
+}
+
+func TestMarkdownPaintAppliesTheFullClipRectangle(t *testing.T) {
+	var canvas ui.Canvas
+	var doc markdown.Document
+	doc.Parse("first\nsecond")
+	var view MarkdownView
+	view.Layout(markdownCanvas(), MarkdownStyle{Size: 12}, &doc, 300)
+	clip := ui.Rect{X: 0, Y: 20, Width: 40, Height: 18}
+	view.Paint(&canvas, MarkdownPaint{Clip: clip})
+	for _, text := range canvas.Texts() {
+		if !text.HasClip || text.ClipOf != clip {
+			t.Errorf("text %q did not retain clip %+v", text.Value, clip)
+		}
+	}
+	for _, box := range canvas.Rectangles() {
+		if !box.HasClip || box.ClipOf != clip {
+			t.Errorf("background %+v did not retain clip %+v", box, clip)
+		}
+	}
+}
+
+func TestMarkdownPaintNestsItsClipAndRestoresTheCallerStack(t *testing.T) {
+	var canvas ui.Canvas
+	outer := ui.Rect{X: 5, Y: 10, Width: 120, Height: 80}
+	inner := ui.Rect{X: 20, Y: 20, Width: 50, Height: 100}
+	canvas.Clip(outer)
+	var doc markdown.Document
+	doc.Parse("first `code` [link](https://example.com)")
+	var view MarkdownView
+	view.Layout(markdownCanvas(), MarkdownStyle{Size: 12}, &doc, 300)
+	selection := ui.Color{Red: 1, Alpha: 1}
+	view.Paint(&canvas, MarkdownPaint{
+		Look: MarkdownLook{Selection: selection}, Selection: MarkdownSelection{Anchor: 0, Focus: view.TextLen()},
+		X: inner.X, Y: inner.Y, Clip: inner, Links: ui.Scope(1),
+	})
+	if clips := canvas.Clips(); len(clips) != 1 || clips[0].Bounds != outer {
+		t.Fatalf("the caller's clip stack was not restored: %+v", clips)
+	}
+	effective := inner
+	if effective.X < outer.X {
+		effective.X = outer.X
+	}
+	if effective.Y < outer.Y {
+		effective.Y = outer.Y
+	}
+	if effective.X+effective.Width > outer.X+outer.Width {
+		effective.Width = outer.X + outer.Width - effective.X
+	}
+	if effective.Y+effective.Height > outer.Y+outer.Height {
+		effective.Height = outer.Y + outer.Height - effective.Y
+	}
+	if len(canvas.Texts()) == 0 || len(canvas.Rectangles()) == 0 || view.LinkCount() == 0 {
+		t.Fatal("the clipped Markdown painted no text or background, or has no link")
+	}
+	for _, text := range canvas.Texts() {
+		if !text.HasClip || text.ClipOf != effective {
+			t.Errorf("text %q has clip %+v, want %+v", text.Value, text.ClipOf, effective)
+		}
+	}
+	for _, rectangle := range canvas.Rectangles() {
+		if !rectangle.HasClip || rectangle.ClipOf != effective {
+			t.Errorf("background %+v has clip %+v, want %+v", rectangle.Bounds, rectangle.ClipOf, effective)
+		}
+	}
+	for _, hit := range canvas.Hits() {
+		if hit.Bounds.X < effective.X || hit.Bounds.X+hit.Bounds.Width > effective.X+effective.Width ||
+			hit.Bounds.Y < effective.Y || hit.Bounds.Y+hit.Bounds.Height > effective.Y+effective.Height {
+			t.Errorf("link hit %+v escapes the nested clip %+v", hit.Bounds, effective)
+		}
+	}
+	canvas.Fill(ui.Rect{X: 60, Y: 40, Width: 20, Height: 10}, ui.Color{Blue: 1, Alpha: 1})
+	if rectangle := canvas.Rectangles()[len(canvas.Rectangles())-1]; rectangle.ClipOf != outer {
+		t.Errorf("a later control was clipped by Markdown: %+v", rectangle)
+	}
+}
+
 func BenchmarkMarkdownLayout(b *testing.B) {
 	src := strings.Repeat("## Title\nSome **bold** and `code` with [a link](https://example.com), 中文。\n- item one\n- item two\n> quote\n\n```go\ncode\n```\n", 20)
 	var doc markdown.Document
@@ -610,6 +1340,46 @@ func BenchmarkMarkdownLayout(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		view.Layout(canvas, MarkdownStyle{Size: 13}, &doc, 400)
+	}
+}
+
+func BenchmarkMarkdownLongChineseLayout(b *testing.B) {
+	src := strings.Repeat("端口绑定在容器地址，外部访问仍要从宿主机转发。", 200)
+	var doc markdown.Document
+	doc.Parse(src)
+	canvas := markdownCanvas()
+	var view MarkdownView
+	b.ReportAllocs()
+	for b.Loop() {
+		view.Layout(canvas, MarkdownStyle{Size: 13}, &doc, 400)
+	}
+}
+
+func BenchmarkMarkdownLongCodeLayout(b *testing.B) {
+	src := "```sh\n" + strings.Repeat("docker run --rm -p 127.0.0.1:8080:8080 docker.1panel.live/library/example:2026.10.28\n", 200) + "```\n"
+	var doc markdown.Document
+	doc.Parse(src)
+	canvas := markdownCanvas()
+	var view MarkdownView
+	b.ReportAllocs()
+	for b.Loop() {
+		view.Layout(canvas, MarkdownStyle{Size: 13}, &doc, 400)
+	}
+}
+
+func BenchmarkMarkdownSteadyPaint(b *testing.B) {
+	src := strings.Repeat("## Title\nSome **bold** and `code` with [a link](https://example.com), 中文。\n- item one\n- item two\n> quote\n\n```go\ncode\n```\n", 20)
+	var doc markdown.Document
+	doc.Parse(src)
+	canvas := markdownCanvas()
+	var view MarkdownView
+	look := MarkdownLookFor(ui.DarkTheme())
+	view.Layout(canvas, MarkdownStyle{Size: 13}, &doc, 400)
+	canvas.Reset()
+	b.ReportAllocs()
+	for b.Loop() {
+		canvas.Reset()
+		view.Paint(canvas, MarkdownPaint{Look: look, Links: ui.Scope(3), Clip: ui.Rect{Width: 400, Height: 600}})
 	}
 }
 
@@ -657,15 +1427,24 @@ func TestHighlightedCodeIsDrawnInColoredRunsThatKeepTheText(t *testing.T) {
 	if coloured == 0 || !strings.Contains(joined.String(), "echo") {
 		t.Fatalf("no colored comment runs: coloured=%d text=%q", coloured, joined.String())
 	}
-	// A block the highlighter ignores is drawn as it was: one plain label.
+	// A block the highlighter ignores still uses the fixed grid: its runs cover
+	// every byte even though they all have the body color.
 	plain := 0
 	for _, text := range canvas.Texts() {
-		if text.Value == "plain" && len(canvas.TextRuns(text)) == 0 {
+		if text.Value != "plain" {
+			continue
+		}
+		runs := canvas.TextRuns(text)
+		bytes := 0
+		for _, run := range runs {
+			bytes += int(run.Bytes)
+		}
+		if bytes == len(text.Value) && text.CellWidth > 0 {
 			plain++
 		}
 	}
 	if plain != 1 {
-		t.Errorf("the unhighlighted block is not drawn as plain text")
+		t.Errorf("the unhighlighted block is not drawn with complete grid runs")
 	}
 }
 
