@@ -182,8 +182,8 @@
 
 ## Task 10：在 SUBOPTIMAL 新交换链上强制呈现
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（首轮 FAIL 的最终异常后多余重建已修复，复审通过）
 - 目标：当前 SUBOPTIMAL 帧完成并重建后，在受控恢复边界内于新交换链再呈现已有场景。
 - 主要文件：
   - `internal/platform/linux/vulkan_linux.go`
