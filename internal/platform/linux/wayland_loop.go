@@ -188,7 +188,12 @@ func (l *waylandLoop) post(cmd waylandCommand) {
 	if l.libc != nil && l.libc.write != nil && wakeFD >= 0 {
 		var val [8]byte
 		binary.NativeEndian.PutUint64(val[:], 1)
-		l.libc.write(wakeFD, unsafe.Pointer(&val[0]), 8)
+		for {
+			written := l.libc.write(wakeFD, unsafe.Pointer(&val[0]), 8)
+			if written >= 0 || l.libc.errno() != syscall.EINTR {
+				break
+			}
+		}
 	}
 }
 

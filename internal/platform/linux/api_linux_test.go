@@ -900,6 +900,47 @@ func TestWaylandLoopWaker(t *testing.T) {
 	}
 }
 
+func TestWaylandLoopPostWakeErrors(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		errno      syscall.Errno
+		wantWrites int
+	}{
+		{name: "EINTR retries", errno: syscall.EINTR, wantWrites: 2},
+		{name: "EAGAIN does not retry", errno: syscall.EAGAIN, wantWrites: 1},
+		{name: "EBADF does not retry", errno: syscall.EBADF, wantWrites: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			errno := int32(test.errno)
+			writes := 0
+			executed := 0
+			loop := &waylandLoop{
+				wakeFD: 11,
+				libc: &libcAPI{
+					write: func(_ int32, _ unsafe.Pointer, size uintptr) int {
+						writes++
+						if writes == 1 {
+							return -1
+						}
+						errno = 0
+						return int(size)
+					},
+					errnoLocation: func() *int32 { return &errno },
+				},
+			}
+
+			loop.post(func() { executed++ })
+			if writes != test.wantWrites {
+				t.Fatalf("wake writes = %d, want %d", writes, test.wantWrites)
+			}
+			loop.drainCommands()
+			if executed != 1 {
+				t.Fatalf("command executed %d times, want 1", executed)
+			}
+		})
+	}
+}
+
 func TestWaylandLoopPollErrorStopsUnlessInterrupted(t *testing.T) {
 	tests := []struct {
 		name    string

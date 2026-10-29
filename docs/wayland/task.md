@@ -48,8 +48,8 @@
 
 ## Task 3：处理 eventfd 唤醒写入 EINTR
 
-- 状态：待开始
-- Review：未进行
+- 状态：已提交
+- Review：PASS（独立只读审查）
 - 目标：命令入队后，写入被信号打断不能导致唯一唤醒丢失。
 - 主要文件：
   - `internal/platform/linux/wayland_loop.go`
