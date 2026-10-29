@@ -319,6 +319,7 @@ func (app *waylandApplication) handleKey(serial, timeMs, scancode, state uint32)
 	}
 
 	if isDown {
+		app.stopKeyRepeat()
 		if win.state.router.ime != nil && win.state.router.ime.processKeyDirect(keysym, scancode, ibusModifierMask(app.modifiers), keyEvent) {
 			return
 		}
@@ -341,18 +342,9 @@ func (app *waylandApplication) handleKey(serial, timeMs, scancode, state uint32)
 }
 
 func (app *waylandApplication) startKeyRepeat(keyEvent platform.KeyEvent, scancode uint32) {
-	app.stopKeyRepeat()
 	if app.repeatRate <= 0 {
 		return
 	}
-
-	app.mu.Lock()
-	app.repeatKey = keyEvent
-	app.repeatKey.Repeat = true
-	app.repeatScancode = scancode
-	stopCh := make(chan struct{})
-	app.repeatStop = stopCh
-	app.mu.Unlock()
 
 	delay := time.Duration(app.repeatDelay) * time.Millisecond
 	if delay <= 0 {
@@ -362,47 +354,55 @@ func (app *waylandApplication) startKeyRepeat(keyEvent platform.KeyEvent, scanco
 	if interval <= 0 {
 		interval = 40 * time.Millisecond
 	}
+	now := app.timeNow()
 
 	app.mu.Lock()
-	app.repeatTimer = time.AfterFunc(delay, func() {
-		app.mu.Lock()
-		if app.repeatScancode != scancode {
-			app.mu.Unlock()
-			return
-		}
-		app.repeatTicker = time.NewTicker(interval)
-		ticker := app.repeatTicker
-		event := app.repeatKey
-		app.mu.Unlock()
-
-		go func(t *time.Ticker, stop <-chan struct{}, repeatEvent platform.KeyEvent) {
-			defer t.Stop()
-			for {
-				select {
-				case <-stop:
-					return
-				case <-t.C:
-					app.mu.Lock()
-					if app.repeatScancode != scancode || app.keyboardFocus == nil || app.keyboardFocus.state == nil {
-						app.mu.Unlock()
-						return
-					}
-					win := app.keyboardFocus
-					app.mu.Unlock()
-
-					app.post(func() {
-						app.dispatchKeyRepeat(win, repeatEvent, scancode)
-					})
-				}
-			}
-		}(ticker, stopCh, event)
-	})
+	app.repeatKey = keyEvent
+	app.repeatKey.Repeat = true
+	app.repeatScancode = scancode
+	app.repeatWindow = app.keyboardFocus
+	app.repeatInterval = interval
+	app.repeatDeadline = now.Add(delay)
 	app.mu.Unlock()
 }
 
-func (app *waylandApplication) dispatchKeyRepeat(win *waylandWindow, keyEvent platform.KeyEvent, scancode uint32) {
+func (app *waylandApplication) runKeyRepeat(now time.Time) {
 	app.mu.Lock()
-	active := app.repeatScancode == scancode && app.keyboardFocus == win
+	if app.repeatScancode == 0 || now.Before(app.repeatDeadline) {
+		app.mu.Unlock()
+		return
+	}
+	win := app.repeatWindow
+	keyEvent := app.repeatKey
+	scancode := app.repeatScancode
+	generation := app.repeatGeneration
+	deadline := app.repeatDeadline
+	interval := app.repeatInterval
+	app.mu.Unlock()
+
+	if win == nil || win.closed.Load() || win.state == nil {
+		app.stopKeyRepeat()
+		return
+	}
+	app.dispatchKeyRepeat(win, keyEvent, scancode, generation)
+	if interval <= 0 {
+		interval = 40 * time.Millisecond
+	}
+
+	app.mu.Lock()
+	if app.repeatGeneration == generation && app.repeatScancode == scancode && app.repeatWindow == win {
+		next := deadline.Add(interval)
+		if !next.After(now) {
+			next = now.Add(interval)
+		}
+		app.repeatDeadline = next
+	}
+	app.mu.Unlock()
+}
+
+func (app *waylandApplication) dispatchKeyRepeat(win *waylandWindow, keyEvent platform.KeyEvent, scancode uint32, generation uint64) {
+	app.mu.Lock()
+	active := app.repeatScancode == scancode && app.repeatGeneration == generation && app.repeatWindow == win && app.keyboardFocus == win
 	app.mu.Unlock()
 	if !active || win == nil || win.closed.Load() || win.state == nil {
 		return
@@ -413,19 +413,11 @@ func (app *waylandApplication) dispatchKeyRepeat(win *waylandWindow, keyEvent pl
 func (app *waylandApplication) stopKeyRepeat() {
 	app.mu.Lock()
 	defer app.mu.Unlock()
+	app.repeatGeneration++
 	app.repeatScancode = 0
-	if app.repeatStop != nil {
-		close(app.repeatStop)
-		app.repeatStop = nil
-	}
-	if app.repeatTimer != nil {
-		app.repeatTimer.Stop()
-		app.repeatTimer = nil
-	}
-	if app.repeatTicker != nil {
-		app.repeatTicker.Stop()
-		app.repeatTicker = nil
-	}
+	app.repeatWindow = nil
+	app.repeatDeadline = time.Time{}
+	app.repeatInterval = 0
 }
 
 // fallbackEvdevToKeysym handles basic ASCII keys when libxkbcommon is not present.

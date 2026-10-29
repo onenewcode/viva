@@ -4,6 +4,7 @@ package linux
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"unsafe"
 
@@ -132,6 +133,7 @@ func TestWaylandApplyScaleAndViewport(t *testing.T) {
 		},
 	}
 	app := &waylandApplication{api: api}
+	installWaylandFrameTestCallbacks(api)
 
 	// 800x600 logical at 1.0x with margin 24
 	win := &waylandWindow{
@@ -185,6 +187,112 @@ func TestWaylandApplyScaleAndViewport(t *testing.T) {
 	}
 }
 
+func TestWaylandScaleCapabilityPairing(t *testing.T) {
+	tests := []struct {
+		name               string
+		scaleMgr           uintptr
+		viewporter         uintptr
+		viewportFails      bool
+		wantFractional     uintptr
+		wantViewport       uintptr
+		wantFractionalCall int
+		wantViewportCall   int
+		wantDestroyed      bool
+	}{
+		{name: "matched capabilities", scaleMgr: 100, viewporter: 200, wantFractional: 501, wantViewport: 502, wantFractionalCall: 1, wantViewportCall: 1},
+		{name: "missing viewporter", scaleMgr: 100},
+		{name: "missing scale manager", viewporter: 200},
+		{name: "viewport allocation failure", scaleMgr: 100, viewporter: 200, viewportFails: true, wantFractionalCall: 1, wantViewportCall: 1, wantDestroyed: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fractionalCalls := 0
+			viewportCalls := 0
+			var destroyed []uintptr
+			api := &waylandAPI{
+				proxyMarshalFlags: func(_ uintptr, _ uint32, interfacePtr uintptr, _, _ uint32, _ ...any) uintptr {
+					switch interfacePtr {
+					case uintptr(unsafe.Pointer(&wpFractionalScaleV1Interface)):
+						fractionalCalls++
+						return 501
+					case uintptr(unsafe.Pointer(&wpViewportInterface)):
+						viewportCalls++
+						if test.viewportFails {
+							return 0
+						}
+						return 502
+					}
+					return 0
+				},
+				proxyAddListener: func(uintptr, uintptr, unsafe.Pointer) int32 { return 0 },
+				proxyDestroy:     func(proxy uintptr) { destroyed = append(destroyed, proxy) },
+			}
+			app := &waylandApplication{api: api}
+			app.globals.scaleMgr = test.scaleMgr
+			app.globals.viewporter = test.viewporter
+			win := &waylandWindow{app: app, surface: 10, width: 400, height: 300}
+			win.storeScale(1)
+
+			app.setupWindowScale(win)
+			if win.fractionalScale != test.wantFractional || win.viewport != test.wantViewport {
+				t.Fatalf("capabilities fractional=%d viewport=%d, want %d/%d", win.fractionalScale, win.viewport, test.wantFractional, test.wantViewport)
+			}
+			if fractionalCalls != test.wantFractionalCall || viewportCalls != test.wantViewportCall {
+				t.Fatalf("requests fractional=%d viewport=%d, want %d/%d", fractionalCalls, viewportCalls, test.wantFractionalCall, test.wantViewportCall)
+			}
+			if test.wantDestroyed && (len(destroyed) != 1 || destroyed[0] != 501) {
+				t.Fatalf("destroyed fractional proxies = %v, want [501]", destroyed)
+			}
+		})
+	}
+}
+
+func TestWaylandScaleRoundTripWithoutViewport(t *testing.T) {
+	for _, size := range []struct{ width, height uint32 }{{401, 301}, {400, 300}, {403, 297}} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			fractionalCalls := 0
+			var bufferScales []int32
+			api := &waylandAPI{
+				proxyMarshalFlags: func(_ uintptr, opcode uint32, interfacePtr uintptr, _, _ uint32, args ...any) uintptr {
+					if interfacePtr == uintptr(unsafe.Pointer(&wpFractionalScaleV1Interface)) {
+						fractionalCalls++
+						return 501
+					}
+					if opcode == wlSurfaceSetBufferScaleOpcode {
+						bufferScales = append(bufferScales, args[0].(int32))
+					}
+					return 0
+				},
+				proxyAddListener: func(uintptr, uintptr, unsafe.Pointer) int32 { return 0 },
+				proxyDestroy:     func(uintptr) {},
+			}
+			app := &waylandApplication{api: api}
+			app.globals.scaleMgr = 100
+			win := &waylandWindow{
+				app: app, surface: 10, width: size.width, height: size.height,
+				savedLogicalW: float32(size.width), savedLogicalH: float32(size.height),
+			}
+			win.storeScale(1)
+			app.setupWindowScale(win)
+			if win.fractionalScale != 0 || win.viewport != 0 || fractionalCalls != 0 {
+				t.Fatal("scale manager without viewporter enabled fractional scaling")
+			}
+
+			win.applyScale(1.25)
+			win.applyScale(1)
+			if win.width != size.width || win.height != size.height {
+				t.Fatalf("round-trip size = %dx%d, want %dx%d", win.width, win.height, size.width, size.height)
+			}
+			if win.savedLogicalW != float32(size.width) || win.savedLogicalH != float32(size.height) || win.pendingWidth != int32(size.width) || win.pendingHeight != int32(size.height) {
+				t.Fatalf("round-trip logical state saved=%gx%g pending=%dx%d", win.savedLogicalW, win.savedLogicalH, win.pendingWidth, win.pendingHeight)
+			}
+			if len(bufferScales) != 2 || bufferScales[0] != 2 || bufferScales[1] != 1 {
+				t.Fatalf("buffer scale fallback = %v, want [2 1]", bufferScales)
+			}
+		})
+	}
+}
+
 func TestWaylandScaleErrorsStopTransition(t *testing.T) {
 	callbackErr := errors.New("scale callback failed")
 	routerErr := errors.New("scale present failed")
@@ -207,7 +315,8 @@ func TestWaylandScaleErrorsStopTransition(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			app := &waylandApplication{}
+			app := &waylandApplication{api: &waylandAPI{}}
+			installWaylandFrameTestCallbacks(app.api)
 			win := &waylandWindow{
 				app:     app,
 				surface: 1,

@@ -6,21 +6,36 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/vivaui/viva/internal/dbus"
 	"github.com/vivaui/viva/internal/platform"
 )
 
 type fakeWaylandInputMethod struct {
-	fd         int
-	err        error
-	pending    int
-	closeCalls int
+	fd          int
+	err         error
+	pending     int
+	closeCalls  int
+	deadline    time.Time
+	deadlineSet bool
+	expireCalls int
+	expireErr   error
 }
 
 func (bus *fakeWaylandInputMethod) FD() int         { return bus.fd }
 func (bus *fakeWaylandInputMethod) Err() error      { return bus.err }
 func (bus *fakeWaylandInputMethod) Dispatch() error { return bus.err }
+func (bus *fakeWaylandInputMethod) Deadline() (time.Time, bool) {
+	return bus.deadline, bus.deadlineSet
+}
+func (bus *fakeWaylandInputMethod) Expire() {
+	bus.expireCalls++
+	if bus.expireErr != nil {
+		bus.err = bus.expireErr
+		bus.pending = 0
+	}
+}
 func (bus *fakeWaylandInputMethod) Close() {
 	bus.closeCalls++
 	bus.pending = 0
@@ -182,6 +197,122 @@ func TestWaylandCloseReleasesInputMethod(t *testing.T) {
 	}
 	if len(loop.extraFDs) != 0 || app.ibus != nil || app.ibusFDSet {
 		t.Fatalf("IBus teardown left state: FDs=%v bus=%v FDSet=%v", loop.extraFDs, app.ibus != nil, app.ibusFDSet)
+	}
+}
+
+func TestWaylandPollTimeoutUsesEarliestDeadline(t *testing.T) {
+	now := time.Unix(100, 0)
+	app := &waylandApplication{}
+	if timeout := app.pollTimeout(now); timeout != -1 {
+		t.Fatalf("timeout without timers = %d, want -1", timeout)
+	}
+
+	bus := &fakeWaylandInputMethod{deadline: now.Add(2500 * time.Millisecond), deadlineSet: true}
+	app.ibus = bus
+	if timeout := app.pollTimeout(now); timeout != 2500 {
+		t.Fatalf("IBus timeout = %d, want 2500", timeout)
+	}
+	app.repeatScancode = 30
+	app.repeatDeadline = now.Add(1200 * time.Millisecond)
+	if timeout := app.pollTimeout(now); timeout != 1200 {
+		t.Fatalf("nearest timeout = %d, want 1200", timeout)
+	}
+	app.repeatDeadline = now.Add(1500 * time.Microsecond)
+	if timeout := app.pollTimeout(now); timeout != 2 {
+		t.Fatalf("fractional timeout = %d, want ceil to 2", timeout)
+	}
+	app.repeatDeadline = now.Add(-time.Millisecond)
+	if timeout := app.pollTimeout(now); timeout != 0 {
+		t.Fatalf("expired repeat timeout = %d, want 0", timeout)
+	}
+	app.repeatScancode = 0
+	bus.deadline = now.Add(50 * 24 * time.Hour)
+	if timeout := app.pollTimeout(now); timeout != int32(1<<31-1) {
+		t.Fatalf("clamped timeout = %d, want %d", timeout, int32(1<<31-1))
+	}
+	bus.deadlineSet = false
+	if timeout := app.pollTimeout(now); timeout != -1 {
+		t.Fatalf("timeout after timers stopped = %d, want -1", timeout)
+	}
+}
+
+func TestWaylandProcessDeadlinesExpiresInputMethod(t *testing.T) {
+	expectedErr := errors.New("IBus key deadline expired")
+	loop := &waylandLoop{}
+	bus := &fakeWaylandInputMethod{fd: 44, expireErr: expectedErr}
+	app := &waylandApplication{loop: loop, ibus: bus, ibusFD: 44, ibusFDSet: true}
+	loop.addExtraFD(44, func() {})
+
+	app.processDeadlines(time.Now())
+	if bus.expireCalls != 1 {
+		t.Fatalf("Expire calls = %d, want 1", bus.expireCalls)
+	}
+	if app.ibus != nil || app.ibusFDSet || len(loop.extraFDs) != 0 {
+		t.Fatalf("expired IBus remained registered: bus=%v FDSet=%v FDs=%v", app.ibus != nil, app.ibusFDSet, loop.extraFDs)
+	}
+}
+
+func TestWaylandRunUsesDeadlineAndProcessesExpiry(t *testing.T) {
+	now := time.Unix(100, 0)
+	bus := &fakeWaylandInputMethod{}
+	var timeouts []int32
+	loop := &waylandLoop{wayland: &waylandAPI{}, waylandFD: 10, wakeFD: 11}
+	loop.libc = &libcAPI{poll: func(_ *pollFD, _ uintptr, timeout int32) int32 {
+		timeouts = append(timeouts, timeout)
+		if len(timeouts) == 2 {
+			loop.running.Store(false)
+		}
+		return 0
+	}}
+	loop.running.Store(true)
+	loop.rebuildPollFDs()
+	loop.post(func() {
+		bus.deadline = now.Add(125 * time.Millisecond)
+		bus.deadlineSet = true
+	})
+	app := &waylandApplication{loop: loop, ibus: bus, now: func() time.Time { return now }}
+	win := &waylandWindow{app: app}
+	state := &waylandWindowState{app: app, win: win}
+	win.state = state
+	app.windows = []*waylandWindowState{state}
+
+	if err := app.Run(func(platform.Application) error { return nil }); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(timeouts) != 2 || timeouts[0] != 125 || timeouts[1] != 125 {
+		t.Fatalf("poll timeouts = %v, want [125 125]", timeouts)
+	}
+	if bus.expireCalls != 1 {
+		t.Fatalf("Expire calls = %d, want one after the successful poll", bus.expireCalls)
+	}
+}
+
+func TestWaylandPostDoesNotUseWindowMutex(t *testing.T) {
+	app := &waylandApplication{loop: &waylandLoop{wakeFD: -1}}
+	done := make(chan struct{})
+	go func() {
+		app.mu.Lock()
+		defer app.mu.Unlock()
+		app.post(func() {})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("post deadlocked with the window callback mutex held")
+	}
+}
+
+func TestWaylandPostAfterCloseDoesNotExecute(t *testing.T) {
+	app := &waylandApplication{loop: &waylandLoop{wakeFD: -1}}
+	app.close()
+	executed := 0
+	app.post(func() { executed++ })
+	if executed != 0 {
+		t.Fatal("post after application close executed on the calling goroutine")
+	}
+	if app.loop != nil {
+		t.Fatal("application close retained its event loop")
 	}
 }
 

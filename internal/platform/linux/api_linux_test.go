@@ -621,13 +621,19 @@ func newSuboptimalTestRenderer(acquireStatus, presentStatus int32, recreations *
 		api: &vulkanAPI{
 			waitForFences: func(uintptr, uint32, *uintptr, uint32, uint64) int32 { return vkSuccess },
 			resetFences:   func(uintptr, uint32, *uintptr) int32 { return vkSuccess },
-			acquireNextImage: func(_, _ uintptr, _ uint64, _, _ uintptr, image *uint32) int32 {
+			acquireNextImage: func(_, swapchain uintptr, _ uint64, _, _ uintptr, image *uint32) int32 {
 				*image = 0
-				return acquireStatus
+				if swapchain == 30 {
+					return acquireStatus
+				}
+				return vkSuccess
 			},
 			queueSubmit: func(uintptr, uint32, *vkSubmitInfo, uintptr) int32 { return vkSuccess },
-			queuePresent: func(uintptr, *vkPresentInfo) int32 {
-				return presentStatus
+			queuePresent: func(_ uintptr, present *vkPresentInfo) int32 {
+				if *present.Swapchains == 30 {
+					return presentStatus
+				}
+				return vkSuccess
 			},
 			deviceWaitIdle: func(uintptr) int32 {
 				*recreations++
@@ -713,11 +719,17 @@ func TestSuboptimalRecreatesAfterCompletedFrame(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			recreations := 0
 			renderer := newSuboptimalTestRenderer(test.acquireStatus, test.presentStatus, &recreations)
+			var presented []uintptr
+			basePresent := renderer.api.queuePresent
+			renderer.api.queuePresent = func(queue uintptr, present *vkPresentInfo) int32 {
+				presented = append(presented, *present.Swapchains)
+				return basePresent(queue, present)
+			}
 			if err := renderer.presentRebuilding(); err != nil {
 				t.Fatalf("presentRebuilding returned error: %v", err)
 			}
-			if renderer.submissions != 1 {
-				t.Fatalf("completed submissions = %d, want 1", renderer.submissions)
+			if renderer.submissions != 2 {
+				t.Fatalf("completed submissions = %d, want old and new swapchain frames", renderer.submissions)
 			}
 			if recreations != 1 {
 				t.Fatalf("swapchain recreations = %d, want 1", recreations)
@@ -725,10 +737,29 @@ func TestSuboptimalRecreatesAfterCompletedFrame(t *testing.T) {
 			if renderer.swapchain != 99 {
 				t.Fatalf("swapchain = %d, want recreated handle 99", renderer.swapchain)
 			}
+			if !slices.Equal(presented, []uintptr{30, 99}) {
+				t.Fatalf("presented swapchains = %v, want [30 99]", presented)
+			}
 			if renderer.swapchainSuboptimal {
 				t.Fatal("suboptimal flag survived successful recreation")
 			}
 		})
+	}
+}
+
+func TestSuboptimalPersistsAfterRecreationReturnsError(t *testing.T) {
+	recreations := 0
+	renderer := newSuboptimalTestRenderer(vkSuccess, vkSuboptimal, &recreations)
+	renderer.api.queuePresent = func(uintptr, *vkPresentInfo) int32 { return vkSuboptimal }
+
+	if err := renderer.presentRebuilding(); err == nil {
+		t.Fatal("presentRebuilding ignored a persistently suboptimal new swapchain")
+	}
+	if renderer.submissions != 2 || recreations != 1 {
+		t.Fatalf("persistent recovery submissions=%d recreations=%d, want 2/1", renderer.submissions, recreations)
+	}
+	if renderer.swapchain != 99 {
+		t.Fatalf("persistent recovery swapchain = %d, want 99", renderer.swapchain)
 	}
 }
 
@@ -1231,6 +1262,82 @@ func TestWaylandLoopCloseReleasesWakeFD(t *testing.T) {
 	}
 	if loop.wakeFD != -1 {
 		t.Fatalf("expected wakeFD to be reset to -1, got %d", loop.wakeFD)
+	}
+}
+
+func TestWaylandLoopCloseWaitsForWakeWrite(t *testing.T) {
+	writeStarted := make(chan struct{})
+	releaseWrite := make(chan struct{})
+	var writeCalls atomic.Int32
+	var closed atomic.Bool
+	var writeAfterClose atomic.Bool
+	mockLibc := &libcAPI{
+		write: func(_ int32, _ unsafe.Pointer, size uintptr) int {
+			if writeCalls.Add(1) == 1 {
+				close(writeStarted)
+				<-releaseWrite
+			}
+			if closed.Load() {
+				writeAfterClose.Store(true)
+			}
+			return int(size)
+		},
+		close: func(int32) int32 {
+			closed.Store(true)
+			return 0
+		},
+	}
+	loop := &waylandLoop{libc: mockLibc, wakeFD: 11}
+
+	postDone := make(chan struct{})
+	go func() {
+		loop.post(func() {})
+		close(postDone)
+	}()
+	<-writeStarted
+	closeDone := make(chan struct{})
+	go func() {
+		loop.close()
+		close(closeDone)
+	}()
+
+	prematureClose := false
+	select {
+	case <-closeDone:
+		prematureClose = true
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(releaseWrite)
+	<-postDone
+	<-closeDone
+	if prematureClose || writeAfterClose.Load() {
+		t.Fatalf("wake write raced close: premature=%v writeAfterClose=%v", prematureClose, writeAfterClose.Load())
+	}
+}
+
+func TestWaylandLoopPostAfterCloseIsRejected(t *testing.T) {
+	writes := 0
+	loop := &waylandLoop{
+		wakeFD: 11,
+		libc: &libcAPI{
+			write: func(_ int32, _ unsafe.Pointer, size uintptr) int {
+				writes++
+				return int(size)
+			},
+			close: func(int32) int32 { return 0 },
+		},
+	}
+	loop.close()
+	writesAfterClose := writes
+	queueAfterClose := len(loop.cmdQueue)
+	executed := 0
+	loop.post(func() { executed++ })
+	if writes != writesAfterClose || len(loop.cmdQueue) != queueAfterClose || executed != 0 {
+		t.Fatalf("post after close: writes=%d/%d queue=%d/%d executed=%d", writes, writesAfterClose, len(loop.cmdQueue), queueAfterClose, executed)
+	}
+	loop.drainCommands()
+	if executed != 0 {
+		t.Fatal("post after close executed a command")
 	}
 }
 

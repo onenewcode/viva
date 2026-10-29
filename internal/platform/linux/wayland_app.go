@@ -24,6 +24,8 @@ type waylandInputMethod interface {
 	FD() int
 	Err() error
 	Dispatch() error
+	Deadline() (time.Time, bool)
+	Expire()
 	Close()
 }
 
@@ -34,6 +36,7 @@ type waylandApplication struct {
 	libc    *libcAPI
 	display uintptr
 	loop    *waylandLoop
+	loopMu  sync.Mutex
 	globals waylandGlobals
 
 	pointer            uintptr
@@ -57,18 +60,20 @@ type waylandApplication struct {
 	dragState      *waylandDragState
 	dataOffers     map[uintptr]*waylandDataOffer
 
-	xkb            *xkbAPI
-	xkbContext     uintptr
-	xkbKeymap      uintptr
-	xkbState       uintptr
-	modifiers      input.Modifiers
-	repeatRate     int32
-	repeatDelay    int32
-	repeatTimer    *time.Timer
-	repeatTicker   *time.Ticker
-	repeatStop     chan struct{}
-	repeatKey      platform.KeyEvent
-	repeatScancode uint32
+	xkb              *xkbAPI
+	xkbContext       uintptr
+	xkbKeymap        uintptr
+	xkbState         uintptr
+	modifiers        input.Modifiers
+	repeatRate       int32
+	repeatDelay      int32
+	repeatKey        platform.KeyEvent
+	repeatScancode   uint32
+	repeatGeneration uint64
+	repeatWindow     *waylandWindow
+	repeatDeadline   time.Time
+	repeatInterval   time.Duration
+	now              func() time.Time
 
 	mu       sync.Mutex
 	windows  []*waylandWindowState
@@ -134,10 +139,14 @@ func newWaylandApplication() (*waylandApplication, error) {
 
 // post enqueues a command onto the main loop waker pipeline.
 func (app *waylandApplication) post(cmd waylandCommand) {
-	if app.loop != nil {
-		app.loop.post(cmd)
-	} else if cmd != nil {
-		cmd()
+	if cmd == nil {
+		return
+	}
+	app.loopMu.Lock()
+	loop := app.loop
+	app.loopMu.Unlock()
+	if loop != nil {
+		loop.post(cmd)
 	}
 }
 
@@ -171,6 +180,52 @@ func (app *waylandApplication) OpenWindow(config platform.Config) (platform.Wind
 	return app.openWindow(config)
 }
 
+func (app *waylandApplication) timeNow() time.Time {
+	if app.now != nil {
+		return app.now()
+	}
+	return time.Now()
+}
+
+func (app *waylandApplication) pollTimeout(now time.Time) int32 {
+	var next time.Time
+	if app.ibus != nil {
+		if deadline, waiting := app.ibus.Deadline(); waiting {
+			next = deadline
+		}
+	}
+	app.mu.Lock()
+	repeatDeadline := app.repeatDeadline
+	repeatActive := app.repeatScancode != 0
+	app.mu.Unlock()
+	if repeatActive && (next.IsZero() || repeatDeadline.Before(next)) {
+		next = repeatDeadline
+	}
+	if next.IsZero() {
+		return -1
+	}
+	if !now.Before(next) {
+		return 0
+	}
+	remaining := next.Sub(now)
+	milliseconds := remaining / time.Millisecond
+	if remaining%time.Millisecond != 0 {
+		milliseconds++
+	}
+	if milliseconds > time.Duration(1<<31-1) {
+		return int32(1<<31 - 1)
+	}
+	return int32(milliseconds)
+}
+
+func (app *waylandApplication) processDeadlines(now time.Time) {
+	if app.ibus != nil {
+		app.ibus.Expire()
+		app.checkInputMethod()
+	}
+	app.runKeyRepeat(now)
+}
+
 // Run executes the application start callback and drives the Wayland main loop.
 func (app *waylandApplication) Run(start platform.ApplicationStart) error {
 	runtime.LockOSThread()
@@ -182,7 +237,11 @@ func (app *waylandApplication) Run(start platform.ApplicationStart) error {
 		return err
 	}
 
-	for app.hasWindows() && app.loop != nil && app.loop.step(-1) {
+	for app.hasWindows() && app.loop != nil {
+		if !app.loop.stepWithTimeout(func() int32 { return app.pollTimeout(app.timeNow()) }) {
+			break
+		}
+		app.processDeadlines(app.timeNow())
 	}
 
 	if app.firstErr != nil {
@@ -564,9 +623,12 @@ func (app *waylandApplication) close() {
 	if app.globals.compositor != 0 {
 		app.globals.destroy(app.api)
 	}
-	if app.loop != nil {
-		app.loop.close()
-		app.loop = nil
+	app.loopMu.Lock()
+	loop := app.loop
+	app.loop = nil
+	app.loopMu.Unlock()
+	if loop != nil {
+		loop.close()
 	}
 	if app.display != 0 && app.api != nil {
 		app.api.displayDisconnect(app.display)

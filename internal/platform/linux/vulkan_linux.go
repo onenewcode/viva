@@ -991,21 +991,19 @@ func (renderer *vulkanRenderer) presentRebuilding() error {
 		if err != nil {
 			return err
 		}
-		if !rebuild {
-			if renderer.swapchainSuboptimal {
-				// SUBOPTIMAL still presents the current frame. Recreate at this
-				// completed-frame boundary instead of ignoring it indefinitely.
-				if err := renderer.recreateSwapchain(); err != nil {
-					return err
-				}
-			}
+		if !rebuild && !renderer.swapchainSuboptimal {
 			return nil
 		}
+		if attempt == 1 {
+			break
+		}
+		// OUT_OF_DATE has not completed a frame. SUBOPTIMAL has, but its new
+		// swapchain must also present once before this transaction completes.
 		if err := renderer.recreateSwapchain(); err != nil {
 			return err
 		}
 	}
-	return fmt.Errorf("linux: Vulkan swapchain remained out of date after recreation")
+	return fmt.Errorf("linux: Vulkan swapchain remained out of date or suboptimal after recreation")
 }
 
 func (renderer *vulkanRenderer) presentOnce() (bool, error) {

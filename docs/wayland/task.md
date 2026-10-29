@@ -108,13 +108,14 @@
 
 ## Task 6：让 frame callback 分配失败可恢复
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（fake opcode、open/legacy 覆盖、空 Vulkan library 清理及 listener 注册失败恢复均已修复，最终复审通过）
 - 依赖：Task 5 已提交。
 - 目标：新 `wl_callback` 创建失败时不得 ACK、present 或消费事务状态，恢复后仍能建立配对 callback 并提交。
 - 主要文件：
   - `internal/platform/linux/wayland_frame.go`
   - `internal/platform/linux/window_wayland.go`
+  - `internal/platform/linux/vulkan_linux.go`（空 library handle 的安全清理）
   - `internal/platform/linux/wayland_window_test.go`
 - 实施要点：让 callback 获取返回成功/失败；将失败纳入现有错误和事务回滚路径，避免旧 callback 被误销毁。
 - 验收条件：
@@ -125,8 +126,8 @@
 
 ## Task 7：修复 eventfd post/close 竞态
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（首轮 FAIL 的窗口锁重入死锁已改用独立 loopMu 修复，复审通过）
 - 目标：`post` 不得与 `close` 交错后写入已关闭并可能复用的 FD，关闭后的命令不得进入调用 goroutine 直接执行。
 - 主要文件：
   - `internal/platform/linux/wayland_loop.go`
@@ -142,12 +143,13 @@
 
 ## Task 8：将 IBus 超时和键盘 repeat 纳入主循环调度
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（独立只读审查）
 - 依赖：Task 3、Task 7 已提交。
 - 目标：Wayland 使用最近 deadline 驱动 poll timeout，实际执行 IBus Expire，并以主循环按键代际替代 repeat ticker goroutine。
 - 主要文件：
   - `internal/platform/linux/wayland_app.go`
+  - `internal/platform/linux/wayland_loop.go`
   - `internal/platform/linux/wayland_keyboard.go`
   - `internal/platform/linux/wayland_keyboard_test.go`
   - `internal/platform/linux/wayland_app_test.go`
@@ -164,8 +166,8 @@
 
 ## Task 9：修复 Wayland 缩放往返与 viewporter 回退
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（独立只读审查）
 - 目标：scale 往返不截断逻辑尺寸；缺少 viewporter 时不进入需要 viewport 的 fractional-scale 呈现路径。
 - 主要文件：
   - `internal/platform/linux/wayland_scale.go`
@@ -180,8 +182,8 @@
 
 ## Task 10：在 SUBOPTIMAL 新交换链上强制呈现
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（首轮 FAIL 的最终异常后多余重建已修复，复审通过）
 - 目标：当前 SUBOPTIMAL 帧完成并重建后，在受控恢复边界内于新交换链再呈现已有场景。
 - 主要文件：
   - `internal/platform/linux/vulkan_linux.go`
@@ -195,8 +197,8 @@
 
 ## Task 11：让 Linux 平台测试进入 CI 并同步验收文档
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（独立只读审查）
 - 依赖：Task 1–10 已提交。
 - 目标：现有 Linux mock/unit 测试不再只存在于源码中，仓库能力文档不再声称原生 Wayland 未实现。
 - 主要文件：

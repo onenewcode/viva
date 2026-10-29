@@ -182,15 +182,17 @@ func (l *waylandLoop) post(cmd waylandCommand) {
 		return
 	}
 	l.cmdMu.Lock()
+	defer l.cmdMu.Unlock()
+	if l.wakeFD < 0 {
+		return
+	}
 	l.cmdQueue = append(l.cmdQueue, cmd)
-	wakeFD := l.wakeFD
-	l.cmdMu.Unlock()
 
-	if l.libc != nil && l.libc.write != nil && wakeFD >= 0 {
+	if l.libc != nil && l.libc.write != nil {
 		var val [8]byte
 		binary.NativeEndian.PutUint64(val[:], 1)
 		for {
-			written := l.libc.write(wakeFD, unsafe.Pointer(&val[0]), 8)
+			written := l.libc.write(l.wakeFD, unsafe.Pointer(&val[0]), 8)
 			if written >= 0 || l.libc.errno() != syscall.EINTR {
 				break
 			}
@@ -269,6 +271,10 @@ func (l *waylandLoop) flush() bool {
 }
 
 func (l *waylandLoop) step(timeoutMs int32) bool {
+	return l.stepWithTimeout(func() int32 { return timeoutMs })
+}
+
+func (l *waylandLoop) stepWithTimeout(timeout func() int32) bool {
 	if !l.running.Load() {
 		return false
 	}
@@ -299,6 +305,10 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 	l.pollMu.Unlock()
 
 	if l.libc != nil && l.libc.poll != nil {
+		timeoutMs := int32(-1)
+		if timeout != nil {
+			timeoutMs = timeout()
+		}
 		ret := l.libc.poll(pfd, nfds, timeoutMs)
 		if ret < 0 {
 			errno := l.libc.errno()
