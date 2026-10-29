@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"errors"
 	"testing"
 	"time"
 	"unsafe"
@@ -218,6 +219,52 @@ func TestWaylandPointerEventsDispatch(t *testing.T) {
 	if len(scrollEvents) != 1 || scrollEvents[0].DeltaY != 48 {
 		t.Fatalf("expected scroll event with DeltaY=48, got %v", scrollEvents)
 	}
+}
+
+func TestWaylandPointerAndScrollErrorsReachApplication(t *testing.T) {
+	t.Run("pointer", func(t *testing.T) {
+		expectedErr := errors.New("pointer failed")
+		app := &waylandApplication{}
+		win := &waylandWindow{app: app}
+		state := &waylandWindowState{
+			app: app,
+			win: win,
+			config: platform.Config{
+				OnPointer: func(platform.PointerEvent) (platform.Frame, error) {
+					return platform.Frame{}, expectedErr
+				},
+			},
+		}
+		state.router = eventRouter{config: state.config}
+		win.state = state
+
+		app.dispatchPointerEvent(win, platform.PointerEvent{Kind: platform.PointerMove})
+		if !errors.Is(app.firstErr, expectedErr) {
+			t.Fatalf("application error = %v, want %v", app.firstErr, expectedErr)
+		}
+	})
+
+	t.Run("scroll", func(t *testing.T) {
+		expectedErr := errors.New("scroll failed")
+		app := &waylandApplication{}
+		win := &waylandWindow{app: app}
+		state := &waylandWindowState{
+			app: app,
+			win: win,
+			config: platform.Config{
+				OnScroll: func(platform.ScrollEvent) (platform.Frame, error) {
+					return platform.Frame{}, expectedErr
+				},
+			},
+		}
+		state.router = eventRouter{config: state.config}
+		win.state = state
+
+		app.dispatchScrollEvent(win, platform.ScrollEvent{DeltaY: 1})
+		if !errors.Is(app.firstErr, expectedErr) {
+			t.Fatalf("application error = %v, want %v", app.firstErr, expectedErr)
+		}
+	})
 }
 
 func TestWaylandPointerScrollFrameAndV120Deduplication(t *testing.T) {

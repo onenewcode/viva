@@ -117,11 +117,11 @@ func initKeyboardListeners() {
 					app.keyboardFocus.state.router.ime.setFocused(false)
 				}
 				if app.keyboardFocus.state.config.OnFocusLost != nil {
-					if frame, err := app.keyboardFocus.state.config.OnFocusLost(); err == nil {
-						if app.keyboardFocus.state.router.present != nil {
-							_ = app.keyboardFocus.state.router.present(frame)
-						}
+					frame, err := app.keyboardFocus.state.config.OnFocusLost()
+					if err == nil && app.keyboardFocus.state.router.present != nil {
+						err = app.keyboardFocus.state.router.present(frame)
 					}
+					app.fail(err)
 				}
 			}
 			app.keyboardFocus = nil
@@ -306,7 +306,7 @@ func (app *waylandApplication) handleKey(serial, timeMs, scancode, state uint32)
 			return
 		}
 		app.startKeyRepeat(keyEvent, scancode)
-		_ = win.state.router.dispatchKey(keyEvent)
+		app.fail(win.state.router.dispatchKey(keyEvent))
 	} else {
 		app.mu.Lock()
 		isRepeatingKey := (scancode == app.repeatScancode)
@@ -315,7 +315,7 @@ func (app *waylandApplication) handleKey(serial, timeMs, scancode, state uint32)
 			app.stopKeyRepeat()
 		}
 		if win.state.router.wantsKeyReleases() {
-			_ = win.state.router.dispatchKey(keyEvent)
+			app.fail(win.state.router.dispatchKey(keyEvent))
 		}
 	}
 }
@@ -387,7 +387,7 @@ func (app *waylandApplication) dispatchKeyRepeat(win *waylandWindow, keyEvent pl
 	if !active || win == nil || win.closed.Load() || win.state == nil {
 		return
 	}
-	_ = win.state.router.dispatchKey(keyEvent)
+	app.fail(win.state.router.dispatchKey(keyEvent))
 }
 
 func (app *waylandApplication) stopKeyRepeat() {

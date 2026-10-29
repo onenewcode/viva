@@ -345,10 +345,15 @@ func (win *waylandWindow) handleXdgToplevelConfigure(width, height int32, states
 				win.Hide()
 			}
 			if win.state != nil && win.state.config.OnFocusLost != nil {
-				if frame, err := win.state.config.OnFocusLost(); err == nil {
-					if win.state.router.present != nil {
-						_ = win.state.router.present(frame)
+				frame, err := win.state.config.OnFocusLost()
+				if err == nil && win.state.router.present != nil {
+					err = win.state.router.present(frame)
+				}
+				if err != nil {
+					if win.app != nil {
+						win.app.fail(err)
 					}
+					return
 				}
 			}
 		}

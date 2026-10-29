@@ -52,7 +52,7 @@ func initPointerListeners() {
 					Y:         y,
 					Modifiers: app.modifiers,
 				}
-				_ = win.state.router.dispatchPointer(event)
+				app.dispatchPointerEvent(win, event)
 			}
 		})
 
@@ -69,7 +69,7 @@ func initPointerListeners() {
 					Y:         app.pointerFocus.pointerY,
 					Modifiers: app.modifiers,
 				}
-				_ = app.pointerFocus.state.router.dispatchPointer(event)
+				app.dispatchPointerEvent(app.pointerFocus, event)
 			}
 			app.pointerFocus = nil
 		})
@@ -93,7 +93,7 @@ func initPointerListeners() {
 				Y:         y,
 				Modifiers: app.modifiers,
 			}
-			_ = win.state.router.dispatchPointer(event)
+			app.dispatchPointerEvent(win, event)
 		})
 
 		// 3: button(serial, time, button, state)
@@ -137,7 +137,7 @@ func initPointerListeners() {
 				ClickCount: count,
 				Modifiers:  app.modifiers,
 			}
-			_ = win.state.router.dispatchPointer(event)
+			app.dispatchPointerEvent(win, event)
 		})
 
 		// 4: axis(time, axis, value)
@@ -178,7 +178,7 @@ func initPointerListeners() {
 					scroll.X = app.pointerFocus.pointerX
 					scroll.Y = app.pointerFocus.pointerY
 					scroll.Modifiers = app.modifiers
-					_ = app.pointerFocus.state.router.dispatchScroll(scroll)
+					app.dispatchScrollEvent(app.pointerFocus, scroll)
 				} else {
 					app.pendingScroll = platform.ScrollEvent{}
 				}
@@ -219,6 +219,20 @@ func initPointerListeners() {
 
 		pinnerPointer.Pin(&rawPointerListener)
 	})
+}
+
+func (app *waylandApplication) dispatchPointerEvent(win *waylandWindow, event platform.PointerEvent) {
+	if win == nil || win.state == nil {
+		return
+	}
+	app.fail(win.state.router.dispatchPointer(event))
+}
+
+func (app *waylandApplication) dispatchScrollEvent(win *waylandWindow, event platform.ScrollEvent) {
+	if win == nil || win.state == nil {
+		return
+	}
+	app.fail(win.state.router.dispatchScroll(event))
 }
 
 func (app *waylandApplication) setupPointer() {

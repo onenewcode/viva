@@ -122,6 +122,26 @@ func TestWaylandInitialConfigureGeometryBeforeState(t *testing.T) {
 	}
 }
 
+func TestWaylandFocusLossErrorsReachApplication(t *testing.T) {
+	expectedErr := errors.New("focus loss failed")
+	app := &waylandApplication{}
+	win := &waylandWindow{app: app, activated: true}
+	win.state = &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			OnFocusLost: func() (platform.Frame, error) {
+				return platform.Frame{}, expectedErr
+			},
+		},
+	}
+
+	win.handleXdgToplevelConfigure(0, 0, nil)
+	if !errors.Is(app.firstErr, expectedErr) {
+		t.Fatalf("application error = %v, want %v", app.firstErr, expectedErr)
+	}
+}
+
 func TestWaylandConfigureStateTransitions(t *testing.T) {
 	win := &waylandWindow{
 		width:       500,

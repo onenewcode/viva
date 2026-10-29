@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -153,6 +154,29 @@ func TestWaylandKeyRepeatQueuedAfterDestroyIsIgnored(t *testing.T) {
 	}
 	if win.state != nil {
 		t.Fatal("expected window state to be destroyed")
+	}
+}
+
+func TestWaylandKeyboardErrorsReachApplication(t *testing.T) {
+	expectedErr := errors.New("key failed")
+	app := &waylandApplication{}
+	win := &waylandWindow{app: app}
+	state := &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			OnKey: func(platform.KeyEvent) (platform.Frame, error) {
+				return platform.Frame{}, expectedErr
+			},
+		},
+	}
+	state.router = eventRouter{config: state.config}
+	win.state = state
+	app.keyboardFocus = win
+
+	app.handleKey(1, 100, 57, 1)
+	if !errors.Is(app.firstErr, expectedErr) {
+		t.Fatalf("application error = %v, want %v", app.firstErr, expectedErr)
 	}
 }
 

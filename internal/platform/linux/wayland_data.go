@@ -59,11 +59,11 @@ type waylandDragState struct {
 }
 
 var (
-	dataListenerOnce       sync.Once
-	rawDataDeviceListener  [6]uintptr
-	rawDataSourceListener  [6]uintptr
-	rawDataOfferListener   [3]uintptr
-	pinnerData             runtime.Pinner
+	dataListenerOnce      sync.Once
+	rawDataDeviceListener [6]uintptr
+	rawDataSourceListener [6]uintptr
+	rawDataOfferListener  [3]uintptr
+	pinnerData            runtime.Pinner
 )
 
 func initDataListeners() {
@@ -289,9 +289,10 @@ func initDataListeners() {
 							Y:     dragY,
 							Paths: paths,
 						})
-						if taken && dropErr == nil && targetWin.state.router.present != nil {
-							_ = targetWin.state.router.present(frame)
+						if dropErr == nil && taken && targetWin.state.router.present != nil {
+							dropErr = targetWin.state.router.present(frame)
 						}
+						app.fail(dropErr)
 					}
 				})
 			}(r, drag.offer.proxy, drag.x, drag.y, win)
