@@ -1264,7 +1264,9 @@ func (renderer *vulkanRenderer) close() {
 	if renderer.instance != 0 {
 		renderer.api.destroyInstance(renderer.instance, nil)
 	}
-	purego.Dlclose(renderer.api.library)
+	if renderer.api.library != 0 {
+		purego.Dlclose(renderer.api.library)
+	}
 	renderer.api = nil
 }
 

@@ -106,7 +106,27 @@ func TestAFileDragFromAnotherClientIsAcceptedAndDropped(t *testing.T) {
 			},
 		})
 	}()
+	// Always release the real application, including after a failed protocol
+	// assertion, so a failed run cannot strand its event loop in this process.
 	var target *window
+	t.Cleanup(func() {
+		if target == nil {
+			return
+		}
+		for i := 0; i < 10; i++ {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			target.postClientMessage(target.closeAtom, 0)
+			select {
+			case <-done:
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	})
 	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
 		select {
 		case err := <-done:

@@ -516,20 +516,24 @@ func newWaylandPresentTestRenderer(width, height uint32) *vulkanRenderer {
 				*image = 0
 				return vkSuccess
 			},
-			resetFences:  func(uintptr, uint32, *uintptr) int32 { return vkSuccess },
-			queueSubmit:  func(uintptr, uint32, *vkSubmitInfo, uintptr) int32 { return vkSuccess },
-			queuePresent: func(uintptr, *vkPresentInfo) int32 { return vkSuccess },
+			resetFences:      func(uintptr, uint32, *uintptr) int32 { return vkSuccess },
+			queueSubmit:      func(uintptr, uint32, *vkSubmitInfo, uintptr) int32 { return vkSuccess },
+			queuePresent:     func(uintptr, *vkPresentInfo) int32 { return vkSuccess },
+			deviceWaitIdle:   func(uintptr) int32 { return vkSuccess },
+			destroySwapchain: func(uintptr, uintptr, unsafe.Pointer) {},
+			destroyFence:     func(uintptr, uintptr, unsafe.Pointer) {},
+			destroyDevice:    func(uintptr, unsafe.Pointer) {},
 		},
 	}
 }
 
 func newWaylandPresentTestAPI(acked *[]uint32, frameRequests *int) *waylandAPI {
 	return &waylandAPI{
-		proxyMarshalFlags: func(_ uintptr, opcode uint32, _ uintptr, _, _ uint32, args ...any) uintptr {
-			switch opcode {
-			case xdgSurfaceAckConfigureOpcode:
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, _ uintptr, _, _ uint32, args ...any) uintptr {
+			switch {
+			case proxy == 2 && opcode == xdgSurfaceAckConfigureOpcode:
 				*acked = append(*acked, args[0].(uint32))
-			case wlSurfaceFrameOpcode:
+			case proxy == 1 && opcode == wlSurfaceFrameOpcode:
 				*frameRequests++
 				return 99
 			}
@@ -849,19 +853,202 @@ func TestWaylandPendingResizePreservesRedraw(t *testing.T) {
 	if win.resizeDeferred || renderer.submissions != 1 || frameRequests != 1 {
 		t.Fatalf("deferred resize submissions=%d frameRequests=%d deferred=%v", renderer.submissions, frameRequests, win.resizeDeferred)
 	}
-	if len(acked) != 1 || acked[0] != 42 || redraws != 0 {
-		t.Fatalf("deferred resize ack=%v redraws=%d", acked, redraws)
+	if len(acked) != 1 || acked[0] != 42 || redraws != 1 {
+		t.Fatalf("deferred resize ack=%v redraws=%d, want [42] and one redraw", acked, redraws)
 	}
-	if !win.needsRedraw {
-		t.Fatal("resize without OnResize consumed the queued redraw")
+	if win.needsRedraw {
+		t.Fatal("deferred resize did not consume the applied redraw")
 	}
 
 	win.onFrameDone(99, 0)
-	if redraws != 1 || renderer.submissions != 2 || frameRequests != 2 {
-		t.Fatalf("queued redraw=%d submissions=%d frameRequests=%d", redraws, renderer.submissions, frameRequests)
+	if redraws != 1 || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatalf("completed resize caused another redraw or present: redraw=%d submissions=%d frameRequests=%d", redraws, renderer.submissions, frameRequests)
+	}
+}
+
+func TestWaylandContinuousDeferredResizeUsesLatestRedraw(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		framePending: true, frameCallback: 77, needsRedraw: true,
+	}
+	win.storeScale(1)
+	recreations := 0
+	renderer := newSuboptimalTestRenderer(vkSuccess, vkSuccess, &recreations)
+	renderer.commandPool = 0
+	renderer.api.destroyCommandPool = func(uintptr, uintptr, unsafe.Pointer) {}
+	renderer.api.destroyPipeline = func(uintptr, uintptr, unsafe.Pointer) {}
+	renderer.api.destroyPipelineLayout = func(uintptr, uintptr, unsafe.Pointer) {}
+	renderer.api.destroyFramebuffer = func(uintptr, uintptr, unsafe.Pointer) {}
+	renderer.api.destroyRenderPass = func(uintptr, uintptr, unsafe.Pointer) {}
+	renderer.api.destroyImageView = func(uintptr, uintptr, unsafe.Pointer) {}
+	redraws := 0
+	var applied []int
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{OnRedraw: func() (platform.Frame, error) {
+			redraws++
+			return platform.Frame{}, nil
+		}},
+		applyFrame: func(frame platform.Frame) (bool, error) {
+			applied = append(applied, redraws)
+			return true, nil
+		},
+	}
+
+	for i, size := range []int{800, 1000, 1200} {
+		win.handleXdgToplevelConfigure(int32(size), 600, nil)
+		win.handleXdgSurfaceConfigure(uint32(42 + i))
+		if !win.resizeDeferred || renderer.submissions != uint64(i) || frameRequests != i {
+			t.Fatalf("resize %d advanced before its callback: deferred=%v submissions=%d requests=%d", i, win.resizeDeferred, renderer.submissions, frameRequests)
+		}
+		win.needsRedraw = true // A Waker arrived while the preceding frame was pending.
+		win.onFrameDone(77, 0)
+		renderer.device = 0 // This mock owns no real library or GPU device.
+		if redraws != i+1 || renderer.submissions != uint64(i+1) || frameRequests != i+1 {
+			t.Fatalf("resize %d did not apply the latest scene: redraws=%d submissions=%d requests=%d", i, redraws, renderer.submissions, frameRequests)
+		}
+		if win.needsRedraw || win.resizeDeferred {
+			t.Fatalf("resize %d retained completed transaction state", i)
+		}
+	}
+	if len(applied) != 3 || applied[0] != 1 || applied[1] != 2 || applied[2] != 3 {
+		t.Fatalf("applied scene generations = %v, want [1 2 3]", applied)
+	}
+	if len(acked) != 3 || acked[0] != 42 || acked[1] != 43 || acked[2] != 44 {
+		t.Fatalf("continuous resize ACKs = %v, want [42 43 44]", acked)
+	}
+}
+
+func TestWaylandDeferredResizeDoesNotDuplicateResizeRedraw(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		pendingWidth: 800, pendingHeight: 600, pendingSerial: 42,
+		framePending: true, frameCallback: 77, needsRedraw: true,
+	}
+	win.storeScale(1)
+	renderer := newWaylandPresentTestRenderer(800, 600)
+	resizes, redraws, applies := 0, 0, 0
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{
+			OnResize: func(platform.Size) (platform.Frame, error) {
+				resizes++
+				return platform.Frame{}, nil
+			},
+			OnRedraw: func() (platform.Frame, error) {
+				redraws++
+				return platform.Frame{}, nil
+			},
+		},
+		applyFrame: func(platform.Frame) (bool, error) { applies++; return false, nil },
+	}
+
+	win.applyPendingResize()
+	win.onFrameDone(77, 0)
+	if resizes != 1 || redraws != 0 || applies != 1 || renderer.submissions != 1 {
+		t.Fatalf("resize scene selection resize=%d redraw=%d apply=%d submissions=%d", resizes, redraws, applies, renderer.submissions)
 	}
 	if win.needsRedraw {
-		t.Fatal("latest content remained pending after its frame completed")
+		t.Fatal("successful resize frame did not consume the queued redraw")
+	}
+	win.onFrameDone(99, 0)
+	if resizes != 1 || redraws != 0 || applies != 1 || renderer.submissions != 1 {
+		t.Fatal("completed resize frame duplicated a scene or presentation")
+	}
+}
+
+func TestWaylandDeferredResizeRedrawApplyFailureClosesWindow(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	expectedErr := errors.New("deferred redraw apply failed")
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		pendingWidth: 800, pendingHeight: 600, pendingSerial: 42, forcePresent: true,
+		framePending: true, frameCallback: 77, needsRedraw: true,
+	}
+	win.storeScale(1)
+	renderer := newWaylandPresentTestRenderer(800, 600)
+	redraws := 0
+	state := &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{OnRedraw: func() (platform.Frame, error) {
+			redraws++
+			return platform.Frame{}, nil
+		}},
+		applyFrame: func(platform.Frame) (bool, error) { return false, expectedErr },
+	}
+	win.state = state
+	app.windows = []*waylandWindowState{state}
+	renderer.device = 0 // This mock owns no real library or GPU device.
+
+	win.applyPendingResize()
+	win.onFrameDone(77, 0)
+	if !errors.Is(app.firstErr, expectedErr) || redraws != 1 || renderer.submissions != 0 || frameRequests != 0 {
+		t.Fatalf("failed deferred redraw err=%v redraws=%d submissions=%d requests=%d", app.firstErr, redraws, renderer.submissions, frameRequests)
+	}
+	if len(acked) != 0 || win.state != nil || !win.closed.Load() || win.framePending || win.frameCallback != 0 {
+		t.Fatalf("failed redraw did not close cleanly: ack=%v state=%v closed=%v pending=%v callback=%d", acked, win.state != nil, win.closed.Load(), win.framePending, win.frameCallback)
+	}
+	win.onFrameDone(0, 0)
+	if redraws != 1 || renderer.submissions != 0 || frameRequests != 0 {
+		t.Fatal("a closed window retried its failed redraw")
+	}
+}
+
+func TestWaylandDeferredResizeRedrawPresentFailureClosesWindow(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		pendingWidth: 800, pendingHeight: 600, pendingSerial: 42, forcePresent: true,
+		framePending: true, frameCallback: 77, needsRedraw: true,
+	}
+	win.storeScale(1)
+	renderer := newWaylandPresentTestRenderer(800, 600)
+	presentCalls := 0
+	renderer.api.queuePresent = func(uintptr, *vkPresentInfo) int32 {
+		presentCalls++
+		if presentCalls == 1 {
+			return vkErrorDeviceLost
+		}
+		return vkSuccess
+	}
+	redraws := 0
+	state := &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{OnRedraw: func() (platform.Frame, error) {
+			redraws++
+			return platform.Frame{}, nil
+		}},
+		applyFrame: func(platform.Frame) (bool, error) { return true, nil },
+	}
+	win.state = state
+	app.windows = []*waylandWindowState{state}
+	renderer.device = 0 // This mock owns no real library or GPU device.
+
+	win.applyPendingResize()
+	win.onFrameDone(77, 0)
+	if app.firstErr == nil || redraws != 1 || presentCalls != 1 || renderer.submissions != 0 {
+		t.Fatalf("failed deferred present err=%v redraws=%d presents=%d submissions=%d", app.firstErr, redraws, presentCalls, renderer.submissions)
+	}
+	if win.state != nil || !win.closed.Load() || win.framePending || win.frameCallback != 0 {
+		t.Fatalf("failed present did not close cleanly: state=%v closed=%v pending=%v callback=%d", win.state != nil, win.closed.Load(), win.framePending, win.frameCallback)
+	}
+	win.onFrameDone(0, 0)
+	if redraws != 1 || presentCalls != 1 || renderer.submissions != 0 {
+		t.Fatal("a closed window retried its failed presentation")
 	}
 }
 
@@ -1831,7 +2018,7 @@ func TestWaylandAtomicConfigureResizeSequence(t *testing.T) {
 	}
 }
 
-func TestWaylandImmediateAtomicResizeAndConfigureAck(t *testing.T) {
+func TestWaylandDeferredAtomicResizeAndConfigureAck(t *testing.T) {
 	type protocolEvent struct {
 		name string
 		val  any
@@ -1928,25 +2115,34 @@ func TestWaylandImmediateAtomicResizeAndConfigureAck(t *testing.T) {
 		t.Fatalf("expected 1 commit after first configure, got %d", commitsAfterFirst)
 	}
 
-	// 2. Interactive configure event 2 arrives (520x410, serial 102) -> immediately acknowledged and applied
+	// The second configure supersedes the pending geometry without committing.
 	win.pendingWidth = 520
 	win.pendingHeight = 410
 	win.handleXdgSurfaceConfigure(102)
 
-	if win.width != 520 || win.height != 410 {
-		t.Fatalf("expected width=520, height=410, got (%d, %d)", win.width, win.height)
+	if win.width != 500 || win.height != 400 {
+		t.Fatalf("second configure committed before its callback: got (%d, %d)", win.width, win.height)
+	}
+	if win.pendingSerial != 102 {
+		t.Fatalf("latest serial = %d, want 102", win.pendingSerial)
 	}
 
-	// 3. Interactive configure event 3 arrives (540x420, serial 103) -> immediately acknowledged and applied
+	// The third configure arrives before the same callback; only the latest
+	// geometry is acknowledged and presented after that callback completes.
 	win.pendingWidth = 540
 	win.pendingHeight = 420
 	win.handleXdgSurfaceConfigure(103)
 
+	if win.width != 500 || win.height != 400 {
+		t.Fatalf("third configure committed before its callback: got (%d, %d)", win.width, win.height)
+	}
+	win.onFrameDone(0x555, 0)
 	if win.width != 540 || win.height != 420 {
 		t.Fatalf("expected width=540, height=420, got (%d, %d)", win.width, win.height)
 	}
 
-	// Verify all 3 configure events were acknowledged in sequence and committed with matching geometry
+	// Verify the intermediate configure was coalesced, and that both completed
+	// frames acknowledged and committed the geometry current at their boundary.
 	var acks []uint32
 	var geoms [][4]int32
 	totalCommits := 0
@@ -1961,13 +2157,13 @@ func TestWaylandImmediateAtomicResizeAndConfigureAck(t *testing.T) {
 		}
 	}
 
-	if totalCommits != 3 {
-		t.Fatalf("expected exactly 3 commits for 3 interactive configure events, got %d", totalCommits)
+	if totalCommits != 2 {
+		t.Fatalf("expected 2 commits after coalescing three configures, got %d", totalCommits)
 	}
-	if len(acks) != 3 || acks[0] != 101 || acks[1] != 102 || acks[2] != 103 {
-		t.Fatalf("expected acks [101, 102, 103], got %v", acks)
+	if len(acks) != 2 || acks[0] != 101 || acks[1] != 103 {
+		t.Fatalf("expected acks [101, 103], got %v", acks)
 	}
-	if len(geoms) != 3 || geoms[2][2] != 540 || geoms[2][3] != 420 {
+	if len(geoms) != 2 || geoms[1][2] != 540 || geoms[1][3] != 420 {
 		t.Fatalf("expected latest geometry (540, 420), got %+v", geoms)
 	}
 }
