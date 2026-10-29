@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"errors"
 	"runtime"
 	"sync"
 	"unsafe"
@@ -14,6 +15,9 @@ var (
 	frameListenerOnce sync.Once
 	rawFrameListener  [1]uintptr
 	pinnerFrame       runtime.Pinner
+
+	errWaylandFrameCallback = errors.New("linux: failed to create Wayland frame callback")
+	errWaylandFramePending  = errors.New("linux: Wayland frame callback is still pending")
 )
 
 func initFrameListener() {
@@ -30,33 +34,49 @@ func initFrameListener() {
 }
 
 // requestFrameCallback mounts a wl_callback on wl_surface to drive presentation backpressure.
-func (win *waylandWindow) requestFrameCallback() {
-	if win.framePending || win.surface == 0 || win.app == nil || win.app.api == nil {
-		return
+func (win *waylandWindow) requestFrameCallback() bool {
+	if win.framePending {
+		return true
+	}
+	if win.surface == 0 || win.app == nil || win.app.api == nil {
+		return false
 	}
 	cbIface := win.app.api.getInterface("wl_callback_interface", &wlCallbackInterface)
 	cb := win.app.api.proxyMarshalFlags(win.surface, wlSurfaceFrameOpcode, cbIface, 1, 0, uintptr(0))
 	if cb == 0 {
-		return
+		return false
 	}
 	win.framePending = true
 	win.frameCallback = cb
 
 	initFrameListener()
-	win.app.api.proxyAddListener(cb, uintptr(unsafe.Pointer(&rawFrameListener[0])), unsafe.Pointer(win))
+	if win.app.api.proxyAddListener(cb, uintptr(unsafe.Pointer(&rawFrameListener[0])), unsafe.Pointer(win)) != 0 {
+		win.app.api.proxyDestroy(cb)
+		win.frameCallback = 0
+		win.framePending = false
+		return false
+	}
+	return true
 }
 
-// presentWithFrameCallback pairs a new callback with a successful present.
-// A failure destroys only that new callback, preserving any older frame clock.
-func (win *waylandWindow) presentWithFrameCallback(present func() error) error {
+// presentWithFrameCallback installs the next frame clock before acknowledging
+// and presenting its commit. A failure destroys only that new callback.
+func (win *waylandWindow) presentWithFrameCallback(present func() error, ackConfigure func()) error {
 	if present == nil {
 		return nil
 	}
-	previousCallback := win.frameCallback
-	win.requestFrameCallback()
+	if win.framePending {
+		return errWaylandFramePending
+	}
+	if !win.requestFrameCallback() {
+		return errWaylandFrameCallback
+	}
 	callback := win.frameCallback
+	if ackConfigure != nil {
+		ackConfigure()
+	}
 	err := present()
-	if err != nil && callback != 0 && callback != previousCallback {
+	if err != nil && callback != 0 {
 		if win.app != nil && win.app.api != nil {
 			win.app.api.proxyDestroy(callback)
 		}

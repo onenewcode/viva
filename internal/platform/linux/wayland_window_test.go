@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/vivaui/viva/internal/platform"
+	"github.com/vivaui/viva/internal/render"
 	"github.com/vivaui/viva/ui"
 )
 
@@ -300,6 +301,7 @@ func newInitialConfigureTestApplication(roundtrip int32, destroyed *[]uintptr) *
 		displayRoundtrip: func(uintptr) int32 { return roundtrip },
 		proxyDestroy:     func(proxy uintptr) { *destroyed = append(*destroyed, proxy) },
 	}
+	installWaylandFrameTestCallbacks(app.api)
 	return app
 }
 
@@ -329,6 +331,88 @@ func TestWaylandOpenWindowRequiresInitialConfigure(t *testing.T) {
 	}
 }
 
+func TestWaylandOpenWindowCallbackFailureRetriesCleanly(t *testing.T) {
+	originalRendererFactory := newWaylandWindowRenderer
+	t.Cleanup(func() { newWaylandWindowRenderer = originalRendererFactory })
+
+	presents := 0
+	newWaylandWindowRenderer = func(_ vulkanSurfaceProvider, width, height uint32, _ float32, _ platform.Color, _ []render.Rectangle, _ []platform.TextLabel, _ uint32) (*vulkanRenderer, error) {
+		renderer := newWaylandPresentTestRenderer(width, height)
+		// Keep presentation functional while making the failure cleanup a no-op
+		// for real Vulkan resources.
+		renderer.device = 0
+		renderer.swapchain = 0
+		renderer.fence = 0
+		renderer.api.queuePresent = func(uintptr, *vkPresentInfo) int32 {
+			presents++
+			return vkSuccess
+		}
+		return renderer, nil
+	}
+
+	var acked []uint32
+	callbackAttempts := 0
+	newApp := func() *waylandApplication {
+		var destroyed []uintptr
+		app := newInitialConfigureTestApplication(0, &destroyed)
+		var configureData unsafe.Pointer
+		app.api.proxyAddListener = func(proxy uintptr, _ uintptr, data unsafe.Pointer) int32 {
+			if proxy == 20 {
+				configureData = data
+			}
+			return 0
+		}
+		app.api.displayRoundtrip = func(uintptr) int32 {
+			if configureData == nil {
+				t.Fatal("xdg_surface listener was not installed before roundtrip")
+			}
+			puregoInvokeCallback3(rawXdgSurfaceListener[0], configureData, 20, 41)
+			return 0
+		}
+		app.api.displayFlush = func(uintptr) int32 { return 0 }
+		baseMarshal := app.api.proxyMarshalFlags
+		app.api.proxyMarshalFlags = func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			if proxy == 10 && isWaylandFrameTestRequest(opcode, interfacePtr) {
+				callbackAttempts++
+				if callbackAttempts == 1 {
+					return 0
+				}
+			}
+			if opcode == xdgSurfaceAckConfigureOpcode {
+				acked = append(acked, args[0].(uint32))
+			}
+			return baseMarshal(proxy, opcode, interfacePtr, version, flags, args...)
+		}
+		return app
+	}
+
+	app := newApp()
+	win, err := app.openWindow(platform.Config{Width: 400, Height: 300})
+	if !errors.Is(err, errWaylandFrameCallback) || win != nil {
+		t.Fatalf("first openWindow = (%v, %v), want callback allocation failure", win, err)
+	}
+	if len(acked) != 0 || presents != 0 || callbackAttempts != 1 {
+		t.Fatalf("failed open advanced: ACK=%v presents=%d attempts=%d", acked, presents, callbackAttempts)
+	}
+
+	app = newApp()
+	win, err = app.openWindow(platform.Config{Width: 400, Height: 300})
+	if err != nil {
+		t.Fatalf("retry openWindow: %v", err)
+	}
+	defer func() {
+		win.state.renderer.close()
+		win.state.text.close()
+		win.destroy()
+	}()
+	if len(acked) != 1 || acked[0] != 41 || presents != 1 || callbackAttempts != 2 {
+		t.Fatalf("retry open: ACK=%v presents=%d attempts=%d", acked, presents, callbackAttempts)
+	}
+	if win.pendingSerial != 0 || !win.framePending || win.frameCallback != 99 {
+		t.Fatalf("retry transaction: serial=%d pending=%v callback=%d", win.pendingSerial, win.framePending, win.frameCallback)
+	}
+}
+
 func TestWaylandHiddenRedrawWaitsForRemapConfigure(t *testing.T) {
 	var commits int
 	var nilAttachments int
@@ -351,6 +435,7 @@ func TestWaylandHiddenRedrawWaitsForRemapConfigure(t *testing.T) {
 		},
 		displayFlush: func(uintptr) int32 { return 0 },
 	}
+	installWaylandFrameTestCallbacks(api)
 	app := &waylandApplication{api: api}
 	win := &waylandWindow{
 		app: app, surface: 1, xdgSurface: 2,
@@ -453,6 +538,7 @@ func TestWaylandHiddenRemapResizeWaitsForShow(t *testing.T) {
 		},
 		displayFlush: func(uintptr) int32 { return 0 },
 	}
+	installWaylandFrameTestCallbacks(api)
 	app := &waylandApplication{api: api}
 	win := &waylandWindow{
 		app: app, surface: 1, xdgSurface: 2,
@@ -525,19 +611,46 @@ func newWaylandPresentTestRenderer(width, height uint32) *vulkanRenderer {
 
 func newWaylandPresentTestAPI(acked *[]uint32, frameRequests *int) *waylandAPI {
 	return &waylandAPI{
-		proxyMarshalFlags: func(_ uintptr, opcode uint32, _ uintptr, _, _ uint32, args ...any) uintptr {
-			switch opcode {
-			case xdgSurfaceAckConfigureOpcode:
-				*acked = append(*acked, args[0].(uint32))
-			case wlSurfaceFrameOpcode:
+		proxyMarshalFlags: func(_ uintptr, opcode uint32, interfacePtr uintptr, _, _ uint32, args ...any) uintptr {
+			if isWaylandFrameTestRequest(opcode, interfacePtr) {
 				*frameRequests++
 				return 99
+			}
+			if opcode == xdgSurfaceAckConfigureOpcode {
+				*acked = append(*acked, args[0].(uint32))
 			}
 			return 0
 		},
 		proxyAddListener: func(uintptr, uintptr, unsafe.Pointer) int32 { return 0 },
 		proxyDestroy:     func(uintptr) {},
 		displayFlush:     func(uintptr) int32 { return 0 },
+	}
+}
+
+func isWaylandFrameTestRequest(opcode uint32, interfacePtr uintptr) bool {
+	return opcode == wlSurfaceFrameOpcode && interfacePtr == uintptr(unsafe.Pointer(&wlCallbackInterface))
+}
+
+func installWaylandFrameTestCallbacks(api *waylandAPI) {
+	if api == nil {
+		return
+	}
+	previousMarshal := api.proxyMarshalFlags
+	api.proxyMarshalFlags = func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+		result := uintptr(0)
+		if previousMarshal != nil {
+			result = previousMarshal(proxy, opcode, interfacePtr, version, flags, args...)
+		}
+		if result == 0 && isWaylandFrameTestRequest(opcode, interfacePtr) {
+			return 99
+		}
+		return result
+	}
+	if api.proxyAddListener == nil {
+		api.proxyAddListener = func(uintptr, uintptr, unsafe.Pointer) int32 { return 0 }
+	}
+	if api.proxyDestroy == nil {
+		api.proxyDestroy = func(uintptr) {}
 	}
 }
 
@@ -1123,6 +1236,157 @@ func TestWaylandApplyFailureDoesNotAckOrRequestFrame(t *testing.T) {
 	}
 }
 
+func TestWaylandFrameCallbackFailurePreservesTransaction(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		apply func(*waylandWindow)
+	}{
+		{name: "redraw", apply: (*waylandWindow).renderFrame},
+		{name: "resize", apply: (*waylandWindow).applyPendingResize},
+		{name: "scale", apply: func(win *waylandWindow) { win.applyScale(2) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var acked []uint32
+			frameRequests := 0
+			app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+			baseMarshal := app.api.proxyMarshalFlags
+			callbackAttempts := 0
+			app.api.proxyMarshalFlags = func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+				if proxy == 1 && isWaylandFrameTestRequest(opcode, interfacePtr) && callbackAttempts == 0 {
+					callbackAttempts++
+					return 0
+				}
+				return baseMarshal(proxy, opcode, interfacePtr, version, flags, args...)
+			}
+			win := &waylandWindow{
+				app: app, surface: 1, xdgSurface: 2, configured: true,
+				width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+				pendingWidth: 800, pendingHeight: 600, pendingSerial: 41,
+				forcePresent: true, geometryDirty: true, needsRedraw: true,
+			}
+			win.storeScale(1)
+			renderer := newWaylandPresentTestRenderer(800, 600)
+			win.state = &waylandWindowState{
+				app: app, win: win, renderer: renderer,
+				config: platform.Config{
+					OnResize: func(platform.Size) (platform.Frame, error) { return platform.Frame{}, nil },
+					OnRedraw: func() (platform.Frame, error) { return platform.Frame{}, nil },
+				},
+				applyFrame: func(platform.Frame) (bool, error) { return false, nil },
+			}
+
+			test.apply(win)
+			if !errors.Is(app.firstErr, errWaylandFrameCallback) {
+				t.Fatalf("callback failure error = %v", app.firstErr)
+			}
+			if len(acked) != 0 || renderer.submissions != 0 || frameRequests != 0 || callbackAttempts != 1 {
+				t.Fatalf("callback failure advanced: ack=%v submissions=%d requests=%d attempts=%d", acked, renderer.submissions, frameRequests, callbackAttempts)
+			}
+			if win.pendingSerial != 41 || !win.forcePresent || !win.geometryDirty || !win.needsRedraw || win.framePending {
+				t.Fatal("callback failure consumed or corrupted the pending transaction")
+			}
+
+			app.firstErr = nil
+			win.renderFrame()
+			if app.firstErr != nil || renderer.submissions != 1 || frameRequests != 1 {
+				t.Fatalf("callback retry err=%v submissions=%d requests=%d", app.firstErr, renderer.submissions, frameRequests)
+			}
+			if len(acked) != 1 || acked[0] != 41 || win.pendingSerial != 0 {
+				t.Fatalf("callback retry ACK = %v, pending serial = %d", acked, win.pendingSerial)
+			}
+			if win.forcePresent || win.geometryDirty || win.needsRedraw || !win.framePending {
+				t.Fatal("callback retry did not complete the transaction")
+			}
+		})
+	}
+}
+
+func TestWaylandFrameCallbackListenerFailureRetriesCleanly(t *testing.T) {
+	var destroyed []uintptr
+	listenerAttempts := 0
+	api := &waylandAPI{
+		proxyMarshalFlags: func(uintptr, uint32, uintptr, uint32, uint32, ...any) uintptr { return 99 },
+		proxyAddListener: func(uintptr, uintptr, unsafe.Pointer) int32 {
+			listenerAttempts++
+			if listenerAttempts == 1 {
+				return -1
+			}
+			return 0
+		},
+		proxyDestroy: func(proxy uintptr) { destroyed = append(destroyed, proxy) },
+	}
+	win := &waylandWindow{app: &waylandApplication{api: api}, surface: 1}
+	acks := 0
+	presents := 0
+	present := func() error {
+		presents++
+		return nil
+	}
+	ack := func() { acks++ }
+
+	err := win.presentWithFrameCallback(present, ack)
+	if !errors.Is(err, errWaylandFrameCallback) {
+		t.Fatalf("listener failure error = %v", err)
+	}
+	if acks != 0 || presents != 0 || listenerAttempts != 1 {
+		t.Fatalf("listener failure advanced: ACK=%d presents=%d attempts=%d", acks, presents, listenerAttempts)
+	}
+	if win.framePending || win.frameCallback != 0 || len(destroyed) != 1 || destroyed[0] != 99 {
+		t.Fatalf("listener failure cleanup: pending=%v callback=%d destroyed=%v", win.framePending, win.frameCallback, destroyed)
+	}
+
+	if err := win.presentWithFrameCallback(present, ack); err != nil {
+		t.Fatalf("listener retry: %v", err)
+	}
+	if acks != 1 || presents != 1 || listenerAttempts != 2 || !win.framePending || win.frameCallback != 99 {
+		t.Fatalf("listener retry: ACK=%d presents=%d attempts=%d pending=%v callback=%d", acks, presents, listenerAttempts, win.framePending, win.frameCallback)
+	}
+}
+
+func TestWaylandLegacyCommitCallbackFailureRetriesCleanly(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	commits := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	baseMarshal := app.api.proxyMarshalFlags
+	callbackAttempts := 0
+	app.api.proxyMarshalFlags = func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+		if proxy == 1 && isWaylandFrameTestRequest(opcode, interfacePtr) && callbackAttempts == 0 {
+			callbackAttempts++
+			return 0
+		}
+		if proxy == 1 && opcode == wlSurfaceCommitOpcode {
+			commits++
+		}
+		return baseMarshal(proxy, opcode, interfacePtr, version, flags, args...)
+	}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		pendingSerial: 41, forcePresent: true, needsRedraw: true,
+	}
+	win.state = &waylandWindowState{app: app, win: win}
+
+	win.renderFrame()
+	if !errors.Is(app.firstErr, errWaylandFrameCallback) {
+		t.Fatalf("legacy callback failure error = %v", app.firstErr)
+	}
+	if len(acked) != 0 || commits != 0 || frameRequests != 0 || callbackAttempts != 1 {
+		t.Fatalf("legacy failure advanced: ACK=%v commits=%d requests=%d attempts=%d", acked, commits, frameRequests, callbackAttempts)
+	}
+	if win.pendingSerial != 41 || !win.forcePresent || !win.needsRedraw || win.framePending {
+		t.Fatal("legacy failure consumed the pending transaction")
+	}
+
+	app.firstErr = nil
+	win.renderFrame()
+	if app.firstErr != nil || len(acked) != 1 || acked[0] != 41 || commits != 1 || frameRequests != 1 {
+		t.Fatalf("legacy retry: err=%v ACK=%v commits=%d requests=%d", app.firstErr, acked, commits, frameRequests)
+	}
+	if win.pendingSerial != 0 || win.forcePresent || win.needsRedraw || !win.framePending {
+		t.Fatal("legacy retry did not complete the transaction")
+	}
+}
+
 func TestWaylandPresentFailureCleansNewCallback(t *testing.T) {
 	var acked []uint32
 	frameRequests := 0
@@ -1318,7 +1582,8 @@ func TestWaylandRedrawErrorsReachApplication(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			app := &waylandApplication{}
+			app := &waylandApplication{api: &waylandAPI{}}
+			installWaylandFrameTestCallbacks(app.api)
 			win := &waylandWindow{app: app, surface: 1}
 			win.state = &waylandWindowState{
 				app:      app,
@@ -1476,6 +1741,7 @@ func TestWaylandConfigureAckOnStateChange(t *testing.T) {
 		},
 	}
 	app := &waylandApplication{api: api}
+	installWaylandFrameTestCallbacks(api)
 	win := &waylandWindow{
 		app:         app,
 		surface:     10,
@@ -1690,6 +1956,7 @@ func TestWaylandResizeErrorsStopConfigureCompletion(t *testing.T) {
 				},
 			}
 			app := &waylandApplication{api: api}
+			installWaylandFrameTestCallbacks(api)
 			win := &waylandWindow{
 				app:           app,
 				surface:       1,
@@ -1797,6 +2064,7 @@ func TestWaylandAtomicConfigureResizeSequence(t *testing.T) {
 	}
 
 	app := &waylandApplication{api: api, display: 0x111}
+	installWaylandFrameTestCallbacks(api)
 	win := &waylandWindow{
 		app:        app,
 		surface:    0x222,
@@ -1929,6 +2197,7 @@ func TestWaylandImmediateAtomicResizeAndConfigureAck(t *testing.T) {
 	}
 
 	app := &waylandApplication{api: api, display: 0x111}
+	installWaylandFrameTestCallbacks(api)
 	win := &waylandWindow{
 		app:        app,
 		surface:    mockSurface,
@@ -2113,6 +2382,7 @@ func TestWaylandRestoreToSavedFloatingSize(t *testing.T) {
 	}
 
 	app := &waylandApplication{api: api, display: 0x99}
+	installWaylandFrameTestCallbacks(api)
 	win := &waylandWindow{
 		app:           app,
 		surface:       0x111,
@@ -2208,6 +2478,7 @@ func TestWaylandFractionalScaleTransitionsAcrossOutputs(t *testing.T) {
 	}
 
 	app := &waylandApplication{api: api, display: 0x99}
+	installWaylandFrameTestCallbacks(api)
 	win := &waylandWindow{
 		app:           app,
 		surface:       0x111,

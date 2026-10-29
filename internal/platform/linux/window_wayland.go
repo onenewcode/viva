@@ -295,7 +295,7 @@ func (win *waylandWindow) presentInputFrame(frame platform.Frame) error {
 	if win.state.renderer == nil {
 		return nil
 	}
-	if err := win.presentWithFrameCallback(win.state.renderer.present); err != nil {
+	if err := win.presentWithFrameCallback(win.state.renderer.present, nil); err != nil {
 		return err
 	}
 	win.needsRedraw = false
@@ -319,6 +319,7 @@ func (win *waylandWindow) renderFrame() {
 		win.needsRedraw = true
 		return
 	}
+	redrawRequested := win.needsRedraw
 	win.needsRedraw = false
 
 	ackConfigure := func() {
@@ -342,10 +343,8 @@ func (win *waylandWindow) renderFrame() {
 					win.updateWindowGeometry()
 					win.updateInputRegion()
 					win.updateViewportDestination()
-					win.geometryDirty = false
 				}
-				ackConfigure()
-				err = win.presentWithFrameCallback(win.state.renderer.present)
+				err = win.presentWithFrameCallback(win.state.renderer.present, ackConfigure)
 			}
 		}
 	} else {
@@ -355,9 +354,7 @@ func (win *waylandWindow) renderFrame() {
 			win.updateWindowGeometry()
 			win.updateInputRegion()
 			win.updateViewportDestination()
-			win.geometryDirty = false
 		}
-		ackConfigure()
 		if win.state.renderer != nil {
 			if win.state.config.OnRedraw != nil {
 				var frame platform.Frame
@@ -365,22 +362,26 @@ func (win *waylandWindow) renderFrame() {
 				if err == nil && win.state.router.present != nil {
 					err = win.presentWithFrameCallback(func() error {
 						return win.state.router.present(frame)
-					})
+					}, ackConfigure)
 				}
 			} else {
-				err = win.presentWithFrameCallback(win.state.renderer.present)
+				err = win.presentWithFrameCallback(win.state.renderer.present, ackConfigure)
 			}
 		} else if win.app != nil && win.app.api != nil {
-			win.requestFrameCallback()
-			win.app.api.surfaceCommit(win.surface)
+			err = win.presentWithFrameCallback(func() error {
+				win.app.api.surfaceCommit(win.surface)
+				return nil
+			}, ackConfigure)
 		}
 	}
 	if err != nil {
+		win.needsRedraw = redrawRequested
 		if win.app != nil {
 			win.app.fail(err)
 		}
 		return
 	}
+	win.geometryDirty = false
 	win.forcePresent = false
 	if win.app != nil && win.app.api != nil && win.app.api.displayFlush != nil && win.app.display != 0 {
 		win.app.api.displayFlush(win.app.display)
@@ -568,35 +569,33 @@ func (win *waylandWindow) applyPendingResize() {
 				win.updateWindowGeometry()
 				win.updateInputRegion()
 				win.updateViewportDestination()
-				win.geometryDirty = false
 			}
-			ackConfigure()
-			err = win.presentWithFrameCallback(win.state.renderer.present)
+			err = win.presentWithFrameCallback(win.state.renderer.present, ackConfigure)
 		}
 	} else {
 		if win.geometryDirty {
 			win.updateWindowGeometry()
 			win.updateInputRegion()
 			win.updateViewportDestination()
-			win.geometryDirty = false
 		}
-		ackConfigure()
 		if win.state.renderer != nil {
 			if hasSceneFrame && win.state.router.present != nil {
 				err = win.presentWithFrameCallback(func() error {
 					return win.state.router.present(frame)
-				})
+				}, ackConfigure)
 			} else {
-				err = win.presentWithFrameCallback(win.state.renderer.present)
+				err = win.presentWithFrameCallback(win.state.renderer.present, ackConfigure)
 			}
 		} else {
-			win.requestFrameCallback()
-			if hasSceneFrame && win.state.router.present != nil {
-				err = win.state.router.present(frame)
-			}
-			if err == nil && win.app != nil && win.app.api != nil {
+			err = win.presentWithFrameCallback(func() error {
+				if hasSceneFrame && win.state.router.present != nil {
+					if err := win.state.router.present(frame); err != nil {
+						return err
+					}
+				}
 				win.app.api.surfaceCommit(win.surface)
-			}
+				return nil
+			}, ackConfigure)
 		}
 	}
 	if err != nil {
@@ -605,6 +604,7 @@ func (win *waylandWindow) applyPendingResize() {
 		}
 		return
 	}
+	win.geometryDirty = false
 	if hasSceneFrame {
 		win.needsRedraw = false
 	}
@@ -923,6 +923,8 @@ func (win *waylandWindow) contentOrigin() (x, y int32) {
 	return margin, margin
 }
 
+var newWaylandWindowRenderer = newVulkanRenderer
+
 // openWindow instantiates a new Wayland XDG-Shell window.
 func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindow, error) {
 	if err := validateConfig(config); err != nil {
@@ -1053,7 +1055,7 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 	initialRectangles, initialLabels := textInput.initial()
 
 	surfaceProvider := newWaylandSurfaceProvider(app.display, surface)
-	renderer, err := newVulkanRenderer(surfaceProvider, win.width, win.height, win.displayScale(), config.ClearColor, initialRectangles, initialLabels, win.margin)
+	renderer, err := newWaylandWindowRenderer(surfaceProvider, win.width, win.height, win.displayScale(), config.ClearColor, initialRectangles, initialLabels, win.margin)
 	if err != nil {
 		textInput.close()
 		win.destroy()
@@ -1138,12 +1140,13 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 	win.updateViewportDestination()
 	win.geometryDirty = false
 
-	if win.pendingSerial != 0 {
-		app.api.xdgSurfaceAckConfigure(win.xdgSurface, win.pendingSerial)
-		win.pendingSerial = 0
-	}
-	win.requestFrameCallback()
-	if err := renderer.present(); err != nil {
+	err = win.presentWithFrameCallback(renderer.present, func() {
+		if win.pendingSerial != 0 {
+			app.api.xdgSurfaceAckConfigure(win.xdgSurface, win.pendingSerial)
+			win.pendingSerial = 0
+		}
+	})
+	if err != nil {
 		renderer.close()
 		textInput.close()
 		win.destroy()

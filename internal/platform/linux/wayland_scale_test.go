@@ -132,6 +132,7 @@ func TestWaylandApplyScaleAndViewport(t *testing.T) {
 		},
 	}
 	app := &waylandApplication{api: api}
+	installWaylandFrameTestCallbacks(api)
 
 	// 800x600 logical at 1.0x with margin 24
 	win := &waylandWindow{
@@ -207,7 +208,8 @@ func TestWaylandScaleErrorsStopTransition(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			app := &waylandApplication{}
+			app := &waylandApplication{api: &waylandAPI{}}
+			installWaylandFrameTestCallbacks(app.api)
 			win := &waylandWindow{
 				app:     app,
 				surface: 1,

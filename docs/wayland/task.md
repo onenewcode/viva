@@ -108,13 +108,14 @@
 
 ## Task 6：让 frame callback 分配失败可恢复
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（fake opcode、open/legacy 覆盖、空 Vulkan library 清理及 listener 注册失败恢复均已修复，最终复审通过）
 - 依赖：Task 5 已提交。
 - 目标：新 `wl_callback` 创建失败时不得 ACK、present 或消费事务状态，恢复后仍能建立配对 callback 并提交。
 - 主要文件：
   - `internal/platform/linux/wayland_frame.go`
   - `internal/platform/linux/window_wayland.go`
+  - `internal/platform/linux/vulkan_linux.go`（空 library handle 的安全清理）
   - `internal/platform/linux/wayland_window_test.go`
 - 实施要点：让 callback 获取返回成功/失败；将失败纳入现有错误和事务回滚路径，避免旧 callback 被误销毁。
 - 验收条件：
