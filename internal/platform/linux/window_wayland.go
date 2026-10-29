@@ -104,20 +104,21 @@ type waylandWindow struct {
 	geometryDirty bool
 	lastFrame     ui.Rect
 
-	pendingSerial      uint32
-	pendingWidth       int32
-	pendingHeight      int32
-	configured         bool
-	firstConfigureDone bool
-	framePending       bool
-	frameCallback      uintptr
-	needsRedraw        bool
-	maximized          bool
-	fullscreen         bool
-	resizing           bool
-	activated          bool
-	hidden             bool
-	closed             atomic.Bool
+	pendingSerial        uint32
+	pendingWidth         int32
+	pendingHeight        int32
+	configured           bool
+	firstConfigureDone   bool
+	initialResizePending bool
+	framePending         bool
+	frameCallback        uintptr
+	needsRedraw          bool
+	maximized            bool
+	fullscreen           bool
+	resizing             bool
+	activated            bool
+	hidden               bool
+	closed               atomic.Bool
 
 	pointerX, pointerY float32
 	lastClickTime      uint32
@@ -159,6 +160,16 @@ func (win *waylandWindow) logicalSize() platform.Size {
 		Height: float32(contentSize(win.height, win.margin)) / scale,
 		Scale:  scale,
 	}
+}
+
+func (win *waylandWindow) takeInitialResizeFrame() (platform.Frame, bool, error) {
+	pending := win.initialResizePending
+	win.initialResizePending = false
+	if !pending || win.state == nil || win.state.config.OnResize == nil {
+		return platform.Frame{}, false, nil
+	}
+	frame, err := win.state.config.OnResize(win.logicalSize())
+	return frame, true, err
 }
 
 func (win *waylandWindow) reportFrame() {
@@ -392,6 +403,9 @@ func (win *waylandWindow) applyPendingResize() {
 			newHeight += 2 * win.margin
 		}
 		if newWidth != win.width || newHeight != win.height {
+			if win.state == nil {
+				win.initialResizePending = true
+			}
 			win.width = newWidth
 			win.height = newHeight
 			win.geometryDirty = true
@@ -923,6 +937,25 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 	if (config.DynamicTextInput || config.TextInput != nil) && app != nil {
 		if ime = app.newIME(win, textInput, state.router); ime != nil {
 			state.router.ime = ime
+		}
+	}
+
+	if frame, resized, resizeErr := win.takeInitialResizeFrame(); resized {
+		if resizeErr != nil {
+			renderer.close()
+			textInput.close()
+			win.destroy()
+			return nil, resizeErr
+		}
+		merged, dirty, err := textInput.prepare(frame)
+		if err == nil && dirty {
+			_, err = renderer.apply(merged)
+		}
+		if err != nil {
+			renderer.close()
+			textInput.close()
+			win.destroy()
+			return nil, err
 		}
 	}
 

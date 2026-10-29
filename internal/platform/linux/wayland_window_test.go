@@ -98,6 +98,26 @@ func TestWaylandInitialConfigureGeometryBeforeState(t *testing.T) {
 	if win.pendingSerial != 99 {
 		t.Fatal("initial configure serial was consumed before the first buffer was ready")
 	}
+	if !win.initialResizePending {
+		t.Fatal("initial configure did not request an application resize")
+	}
+
+	var reported platform.Size
+	win.state = &waylandWindowState{
+		win: win,
+		config: platform.Config{
+			OnResize: func(size platform.Size) (platform.Frame, error) {
+				reported = size
+				return platform.Frame{}, nil
+			},
+		},
+	}
+	if _, resized, err := win.takeInitialResizeFrame(); err != nil || !resized {
+		t.Fatalf("initial resize frame: resized=%v err=%v", resized, err)
+	}
+	if reported.Width != 800 || reported.Height != 600 {
+		t.Fatalf("application initial size = %gx%g, want 800x600", reported.Width, reported.Height)
+	}
 }
 
 func TestWaylandConfigureStateTransitions(t *testing.T) {
