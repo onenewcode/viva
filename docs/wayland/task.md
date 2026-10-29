@@ -19,8 +19,8 @@
 
 ## Task 1：统一输入与 focus-loss 的 Wayland 呈现入口
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（独立只读审查）
 - 目标：消除 dirty input/focus-loss frame 绕过 hidden/remap、configure ACK 和 frame callback 事务的直接 present 旁路。
 - 主要文件：
   - `internal/platform/linux/window_wayland.go`

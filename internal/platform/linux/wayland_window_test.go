@@ -541,6 +541,139 @@ func newWaylandPresentTestAPI(acked *[]uint32, frameRequests *int) *waylandAPI {
 	}
 }
 
+func TestWaylandInputPresentUsesFrameTransaction(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{app: app, surface: 1, xdgSurface: 2, configured: true}
+	renderer := newWaylandPresentTestRenderer(400, 300)
+	changed := true
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		applyFrame: func(platform.Frame) (bool, error) { return changed, nil },
+	}
+
+	if err := win.presentInputFrame(platform.Frame{}); err != nil {
+		t.Fatalf("present input frame: %v", err)
+	}
+	if renderer.submissions != 1 || frameRequests != 1 || !win.framePending {
+		t.Fatalf("dirty input submissions=%d frameRequests=%d pending=%v", renderer.submissions, frameRequests, win.framePending)
+	}
+	if win.needsRedraw {
+		t.Fatal("presented input left a redraw request pending")
+	}
+
+	win.onFrameDone(99, 0)
+	changed = false
+	if err := win.presentInputFrame(platform.Frame{}); err != nil {
+		t.Fatalf("present clean input frame: %v", err)
+	}
+	if renderer.submissions != 1 || frameRequests != 1 || win.framePending {
+		t.Fatal("clean input produced another commit or callback")
+	}
+}
+
+func TestWaylandInputPresentWaitsForWindowLifecycle(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		hidden            bool
+		awaitingConfigure bool
+		framePending      bool
+	}{
+		{name: "hidden", hidden: true},
+		{name: "awaiting remap configure", awaitingConfigure: true},
+		{name: "previous frame pending", framePending: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var acked []uint32
+			frameRequests := 0
+			app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+			win := &waylandWindow{
+				app: app, surface: 1, xdgSurface: 2, configured: true,
+				hidden: test.hidden, awaitingConfigure: test.awaitingConfigure,
+				framePending: test.framePending,
+			}
+			renderer := newWaylandPresentTestRenderer(400, 300)
+			win.state = &waylandWindowState{
+				app: app, win: win, renderer: renderer,
+				applyFrame: func(platform.Frame) (bool, error) { return true, nil },
+			}
+
+			if err := win.presentInputFrame(platform.Frame{}); err != nil {
+				t.Fatalf("present input frame: %v", err)
+			}
+			if renderer.submissions != 0 || frameRequests != 0 {
+				t.Fatalf("blocked input committed: submissions=%d frameRequests=%d", renderer.submissions, frameRequests)
+			}
+			if !win.needsRedraw || win.framePending != test.framePending {
+				t.Fatalf("blocked input state needsRedraw=%v framePending=%v", win.needsRedraw, win.framePending)
+			}
+		})
+	}
+}
+
+func TestWaylandFocusLossDoesNotPresentWhileAwaitingRemap(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		activated: true, awaitingConfigure: true,
+	}
+	renderer := newWaylandPresentTestRenderer(400, 300)
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{OnFocusLost: func() (platform.Frame, error) {
+			return platform.Frame{}, nil
+		}},
+		applyFrame: func(platform.Frame) (bool, error) { return true, nil },
+	}
+	win.state.router.present = win.presentInputFrame
+
+	win.handleXdgToplevelConfigure(0, 0, nil)
+	if renderer.submissions != 0 || frameRequests != 0 || len(acked) != 0 {
+		t.Fatalf("focus loss bypassed remap: submissions=%d frameRequests=%d ack=%v", renderer.submissions, frameRequests, acked)
+	}
+	if !win.needsRedraw {
+		t.Fatal("blocked focus-loss update did not request a later redraw")
+	}
+}
+
+func TestWaylandInputPresentHonorsPendingConfigure(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		pendingSerial: 41, forcePresent: true,
+	}
+	renderer := newWaylandPresentTestRenderer(400, 300)
+	applyCalls := 0
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{OnRedraw: func() (platform.Frame, error) {
+			return platform.Frame{}, nil
+		}},
+		applyFrame: func(platform.Frame) (bool, error) {
+			applyCalls++
+			return applyCalls == 1, nil
+		},
+	}
+
+	if err := win.presentInputFrame(platform.Frame{}); err != nil {
+		t.Fatalf("present input with configure: %v", err)
+	}
+	if applyCalls != 2 || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatalf("configure input apply=%d submissions=%d frameRequests=%d", applyCalls, renderer.submissions, frameRequests)
+	}
+	if len(acked) != 1 || acked[0] != 41 || win.pendingSerial != 0 {
+		t.Fatalf("configure ACK = %v, pending serial = %d", acked, win.pendingSerial)
+	}
+	if win.forcePresent || win.needsRedraw {
+		t.Fatal("successful configure input retained pending flags")
+	}
+}
+
 func TestWaylandCleanRedrawDoesNotRequestFrame(t *testing.T) {
 	var acked []uint32
 	frameRequests := 0

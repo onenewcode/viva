@@ -262,6 +262,37 @@ func (win *waylandWindow) updateViewportDestination() {
 	win.app.api.viewportSetDestination(win.viewport, totalLogicalW, totalLogicalH)
 }
 
+// presentInputFrame applies an event-driven scene update, then routes any
+// actual presentation through the same lifecycle gates as a requested redraw.
+func (win *waylandWindow) presentInputFrame(frame platform.Frame) error {
+	if win.closed.Load() || win.surface == 0 || win.state == nil || win.state.applyFrame == nil {
+		return nil
+	}
+	changed, err := win.state.applyFrame(frame)
+	if err != nil || !changed {
+		return err
+	}
+	win.needsRedraw = true
+	if win.hidden || win.awaitingConfigure || win.framePending {
+		return nil
+	}
+	if win.pendingSerial != 0 || win.forcePresent || win.geometryDirty {
+		win.renderFrame()
+		return nil
+	}
+	if win.state.renderer == nil {
+		return nil
+	}
+	if err := win.presentWithFrameCallback(win.state.renderer.present); err != nil {
+		return err
+	}
+	win.needsRedraw = false
+	if win.app != nil && win.app.api != nil && win.app.api.displayFlush != nil && win.app.display != 0 {
+		win.app.api.displayFlush(win.app.display)
+	}
+	return nil
+}
+
 // renderFrame applies new content, then atomically acknowledges and presents
 // only when either the scene changed or a protocol transition requires a frame.
 func (win *waylandWindow) renderFrame() {
@@ -1052,13 +1083,7 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 		pressed: new([256]bool),
 		scale:   win.displayScale,
 		clicks:  &input.ClickCounter{Interval: 500 * time.Millisecond, Distance: 4},
-		present: func(frame platform.Frame) error {
-			changed, err := applyFrame(frame)
-			if err != nil || !changed {
-				return err
-			}
-			return renderer.present()
-		},
+		present: win.presentInputFrame,
 	}
 	if (config.DynamicTextInput || config.TextInput != nil) && app != nil {
 		if ime = app.newIME(win, textInput, state.router); ime != nil {
