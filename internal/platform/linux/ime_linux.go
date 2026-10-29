@@ -89,7 +89,8 @@ func (application *linuxApplication) newIME(win *window, textInput *linuxTextInp
 }
 
 func (app *waylandApplication) newIME(win *waylandWindow, textInput *linuxTextInput, router eventRouter) *linuxIME {
-	return newIMEForHost(app, app.inputMethodBus(), win.contentOrigin, textInput, router)
+	bus, _ := app.inputMethodBus().(*ibus.Bus)
+	return newIMEForHost(app, bus, win.contentOrigin, textInput, router)
 }
 
 // inputMethodBus connects to the daemon the first time a window can take text,

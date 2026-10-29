@@ -11,6 +11,22 @@ import (
 	"github.com/vivaui/viva/internal/platform"
 )
 
+type fakeWaylandInputMethod struct {
+	fd         int
+	err        error
+	pending    int
+	closeCalls int
+}
+
+func (bus *fakeWaylandInputMethod) FD() int         { return bus.fd }
+func (bus *fakeWaylandInputMethod) Err() error      { return bus.err }
+func (bus *fakeWaylandInputMethod) Dispatch() error { return bus.err }
+func (bus *fakeWaylandInputMethod) Close() {
+	bus.closeCalls++
+	bus.pending = 0
+	bus.fd = -1
+}
+
 func TestWaylandAddStatusItemContract(t *testing.T) {
 	app := &waylandApplication{}
 	_, err := app.AddStatusItem(platform.StatusItemConfig{})
@@ -136,6 +152,102 @@ func TestWaylandAtspiReconnectFailureKeepsWatcherPolling(t *testing.T) {
 		if len(app.loop.extraCBs) != 1 || app.loop.extraCBs[0] == nil {
 			t.Fatal("watcher dispatch callback was not restored")
 		}
+	}
+}
+
+func TestWaylandInputMethodFDRemovalUsesRegistration(t *testing.T) {
+	loop := &waylandLoop{}
+	app := &waylandApplication{loop: loop, ibusFD: 44, ibusFDSet: true}
+	loop.addExtraFD(44, func() {})
+
+	app.removeInputMethodFD()
+	if len(loop.extraFDs) != 0 || app.ibusFDSet {
+		t.Fatalf("registered IBus FD survived removal: FDs=%v set=%v", loop.extraFDs, app.ibusFDSet)
+	}
+	app.removeInputMethodFD()
+	if len(loop.extraFDs) != 0 {
+		t.Fatal("repeated IBus removal changed the poll set")
+	}
+}
+
+func TestWaylandCloseReleasesInputMethod(t *testing.T) {
+	loop := &waylandLoop{}
+	bus := &fakeWaylandInputMethod{fd: 44, pending: 2}
+	app := &waylandApplication{loop: loop, ibus: bus, ibusFD: 44, ibusFDSet: true}
+	loop.addExtraFD(44, func() {})
+
+	app.close()
+	if bus.closeCalls != 1 || bus.pending != 0 {
+		t.Fatalf("IBus close calls=%d pending=%d", bus.closeCalls, bus.pending)
+	}
+	if len(loop.extraFDs) != 0 || app.ibus != nil || app.ibusFDSet {
+		t.Fatalf("IBus teardown left state: FDs=%v bus=%v FDSet=%v", loop.extraFDs, app.ibus != nil, app.ibusFDSet)
+	}
+}
+
+func TestWaylandAtspiServeAfterSelfClose(t *testing.T) {
+	loop := &waylandLoop{}
+	conn := &fakeAtspiTransport{fd: 42}
+	bridge := newAtspiBridge(conn)
+	host := &atspiHost{bridge: bridge}
+	app := &waylandApplication{loop: loop, atspi: host}
+	app.addAtspiFD(host)
+	bridge.close()
+
+	app.serveAtspi()
+	if host.bridge != nil || len(loop.extraFDs) != 0 || host.waylandFDSet {
+		t.Fatalf("self-closed AT-SPI state bridge=%v FDs=%v FDSet=%v", host.bridge != nil, loop.extraFDs, host.waylandFDSet)
+	}
+	// A second readiness notification is a no-op, not another failure dispatch.
+	app.serveAtspi()
+}
+
+func TestWaylandAtspiReplyFailuresRemoveFDAndStopBatch(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		path          string
+		replyErr      error
+		replyErrorErr error
+	}{
+		{name: "normal reply", path: atspiRootPath, replyErr: errors.New("reply write failed")},
+		{name: "error reply", path: "/missing", replyErrorErr: errors.New("error reply write failed")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			loop := &waylandLoop{}
+			call := &dbus.Message{Type: dbus.TypeCall, Path: test.path, Interface: atspiIntrospect, Member: "Introspect"}
+			conn := &fakeAtspiTransport{
+				messages: []*dbus.Message{call, call}, fd: 42,
+				replyErr: test.replyErr, replyErrorErr: test.replyErrorErr,
+			}
+			host := &atspiHost{bridge: newAtspiBridge(conn)}
+			app := &waylandApplication{loop: loop, atspi: host}
+			app.addAtspiFD(host)
+
+			app.serveAtspi()
+			if conn.replyCalls+conn.replyErrorCalls != 1 {
+				t.Fatalf("batch dispatched %d replies, want 1", conn.replyCalls+conn.replyErrorCalls)
+			}
+			if host.bridge != nil || len(loop.extraFDs) != 0 || host.waylandFDSet {
+				t.Fatalf("failed reply left AT-SPI registered: bridge=%v FDs=%v FDSet=%v", host.bridge != nil, loop.extraFDs, host.waylandFDSet)
+			}
+		})
+	}
+}
+
+func TestWaylandAtspiFDRemovalAfterConnectionClose(t *testing.T) {
+	loop := &waylandLoop{}
+	app := &waylandApplication{loop: loop}
+	host := &atspiHost{watcher: &dbus.Conn{}}
+	app.addAtspiFD(host)
+	if !host.waylandFDSet || len(loop.extraFDs) != 1 {
+		t.Fatalf("AT-SPI registration FDs=%v set=%v", loop.extraFDs, host.waylandFDSet)
+	}
+
+	// A failed service may clear its connection before the application cleans up.
+	host.watcher = nil
+	app.removeAtspiFD(host)
+	if len(loop.extraFDs) != 0 || host.waylandFDSet {
+		t.Fatalf("closed AT-SPI FD survived removal: FDs=%v set=%v", loop.extraFDs, host.waylandFDSet)
 	}
 }
 

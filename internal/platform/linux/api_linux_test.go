@@ -991,6 +991,45 @@ func TestWaylandLoopPollErrorStopsUnlessInterrupted(t *testing.T) {
 	}
 }
 
+func TestWaylandLoopExtraFDErrorsAreOneShot(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		revents int16
+	}{
+		{name: "POLLERR", revents: 0x0008},
+		{name: "POLLHUP", revents: 0x0010},
+		{name: "POLLNVAL", revents: 0x0020},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			callbacks := 0
+			loop := &waylandLoop{
+				libc: &libcAPI{poll: func(fds *pollFD, nfds uintptr, _ int32) int32 {
+					slice := unsafe.Slice(fds, int(nfds))
+					if len(slice) > 2 {
+						slice[2].REvents = test.revents
+						return 1
+					}
+					return 0
+				}},
+				wayland: &waylandAPI{}, waylandFD: 10, wakeFD: 11,
+			}
+			loop.running.Store(true)
+			loop.rebuildPollFDs()
+			loop.addExtraFD(42, func() { callbacks++ })
+
+			if !loop.step(0) {
+				t.Fatal("extra FD failure stopped the whole Wayland loop")
+			}
+			if callbacks != 1 || len(loop.extraFDs) != 0 || len(loop.pollFDs) != 2 {
+				t.Fatalf("failed source callbacks=%d extraFDs=%v pollFDs=%d", callbacks, loop.extraFDs, len(loop.pollFDs))
+			}
+			if !loop.step(0) || callbacks != 1 {
+				t.Fatal("failed source remained registered or dispatched twice")
+			}
+		})
+	}
+}
+
 func TestWaylandLoopFlushBackpressureUsesPollOut(t *testing.T) {
 	errno := syscall.Errno(0)
 	flushes := 0

@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	efdCloexec  = 0x80000
-	efdNonblock = 0x800
+	efdCloexec    = 0x80000
+	efdNonblock   = 0x800
+	pollErrorBits = 0x0008 | 0x0010 | 0x0020 // POLLERR | POLLHUP | POLLNVAL
 )
 
 type waylandCommand func()
@@ -319,10 +320,18 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 		}
 	}
 
-	// Snapshot ready extra callbacks
+	// Snapshot ready extra callbacks and failed registrations.
 	var readyCBs []func()
+	var failedFDs []int32
 	for i, cb := range l.extraCBs {
-		if len(l.pollFDs) > 2+i && l.pollFDs[2+i].REvents&1 != 0 && cb != nil {
+		if len(l.pollFDs) <= 2+i {
+			continue
+		}
+		revents := l.pollFDs[2+i].REvents
+		if revents&pollErrorBits != 0 {
+			failedFDs = append(failedFDs, l.extraFDs[i])
+		}
+		if revents&(1|pollErrorBits) != 0 && cb != nil {
 			readyCBs = append(readyCBs, cb)
 		}
 	}
@@ -330,6 +339,12 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 	waylandIn := len(l.pollFDs) > 0 && l.pollFDs[0].REvents&1 != 0
 	waylandErr := len(l.pollFDs) > 0 && l.pollFDs[0].REvents&(0x0008|0x0010) != 0
 	l.pollMu.Unlock()
+
+	// Failed sources are one-shot: unregister before dispatch so a closed FD
+	// cannot immediately trigger poll again while the service cleans up.
+	for _, fd := range failedFDs {
+		l.removeExtraFD(fd)
+	}
 
 	// 5. Execute commands and extra callbacks with pollMu unlocked!
 	if woken {

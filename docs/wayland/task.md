@@ -56,8 +56,8 @@
 
 ## Task 3：收敛 IBus/AT-SPI FD 生命周期并处理异常 readiness
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（首轮 FAIL 的 AT-SPI 自关闭、批量回复失败和关闭测试缺口已修复，复审通过）
 - 目标：异常路径先关闭连接时也能移除原注册 FD，消除 POLLNVAL 忙循环，并补齐正常 IBus 关闭。
 - 主要文件：
   - `internal/platform/linux/wayland_loop.go`

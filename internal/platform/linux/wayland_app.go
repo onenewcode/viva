@@ -20,6 +20,13 @@ import (
 
 var activeWaylandApp atomic.Pointer[waylandApplication]
 
+type waylandInputMethod interface {
+	FD() int
+	Err() error
+	Dispatch() error
+	Close()
+}
+
 // waylandApplication coordinates the Wayland client display connection,
 // event loop, and window lifecycle.
 type waylandApplication struct {
@@ -70,7 +77,9 @@ type waylandApplication struct {
 	status        *statusNotifier
 	desktop       *desktopWatch
 	desktopFailed bool
-	ibus          *ibus.Bus
+	ibus          waylandInputMethod
+	ibusFD        int32
+	ibusFDSet     bool
 	ibusTried     bool
 	atspi         *atspiHost
 }
@@ -441,17 +450,29 @@ func (app *waylandApplication) fail(err error) {
 	app.closeAll()
 }
 
-func (app *waylandApplication) inputMethodBus() *ibus.Bus {
+func (app *waylandApplication) inputMethodBus() waylandInputMethod {
 	if !app.ibusTried {
 		app.ibusTried = true
 		if bus, err := ibus.Dial(); err == nil {
 			app.ibus = bus
 			if app.loop != nil {
-				app.loop.addExtraFD(int32(bus.FD()), app.serveInputMethod)
+				app.ibusFD = int32(bus.FD())
+				app.ibusFDSet = true
+				app.loop.addExtraFD(app.ibusFD, app.serveInputMethod)
 			}
 		}
 	}
 	return app.ibus
+}
+
+func (app *waylandApplication) removeInputMethodFD() {
+	if app.ibusFDSet {
+		if app.loop != nil {
+			app.loop.removeExtraFD(app.ibusFD)
+		}
+		app.ibusFDSet = false
+	}
+	app.ibusFD = 0
 }
 
 func (app *waylandApplication) serveInputMethod() {
@@ -465,9 +486,7 @@ func (app *waylandApplication) checkInputMethod() {
 	if app.ibus == nil || app.ibus.Err() == nil {
 		return
 	}
-	if app.loop != nil {
-		app.loop.removeExtraFD(int32(app.ibus.FD()))
-	}
+	app.removeInputMethodFD()
 	app.ibus = nil
 	app.mu.Lock()
 	defer app.mu.Unlock()
@@ -530,9 +549,8 @@ func (app *waylandApplication) close() {
 	app.closeDesktop()
 	app.atspiClose()
 	if app.ibus != nil {
-		if app.loop != nil {
-			app.loop.removeExtraFD(int32(app.ibus.FD()))
-		}
+		app.removeInputMethodFD()
+		app.ibus.Close()
 		app.ibus = nil
 	}
 	app.closeAll()

@@ -15,7 +15,11 @@ import (
 type atspiHost struct {
 	bridge  *atspiBridge
 	watcher *dbus.Conn
-	windows map[any]*atspiWindow
+	// waylandFD is the descriptor registered with the Wayland loop. Keep it
+	// after a service closes its connection so the loop can unregister it.
+	waylandFD    int32
+	waylandFDSet bool
+	windows      map[any]*atspiWindow
 	// latest is the newest nodes of each window while nothing is connected: the
 	// application's own slice, kept by header, valid on this thread.
 	latest map[any][]platform.AccessibilityNode
@@ -293,6 +297,30 @@ func (app *waylandApplication) atspiOpened(state *waylandWindowState) {
 	}
 }
 
+func (app *waylandApplication) addAtspiFD(host *atspiHost) {
+	if app.loop == nil || host == nil || host.waylandFDSet {
+		return
+	}
+	fd := int32(host.fd())
+	if fd < 0 {
+		return
+	}
+	app.loop.addExtraFD(fd, app.serveAtspi)
+	host.waylandFD = fd
+	host.waylandFDSet = true
+}
+
+func (app *waylandApplication) removeAtspiFD(host *atspiHost) {
+	if host == nil {
+		return
+	}
+	if host.waylandFDSet && app.loop != nil {
+		app.loop.removeExtraFD(host.waylandFD)
+	}
+	host.waylandFD = 0
+	host.waylandFDSet = false
+}
+
 func (host *atspiHost) probeForWayland(app *waylandApplication) {
 	session, err := dbus.DialSession()
 	if err != nil {
@@ -318,9 +346,7 @@ func (host *atspiHost) probeForWayland(app *waylandApplication) {
 		return
 	}
 	host.watcher = session
-	if app.loop != nil {
-		app.loop.addExtraFD(int32(session.FD()), app.serveAtspi)
-	}
+	app.addAtspiFD(host)
 }
 
 func (host *atspiHost) connectWayland(app *waylandApplication, address string) bool {
@@ -334,9 +360,7 @@ func (host *atspiHost) connectWayland(app *waylandApplication, address string) b
 		return false
 	}
 	host.bridge = bridge
-	if app.loop != nil {
-		app.loop.addExtraFD(int32(conn.FD()), app.serveAtspi)
-	}
+	app.addAtspiFD(host)
 	app.mu.Lock()
 	windows := append([]*waylandWindowState(nil), app.windows...)
 	app.mu.Unlock()
@@ -411,14 +435,7 @@ func (app *waylandApplication) atspiClose() {
 	if host == nil {
 		return
 	}
-	if app.loop != nil {
-		if host.bridge != nil && host.bridge.conn != nil {
-			app.loop.removeExtraFD(int32(host.bridge.conn.FD()))
-		}
-		if host.watcher != nil {
-			app.loop.removeExtraFD(int32(host.watcher.FD()))
-		}
-	}
+	app.removeAtspiFD(host)
 	host.dropBridge()
 	host.dropWatcher()
 	app.atspi = nil
@@ -428,17 +445,13 @@ func (app *waylandApplication) connectAtspi(host *atspiHost, address string) {
 	if host == nil {
 		return
 	}
-	if app.loop != nil && host.watcher != nil {
-		app.loop.removeExtraFD(int32(host.watcher.FD()))
-	}
+	app.removeAtspiFD(host)
 	if host.connectWayland(app, address) {
 		host.dropWatcher()
 		return
 	}
 	// Keep listening for the next PropertiesChanged after a failed reconnect.
-	if app.loop != nil && host.watcher != nil {
-		app.loop.addExtraFD(int32(host.watcher.FD()), app.serveAtspi)
-	}
+	app.addAtspiFD(host)
 }
 
 func (app *waylandApplication) serveAtspi() {
@@ -449,17 +462,13 @@ func (app *waylandApplication) serveAtspi() {
 	switch {
 	case host.bridge != nil:
 		if err := host.bridge.serve(); err != nil || host.bridge.send == nil {
-			if app.loop != nil && host.bridge.conn != nil {
-				app.loop.removeExtraFD(int32(host.bridge.conn.FD()))
-			}
+			app.removeAtspiFD(host)
 			host.dropBridge()
 		}
 	case host.watcher != nil:
 		messages, err := host.watcher.Receive()
 		if err != nil {
-			if app.loop != nil && host.watcher != nil {
-				app.loop.removeExtraFD(int32(host.watcher.FD()))
-			}
+			app.removeAtspiFD(host)
 			host.dropWatcher()
 			return
 		}
