@@ -19,11 +19,11 @@ import (
 )
 
 var (
-	windowListenersOnce     sync.Once
-	rawXdgSurfaceListener   [1]uintptr
-	rawXdgToplevelListener  [4]uintptr
-	rawDecorationListener   [1]uintptr
-	pinnerWindowListeners   runtime.Pinner
+	windowListenersOnce    sync.Once
+	rawXdgSurfaceListener  [1]uintptr
+	rawXdgToplevelListener [4]uintptr
+	rawDecorationListener  [1]uintptr
+	pinnerWindowListeners  runtime.Pinner
 )
 
 func initWindowListeners() {
@@ -374,7 +374,7 @@ func (win *waylandWindow) handleXdgToplevelConfigure(width, height int32, states
 }
 
 func (win *waylandWindow) applyPendingResize() {
-	if win.closed.Load() || win.surface == 0 || win.state == nil {
+	if win.closed.Load() || win.surface == 0 {
 		return
 	}
 	win.needsRedraw = false
@@ -401,6 +401,12 @@ func (win *waylandWindow) applyPendingResize() {
 			win.height = newHeight
 			win.geometryDirty = true
 		}
+	}
+
+	// Before the renderer exists, retain the compositor's geometry for openWindow.
+	// Its initial present acknowledges the serial together with the first buffer.
+	if win.state == nil {
+		return
 	}
 
 	// Always acknowledge configure BEFORE presenting the new geometry/buffer.

@@ -75,6 +75,31 @@ func TestWaylandWindowModesGeometryAndInputRegion(t *testing.T) {
 	}
 }
 
+func TestWaylandInitialConfigureGeometryBeforeState(t *testing.T) {
+	win := &waylandWindow{
+		surface:       1,
+		xdgSurface:    2,
+		width:         400,
+		height:        300,
+		savedLogicalW: 400,
+		savedLogicalH: 300,
+	}
+	win.storeScale(1)
+
+	win.handleXdgToplevelConfigure(800, 600, nil)
+	win.handleXdgSurfaceConfigure(99)
+
+	if win.width != 800 || win.height != 600 {
+		t.Fatalf("initial configure geometry = %dx%d, want 800x600", win.width, win.height)
+	}
+	if !win.geometryDirty {
+		t.Fatal("initial configure did not mark the corrected geometry dirty")
+	}
+	if win.pendingSerial != 99 {
+		t.Fatal("initial configure serial was consumed before the first buffer was ready")
+	}
+}
+
 func TestWaylandConfigureStateTransitions(t *testing.T) {
 	win := &waylandWindow{
 		width:       500,
@@ -940,4 +965,3 @@ func TestWaylandFractionalScaleTransitionsAcrossOutputs(t *testing.T) {
 		}
 	}
 }
-
