@@ -271,6 +271,10 @@ func (l *waylandLoop) flush() bool {
 }
 
 func (l *waylandLoop) step(timeoutMs int32) bool {
+	return l.stepWithTimeout(func() int32 { return timeoutMs })
+}
+
+func (l *waylandLoop) stepWithTimeout(timeout func() int32) bool {
 	if !l.running.Load() {
 		return false
 	}
@@ -301,6 +305,10 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 	l.pollMu.Unlock()
 
 	if l.libc != nil && l.libc.poll != nil {
+		timeoutMs := int32(-1)
+		if timeout != nil {
+			timeoutMs = timeout()
+		}
 		ret := l.libc.poll(pfd, nfds, timeoutMs)
 		if ret < 0 {
 			errno := l.libc.errno()

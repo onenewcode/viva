@@ -64,9 +64,11 @@ func TestWaylandKeyboardKeyTranslation(t *testing.T) {
 }
 
 func TestWaylandKeyboardRepeat(t *testing.T) {
+	now := time.Unix(100, 0)
 	app := &waylandApplication{
 		repeatRate:  25, // 25 Hz = 40ms interval
-		repeatDelay: 50, // 50ms delay
+		repeatDelay: 50,
+		now:         func() time.Time { return now },
 	}
 	win := &waylandWindow{
 		app:     app,
@@ -74,7 +76,6 @@ func TestWaylandKeyboardRepeat(t *testing.T) {
 	}
 
 	var repeatCount atomic.Int32
-
 	state := &waylandWindowState{
 		app: app,
 		win: win,
@@ -87,40 +88,47 @@ func TestWaylandKeyboardRepeat(t *testing.T) {
 			},
 		},
 	}
-	state.router = eventRouter{
-		config: state.config,
-	}
+	state.router = eventRouter{config: state.config}
 	win.state = state
 	app.keyboardFocus = win
 	app.windows = []*waylandWindowState{state}
 
-	// Set loop waker so repeated keys post into synchronous call
-	loop := &waylandLoop{}
-	app.loop = loop
-
-	// Press Enter (evdev scancode 28)
 	app.handleKey(10, 100, 28, 1)
-
-	// Wait for repeat timer + ticker (50ms delay + ~100ms)
-	time.Sleep(150 * time.Millisecond)
-
-	// Drain posted commands
-	loop.drainCommands()
-
-	if repeatCount.Load() == 0 {
-		t.Fatal("expected key repeat to generate repeat events")
+	if timeout := app.pollTimeout(now); timeout != 50 {
+		t.Fatalf("initial repeat timeout = %dms, want 50ms", timeout)
+	}
+	app.runKeyRepeat(now.Add(49 * time.Millisecond))
+	if repeatCount.Load() != 0 {
+		t.Fatal("repeat fired before its initial delay")
 	}
 
-	// Release key
+	now = now.Add(50 * time.Millisecond)
+	app.runKeyRepeat(now)
+	if repeatCount.Load() != 1 {
+		t.Fatalf("first repeat count = %d, want 1", repeatCount.Load())
+	}
+	if want := now.Add(40 * time.Millisecond); !app.repeatDeadline.Equal(want) {
+		t.Fatalf("next repeat deadline = %v, want %v", app.repeatDeadline, want)
+	}
+
+	now = now.Add(500 * time.Millisecond)
+	app.runKeyRepeat(now)
+	app.runKeyRepeat(now)
+	if repeatCount.Load() != 2 {
+		t.Fatalf("late repeat catch-up count = %d, want exactly one new event", repeatCount.Load())
+	}
+	if !app.repeatDeadline.After(now) {
+		t.Fatalf("late repeat deadline %v did not move beyond %v", app.repeatDeadline, now)
+	}
+
 	app.handleKey(11, 250, 28, 0)
-	curr := repeatCount.Load()
-
-	// Wait more and ensure no more repeat events
-	time.Sleep(80 * time.Millisecond)
-	loop.drainCommands()
-
-	if repeatCount.Load() != curr {
-		t.Fatalf("key repeat continued after key release: was %d, now %d", curr, repeatCount.Load())
+	current := repeatCount.Load()
+	app.runKeyRepeat(now.Add(time.Second))
+	if repeatCount.Load() != current {
+		t.Fatalf("key repeat continued after release: was %d, now %d", current, repeatCount.Load())
+	}
+	if !app.repeatDeadline.IsZero() {
+		t.Fatal("release retained a repeat deadline")
 	}
 }
 
@@ -143,10 +151,12 @@ func TestWaylandKeyRepeatQueuedAfterDestroyIsIgnored(t *testing.T) {
 	app.windows = []*waylandWindowState{state}
 	app.keyboardFocus = win
 	app.repeatScancode = 28
+	app.repeatGeneration = 1
+	app.repeatWindow = win
 
 	win.Close()
 	app.post(func() {
-		app.dispatchKeyRepeat(win, platform.KeyEvent{Repeat: true}, 28)
+		app.dispatchKeyRepeat(win, platform.KeyEvent{Repeat: true}, 28, 1)
 	})
 	app.loop.drainCommands()
 
@@ -283,7 +293,7 @@ func TestWaylandKeyboardFocusAndModifiers(t *testing.T) {
 	}
 }
 
-func TestWaylandKeyRepeatGoroutineCleanupAndIndependentRelease(t *testing.T) {
+func TestWaylandKeyRepeatCleanupAndIndependentRelease(t *testing.T) {
 	app := &waylandApplication{
 		repeatRate:  50,
 		repeatDelay: 50,
@@ -292,11 +302,15 @@ func TestWaylandKeyRepeatGoroutineCleanupAndIndependentRelease(t *testing.T) {
 		app:     app,
 		surface: 203,
 	}
+	repeatEvents := 0
 	state := &waylandWindowState{
 		app: app,
 		win: win,
 		config: platform.Config{
 			OnKey: func(event platform.KeyEvent) (platform.Frame, error) {
+				if event.Repeat {
+					repeatEvents++
+				}
 				return platform.Frame{}, nil
 			},
 		},
@@ -306,42 +320,73 @@ func TestWaylandKeyRepeatGoroutineCleanupAndIndependentRelease(t *testing.T) {
 	app.windows = []*waylandWindowState{state}
 	app.keyboardFocus = win
 
-	// Press key A (scancode 30)
 	app.handleKey(1, 100, 30, 1)
-
 	app.mu.Lock()
-	if app.repeatScancode != 30 {
+	generation := app.repeatGeneration
+	if app.repeatScancode != 30 || app.repeatWindow != win || app.repeatDeadline.IsZero() {
 		app.mu.Unlock()
-		t.Fatalf("expected repeatScancode = 30, got %d", app.repeatScancode)
+		t.Fatal("key press did not initialize main-loop repeat state")
 	}
-	stopCh := app.repeatStop
 	app.mu.Unlock()
 
-	// Release a different key (scancode 42 - Shift): should NOT stop repeat of key 30
+	// Releasing a different key must not stop the active repeat generation.
 	app.handleKey(2, 120, 42, 0)
-
 	app.mu.Lock()
-	if app.repeatScancode != 30 {
+	if app.repeatScancode != 30 || app.repeatGeneration != generation {
 		app.mu.Unlock()
-		t.Fatalf("release of different key stopped repeat: expected 30, got %d", app.repeatScancode)
+		t.Fatal("release of a different key changed the repeat generation")
 	}
 	app.mu.Unlock()
 
-	// Release repeating key 30: should stop repeat and close stopCh
 	app.handleKey(3, 140, 30, 0)
-
 	app.mu.Lock()
-	if app.repeatScancode != 0 {
+	if app.repeatScancode != 0 || app.repeatWindow != nil || !app.repeatDeadline.IsZero() || app.repeatGeneration == generation {
 		app.mu.Unlock()
-		t.Fatalf("expected repeatScancode = 0, got %d", app.repeatScancode)
+		t.Fatal("releasing the repeating key did not invalidate its state")
 	}
 	app.mu.Unlock()
 
-	// Verify stopCh was closed so goroutine exits
-	select {
-	case <-stopCh:
-		// success: channel closed
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("expected repeatStop channel to be closed")
+	app.dispatchKeyRepeat(win, platform.KeyEvent{Repeat: true}, 30, generation)
+	if repeatEvents != 0 {
+		t.Fatal("released repeat generation delivered an event")
+	}
+}
+
+func TestWaylandKeyRepeatRejectsPreviousPressGeneration(t *testing.T) {
+	app := &waylandApplication{repeatRate: 50, repeatDelay: 50}
+	win := &waylandWindow{app: app, surface: 205}
+	repeatEvents := 0
+	state := &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			OnKey: func(event platform.KeyEvent) (platform.Frame, error) {
+				if event.Repeat {
+					repeatEvents++
+				}
+				return platform.Frame{}, nil
+			},
+		},
+	}
+	state.router = eventRouter{config: state.config}
+	win.state = state
+	app.keyboardFocus = win
+	app.windows = []*waylandWindowState{state}
+
+	app.handleKey(1, 100, 30, 1)
+	oldGeneration := app.repeatGeneration
+	app.handleKey(2, 120, 30, 0)
+	app.handleKey(3, 140, 30, 1)
+	if app.repeatGeneration == oldGeneration {
+		t.Fatal("same-key press reused the previous generation")
+	}
+
+	app.dispatchKeyRepeat(win, platform.KeyEvent{Repeat: true}, 30, oldGeneration)
+	if repeatEvents != 0 {
+		t.Fatal("previous press generation delivered after same-key re-press")
+	}
+	app.dispatchKeyRepeat(win, platform.KeyEvent{Repeat: true}, 30, app.repeatGeneration)
+	if repeatEvents != 1 {
+		t.Fatalf("current press generation delivered %d events, want 1", repeatEvents)
 	}
 }

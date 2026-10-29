@@ -143,12 +143,13 @@
 
 ## Task 8：将 IBus 超时和键盘 repeat 纳入主循环调度
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（独立只读审查）
 - 依赖：Task 3、Task 7 已提交。
 - 目标：Wayland 使用最近 deadline 驱动 poll timeout，实际执行 IBus Expire，并以主循环按键代际替代 repeat ticker goroutine。
 - 主要文件：
   - `internal/platform/linux/wayland_app.go`
+  - `internal/platform/linux/wayland_loop.go`
   - `internal/platform/linux/wayland_keyboard.go`
   - `internal/platform/linux/wayland_keyboard_test.go`
   - `internal/platform/linux/wayland_app_test.go`
