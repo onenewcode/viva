@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -21,12 +22,13 @@ const (
 type waylandCommand func()
 
 type libcAPI struct {
-	library uintptr
-	poll    func(*pollFD, uintptr, int32) int32
-	eventfd func(uint32, int32) int32
-	read    func(int32, unsafe.Pointer, uintptr) int
-	write   func(int32, unsafe.Pointer, uintptr) int
-	close   func(int32) int32
+	library       uintptr
+	poll          func(*pollFD, uintptr, int32) int32
+	eventfd       func(uint32, int32) int32
+	read          func(int32, unsafe.Pointer, uintptr) int
+	write         func(int32, unsafe.Pointer, uintptr) int
+	close         func(int32) int32
+	errnoLocation func() *int32
 }
 
 func loadLibc() (*libcAPI, error) {
@@ -40,7 +42,15 @@ func loadLibc() (*libcAPI, error) {
 	purego.RegisterLibFunc(&api.read, library, "read")
 	purego.RegisterLibFunc(&api.write, library, "write")
 	purego.RegisterLibFunc(&api.close, library, "close")
+	purego.RegisterLibFunc(&api.errnoLocation, library, "__errno_location")
 	return api, nil
+}
+
+func (c *libcAPI) errno() syscall.Errno {
+	if c == nil || c.errnoLocation == nil {
+		return 0
+	}
+	return syscall.Errno(*c.errnoLocation())
 }
 
 func (c *libcAPI) teardown() {
@@ -220,7 +230,11 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 	if l.libc != nil && l.libc.poll != nil {
 		ret := l.libc.poll(pfd, nfds, timeoutMs)
 		if ret < 0 {
-			return l.running.Load()
+			if l.libc.errno() == syscall.EINTR {
+				return l.running.Load()
+			}
+			l.running.Store(false)
+			return false
 		}
 	}
 

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -750,6 +751,50 @@ func TestWaylandLoopWaker(t *testing.T) {
 	}
 	if elapsed > 100*time.Millisecond {
 		t.Fatalf("waker took too long: %v", elapsed)
+	}
+}
+
+func TestWaylandLoopPollErrorStopsUnlessInterrupted(t *testing.T) {
+	tests := []struct {
+		name    string
+		errno   syscall.Errno
+		running bool
+	}{
+		{name: "EINTR retries", errno: syscall.EINTR, running: true},
+		{name: "EBADF stops", errno: syscall.EBADF},
+		{name: "EINVAL stops", errno: syscall.EINVAL},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			errno := int32(test.errno)
+			calls := 0
+			loop := &waylandLoop{
+				libc: &libcAPI{
+					poll: func(fds *pollFD, nfds uintptr, timeout int32) int32 {
+						calls++
+						return -1
+					},
+					errnoLocation: func() *int32 { return &errno },
+				},
+				waylandFD: 10,
+				wakeFD:    11,
+			}
+			loop.running.Store(true)
+			loop.rebuildPollFDs()
+
+			if got := loop.step(0); got != test.running {
+				t.Fatalf("step returned %v after %v, want %v", got, test.errno, test.running)
+			}
+			if loop.running.Load() != test.running {
+				t.Fatalf("running = %v after %v, want %v", loop.running.Load(), test.errno, test.running)
+			}
+			if loop.step(0) != test.running {
+				t.Fatalf("second step disagrees about whether the loop remains active")
+			}
+			if calls != 1 && !test.running {
+				t.Fatalf("stopped loop called poll %d times", calls)
+			}
+		})
 	}
 }
 
