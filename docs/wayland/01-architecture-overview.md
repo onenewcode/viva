@@ -2,7 +2,7 @@
 
 - 更新日期：2026-10-29
 - 适用分支：`docs/linux-render-refresh-flicker`
-- 当前实现复核：[09-current-implementation-review.md](09-current-implementation-review.md)
+- 实施与审查记录：[task.md](task.md)
 - 文档性质：架构目标、协议约束和迁移方向；不代表全部能力已经实现或验收
 
 ## 1. 架构目标与判断原则
@@ -392,7 +392,7 @@ Vulkan fake 至少跟踪：
 | 托盘/后台常驻 | 未完整支持 | 先明确 keep-alive 产品契约 |
 | Linux 平台测试持续执行 | 当前 CI 缺少 | 增加真正运行平台测试的 CI 任务 |
 
-详细代码问题见 [09-current-implementation-review.md](09-current-implementation-review.md)。
+各任务的实现、回归测试、独立 review 和提交状态见 [task.md](task.md)。
 
 ## 10. 推荐迁移顺序
 

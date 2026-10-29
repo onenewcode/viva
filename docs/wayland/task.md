@@ -4,8 +4,6 @@
 - 架构基线提交：`f90e3bc`（`docs(wayland): define protocol-correct target architecture`）
 - 架构 gate：详细审查发现的问题已修正；连续两轮独立 gate review 均为 PASS
 - 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
-- 未解决清单：[08-linux-wayland-review-findings.md](08-linux-wayland-review-findings.md)
-- 完整审查：[09-current-implementation-review.md](09-current-implementation-review.md)
 
 ## 执行规则
 
