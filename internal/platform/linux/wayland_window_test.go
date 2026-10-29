@@ -815,7 +815,7 @@ func TestWaylandCleanScalePresentsOnceWithoutRedraw(t *testing.T) {
 	}
 }
 
-func TestWaylandPendingResizePreservesRedraw(t *testing.T) {
+func TestWaylandPendingResizePresentsLatestRedraw(t *testing.T) {
 	var acked []uint32
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
@@ -849,19 +849,65 @@ func TestWaylandPendingResizePreservesRedraw(t *testing.T) {
 	if win.resizeDeferred || renderer.submissions != 1 || frameRequests != 1 {
 		t.Fatalf("deferred resize submissions=%d frameRequests=%d deferred=%v", renderer.submissions, frameRequests, win.resizeDeferred)
 	}
-	if len(acked) != 1 || acked[0] != 42 || redraws != 0 {
+	if len(acked) != 1 || acked[0] != 42 || redraws != 1 {
 		t.Fatalf("deferred resize ack=%v redraws=%d", acked, redraws)
 	}
-	if !win.needsRedraw {
-		t.Fatal("resize without OnResize consumed the queued redraw")
+	if win.needsRedraw {
+		t.Fatal("latest resize redraw remained pending after its present")
 	}
 
 	win.onFrameDone(99, 0)
-	if redraws != 1 || renderer.submissions != 2 || frameRequests != 2 {
-		t.Fatalf("queued redraw=%d submissions=%d frameRequests=%d", redraws, renderer.submissions, frameRequests)
+	if redraws != 1 || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatal("completed latest resize caused a duplicate redraw or present")
 	}
-	if win.needsRedraw {
-		t.Fatal("latest content remained pending after its frame completed")
+}
+
+func TestWaylandContinuousDeferredResizeDoesNotStarveRedraw(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		framePending: true, frameCallback: 99,
+	}
+	win.storeScale(1)
+	renderer := newWaylandPresentTestRenderer(800, 600)
+	redraws := 0
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{OnRedraw: func() (platform.Frame, error) {
+			redraws++
+			return platform.Frame{}, nil
+		}},
+		applyFrame: func(platform.Frame) (bool, error) { return true, nil },
+	}
+
+	for i := 0; i < 3; i++ {
+		width := int32(800 + i*100)
+		win.needsRedraw = true
+		win.handleXdgToplevelConfigure(width, 600, nil)
+		win.handleXdgSurfaceConfigure(uint32(42 + i))
+		renderer.width = uint32(width)
+		if !win.resizeDeferred {
+			t.Fatalf("resize %d was not deferred by the old callback", i)
+		}
+
+		win.onFrameDone(99, 0)
+		if redraws != i+1 || renderer.submissions != uint64(i+1) || frameRequests != i+1 {
+			t.Fatalf("resize %d redraw=%d submissions=%d requests=%d", i, redraws, renderer.submissions, frameRequests)
+		}
+		if win.needsRedraw || win.width != uint32(width) {
+			t.Fatalf("resize %d left redraw=%v width=%d", i, win.needsRedraw, win.width)
+		}
+	}
+	if len(acked) != 3 || acked[0] != 42 || acked[1] != 43 || acked[2] != 44 {
+		t.Fatalf("continuous resize ACKs = %v", acked)
+	}
+
+	win.onFrameDone(99, 0)
+	if redraws != 3 || renderer.submissions != 3 || frameRequests != 3 {
+		t.Fatal("quiescent resize produced an extra redraw or present")
 	}
 }
 

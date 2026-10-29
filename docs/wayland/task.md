@@ -93,8 +93,8 @@
 
 ## Task 5：在持续 deferred resize 中应用最新 redraw
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（独立只读审查）
 - 依赖：Task 4 已提交。
 - 目标：`OnResize=nil` 时，deferred resize 事务获取并应用最新 OnRedraw，避免连续 resize 一直呈现旧场景。
 - 主要文件：

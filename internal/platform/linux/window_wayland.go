@@ -547,8 +547,20 @@ func (win *waylandWindow) applyPendingResize() {
 		}
 		hasResizeFrame = true
 	}
+	hasRedrawFrame := false
+	if !hasResizeFrame && win.needsRedraw && win.state.config.OnRedraw != nil && (win.state.applyFrame != nil || win.state.router.present != nil) {
+		frame, err = win.state.config.OnRedraw()
+		if err != nil {
+			if win.app != nil {
+				win.app.fail(err)
+			}
+			return
+		}
+		hasRedrawFrame = true
+	}
+	hasSceneFrame := hasResizeFrame || hasRedrawFrame
 
-	if win.state.renderer != nil && hasResizeFrame && win.state.applyFrame != nil {
+	if win.state.renderer != nil && hasSceneFrame && win.state.applyFrame != nil {
 		// A resize is a mandatory present even when the new scene compares clean.
 		_, err = win.state.applyFrame(frame)
 		if err == nil {
@@ -570,7 +582,7 @@ func (win *waylandWindow) applyPendingResize() {
 		}
 		ackConfigure()
 		if win.state.renderer != nil {
-			if hasResizeFrame && win.state.router.present != nil {
+			if hasSceneFrame && win.state.router.present != nil {
 				err = win.presentWithFrameCallback(func() error {
 					return win.state.router.present(frame)
 				})
@@ -579,7 +591,7 @@ func (win *waylandWindow) applyPendingResize() {
 			}
 		} else {
 			win.requestFrameCallback()
-			if hasResizeFrame && win.state.router.present != nil {
+			if hasSceneFrame && win.state.router.present != nil {
 				err = win.state.router.present(frame)
 			}
 			if err == nil && win.app != nil && win.app.api != nil {
@@ -593,7 +605,7 @@ func (win *waylandWindow) applyPendingResize() {
 		}
 		return
 	}
-	if hasResizeFrame {
+	if hasSceneFrame {
 		win.needsRedraw = false
 	}
 	win.forcePresent = false
