@@ -19,7 +19,47 @@ var (
 	surfaceListenerOnce sync.Once
 	rawSurfaceListener  [4]uintptr
 	pinnerSurface       runtime.Pinner
+
+	outputListenerOnce sync.Once
+	rawOutputListener  [4]uintptr
+	pinnerOutput       runtime.Pinner
 )
+
+type waylandOutput struct {
+	globals *waylandGlobals
+	proxy   uintptr
+	name    uint32
+	scale   int32
+	pinner  runtime.Pinner
+	pinned  bool
+}
+
+func (output *waylandOutput) setScale(scale int32) {
+	if scale <= 0 {
+		scale = 1
+	}
+	if output.scale == scale {
+		return
+	}
+	output.scale = scale
+	if output.globals != nil && output.globals.onOutputScale != nil {
+		output.globals.onOutputScale(output.proxy, scale)
+	}
+}
+
+func (output *waylandOutput) destroy(api *waylandAPI) {
+	if output == nil {
+		return
+	}
+	if output.proxy != 0 && api != nil {
+		api.proxyDestroy(output.proxy)
+		output.proxy = 0
+	}
+	if output.pinned {
+		output.pinner.Unpin()
+		output.pinned = false
+	}
+}
 
 func initScaleListeners() {
 	scaleListenerOnce.Do(func() {
@@ -34,6 +74,25 @@ func initScaleListeners() {
 		})
 
 		pinnerScale.Pin(&rawFractionalScaleListener)
+	})
+}
+
+func initOutputListeners() {
+	outputListenerOnce.Do(func() {
+		// wl_output geometry, mode and done do not affect the integer scale cache.
+		rawOutputListener[0] = purego.NewCallback(func(data unsafe.Pointer, output uintptr, x, y, physicalWidth, physicalHeight, subpixel int32, make, model *byte, transform int32) {
+		})
+		rawOutputListener[1] = purego.NewCallback(func(data unsafe.Pointer, output uintptr, flags uint32, width, height, refresh int32) {
+		})
+		rawOutputListener[2] = purego.NewCallback(func(data unsafe.Pointer, output uintptr) {
+		})
+		rawOutputListener[3] = purego.NewCallback(func(data unsafe.Pointer, proxy uintptr, factor int32) {
+			if data == nil {
+				return
+			}
+			(*waylandOutput)(data).setScale(factor)
+		})
+		pinnerOutput.Pin(&rawOutputListener)
 	})
 }
 
@@ -64,6 +123,7 @@ func initSurfaceListeners() {
 			}
 			win := (*waylandWindow)(data)
 			if win.fractionalScale == 0 && factor > 0 {
+				win.preferredBufferScale = true
 				win.applyScale(float32(factor))
 			}
 		})
@@ -119,13 +179,8 @@ func (win *waylandWindow) handleSurfaceEnter(output uintptr) {
 	}
 	win.mu.Unlock()
 
-	// If fractional scale manager is not available, fallback to output scale
-	if win.fractionalScale == 0 && win.app != nil {
-		maxScale := win.app.getOutputScale(output)
-		if maxScale > 0 {
-			win.applyScale(float32(maxScale))
-		}
-	}
+	// Fractional and preferred-buffer scale take precedence over wl_output.scale.
+	win.refreshOutputScale()
 }
 
 func (win *waylandWindow) handleSurfaceLeave(output uintptr) {
@@ -140,6 +195,24 @@ func (win *waylandWindow) handleSurfaceLeave(output uintptr) {
 		}
 	}
 	win.mu.Unlock()
+	win.refreshOutputScale()
+}
+
+func (win *waylandWindow) refreshOutputScale() {
+	if win.fractionalScale != 0 || win.preferredBufferScale || win.app == nil {
+		return
+	}
+	win.mu.Lock()
+	outputs := append([]uintptr(nil), win.activeOutputs...)
+	win.mu.Unlock()
+	if len(outputs) == 0 {
+		return
+	}
+	scale := int32(1)
+	for _, output := range outputs {
+		scale = max(scale, win.app.getOutputScale(output))
+	}
+	win.applyScale(float32(scale))
 }
 
 func (win *waylandWindow) applyScale(scale float32) {
@@ -222,7 +295,31 @@ func (win *waylandWindow) applyScale(scale float32) {
 	win.renderFrame()
 }
 
+func (app *waylandApplication) handleOutputScale(output uintptr, scale int32) {
+	app.mu.Lock()
+	windows := append([]*waylandWindowState(nil), app.windows...)
+	app.mu.Unlock()
+	for _, state := range windows {
+		if state != nil && state.win != nil {
+			state.win.refreshOutputScale()
+		}
+	}
+}
+
+func (app *waylandApplication) handleOutputRemove(output uintptr) {
+	app.mu.Lock()
+	windows := append([]*waylandWindowState(nil), app.windows...)
+	app.mu.Unlock()
+	for _, state := range windows {
+		if state != nil && state.win != nil {
+			state.win.handleSurfaceLeave(output)
+		}
+	}
+}
+
 func (app *waylandApplication) getOutputScale(output uintptr) int32 {
-	// Defaults to 1 for basic output scaling
+	if bound := app.globals.outputs[output]; bound != nil && bound.scale > 0 {
+		return bound.scale
+	}
 	return 1
 }

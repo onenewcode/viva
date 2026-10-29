@@ -116,6 +116,7 @@ var (
 	strWlSeat                     = []byte("wl_seat\x00")
 	strWlPointer                  = []byte("wl_pointer\x00")
 	strWlKeyboard                 = []byte("wl_keyboard\x00")
+	strWlOutput                   = []byte("wl_output\x00")
 	strWlSurface                  = []byte("wl_surface\x00")
 	strXdgWmBase                  = []byte("xdg_wm_base\x00")
 	strXdgSurface                 = []byte("xdg_surface\x00")
@@ -136,18 +137,18 @@ var (
 
 // Signature constants
 var (
-	sigEmpty = []byte("\x00")
-	sigU     = []byte("u\x00")
-	sigN     = []byte("n\x00")
-	sigNO    = []byte("no\x00")
-	sigII    = []byte("ii\x00")
-	sigIIA   = []byte("iia\x00")
-	sigIIII  = []byte("iiii\x00")
-	sigS     = []byte("s\x00")
-	sigA     = []byte("a\x00")
-	sigO     = []byte("?o\x00")
-	sigOII   = []byte("?oii\x00")
-	sigI     = []byte("i\x00")
+	sigEmpty      = []byte("\x00")
+	sigU          = []byte("u\x00")
+	sigN          = []byte("n\x00")
+	sigNO         = []byte("no\x00")
+	sigII         = []byte("ii\x00")
+	sigIIA        = []byte("iia\x00")
+	sigIIII       = []byte("iiii\x00")
+	sigS          = []byte("s\x00")
+	sigA          = []byte("a\x00")
+	sigO          = []byte("?o\x00")
+	sigOII        = []byte("?oii\x00")
+	sigI          = []byte("i\x00")
 	sigUOII       = []byte("u?oii\x00")
 	sigUOFF       = []byte("uoff\x00")
 	sigUO         = []byte("uo\x00")
@@ -197,6 +198,19 @@ var (
 	wlShmInterface = wlInterface{
 		Name:    &strWlShm[0],
 		Version: 1,
+	}
+
+	wlOutputEvents = [4]wlMessage{
+		{Name: &[]byte("geometry\x00")[0], Signature: &[]byte("iiiiissi\x00")[0]},
+		{Name: &[]byte("mode\x00")[0], Signature: &[]byte("uiii\x00")[0]},
+		{Name: &[]byte("done\x00")[0], Signature: &sigEmpty[0]},
+		{Name: &[]byte("scale\x00")[0], Signature: &sigI[0]},
+	}
+	wlOutputInterface = wlInterface{
+		Name:       &strWlOutput[0],
+		Version:    2,
+		EventCount: 4,
+		Events:     &wlOutputEvents[0],
 	}
 
 	wlSeatRequests = [4]wlMessage{
@@ -607,24 +621,28 @@ type waylandGlobals struct {
 	display uintptr
 	pinner  runtime.Pinner
 
-	compositor       uintptr
-	compositorVer    uint32
-	shm              uintptr
-	shmVer           uint32
-	seat             uintptr
-	seatVer          uint32
-	xdgWmBase        uintptr
-	xdgWmBaseVer     uint32
-	decorationMgr    uintptr
-	decorationMgrVer uint32
-	scaleMgr         uintptr
-	scaleMgrVer      uint32
-	viewporter       uintptr
-	viewporterVer    uint32
+	compositor           uintptr
+	compositorVer        uint32
+	shm                  uintptr
+	shmVer               uint32
+	seat                 uintptr
+	seatVer              uint32
+	xdgWmBase            uintptr
+	xdgWmBaseVer         uint32
+	decorationMgr        uintptr
+	decorationMgrVer     uint32
+	scaleMgr             uintptr
+	scaleMgrVer          uint32
+	viewporter           uintptr
+	viewporterVer        uint32
 	dataDeviceManager    uintptr
 	dataDeviceManagerVer uint32
+	outputs              map[uintptr]*waylandOutput
+	outputNames          map[uint32]uintptr
 
 	onCapabilities func(caps uint32)
+	onOutputScale  func(output uintptr, scale int32)
+	onOutputRemove func(output uintptr)
 }
 
 func (api *waylandAPI) getInterface(name string, fallback *wlInterface) uintptr {
@@ -692,6 +710,25 @@ func (g *waylandGlobals) handleGlobal(registry uintptr, name uint32, iface strin
 				g.api.proxyAddListener(g.seat, uintptr(unsafe.Pointer(&rawSeatListener[0])), unsafe.Pointer(g))
 			}
 		}
+	case "wl_output":
+		ver := min(version, 2)
+		if ver >= 1 {
+			ifacePtr := g.api.getInterface("wl_output_interface", &wlOutputInterface)
+			proxy := g.api.bindRegistry(registry, name, ifacePtr, &strWlOutput[0], ver)
+			if proxy != 0 {
+				output := &waylandOutput{globals: g, proxy: proxy, name: name, scale: 1}
+				if g.outputs == nil {
+					g.outputs = make(map[uintptr]*waylandOutput)
+					g.outputNames = make(map[uint32]uintptr)
+				}
+				g.outputs[proxy] = output
+				g.outputNames[name] = proxy
+				output.pinner.Pin(output)
+				output.pinned = true
+				initOutputListeners()
+				g.api.proxyAddListener(proxy, uintptr(unsafe.Pointer(&rawOutputListener[0])), unsafe.Pointer(output))
+			}
+		}
 	case "wl_shm":
 		ver := uint32(1)
 		if g.shm == 0 {
@@ -731,6 +768,19 @@ func (g *waylandGlobals) handleGlobal(registry uintptr, name uint32, iface strin
 }
 
 func (g *waylandGlobals) handleGlobalRemove(name uint32) {
+	proxy, ok := g.outputNames[name]
+	if !ok {
+		return
+	}
+	output := g.outputs[proxy]
+	delete(g.outputs, proxy)
+	delete(g.outputNames, name)
+	if g.onOutputRemove != nil {
+		g.onOutputRemove(proxy)
+	}
+	if output != nil {
+		output.destroy(g.api)
+	}
 }
 
 // bindGlobals attaches to the display registry, registers listeners, performs a roundtrip,
@@ -773,6 +823,11 @@ func (g *waylandGlobals) destroy(api *waylandAPI) {
 	if api == nil {
 		return
 	}
+	for _, output := range g.outputs {
+		output.destroy(api)
+	}
+	clear(g.outputs)
+	clear(g.outputNames)
 	api.destroyProxy(&g.dataDeviceManager)
 	api.destroyProxy(&g.decorationMgr)
 	api.destroyProxy(&g.scaleMgr)

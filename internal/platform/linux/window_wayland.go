@@ -91,9 +91,10 @@ type waylandWindow struct {
 	decoration     uintptr
 	decorationMode uint32
 
-	fractionalScale uintptr
-	viewport        uintptr
-	activeOutputs   []uintptr
+	fractionalScale      uintptr
+	viewport             uintptr
+	activeOutputs        []uintptr
+	preferredBufferScale bool
 
 	width, height uint32 // device pixels
 	scaleBits     atomic.Uint32

@@ -5,6 +5,7 @@ package linux
 import (
 	"errors"
 	"testing"
+	"unsafe"
 
 	"github.com/vivaui/viva/internal/platform"
 )
@@ -30,6 +31,87 @@ func TestWaylandFractionalScaleCalculations(t *testing.T) {
 		if scale != c.wantScale {
 			t.Errorf("numerator %d -> scale %g, want %g", c.numerator, scale, c.wantScale)
 		}
+	}
+}
+
+func TestWaylandOutputScaleFallback(t *testing.T) {
+	var boundVersion uint32
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			if opcode == wlRegistryBindOpcode {
+				boundVersion = version
+				return 700
+			}
+			return 0
+		},
+		proxyAddListener: func(proxy uintptr, implementation uintptr, data unsafe.Pointer) int32 {
+			return 0
+		},
+		proxyDestroy: func(uintptr) {},
+	}
+	app := &waylandApplication{api: api}
+	app.globals.api = api
+	app.globals.onOutputScale = app.handleOutputScale
+	app.globals.handleGlobal(1, 7, "wl_output", 4)
+	output := app.globals.outputs[700]
+	if output == nil {
+		t.Fatal("wl_output global was not bound and cached")
+	}
+	defer output.destroy(api)
+	if boundVersion != 2 {
+		t.Fatalf("wl_output bound version = %d, want 2", boundVersion)
+	}
+
+	win := &waylandWindow{app: app, surface: 1, width: 400, height: 300, framePending: true}
+	win.storeScale(1)
+	state := &waylandWindowState{app: app, win: win}
+	win.state = state
+	app.windows = []*waylandWindowState{state}
+	win.handleSurfaceEnter(700)
+	if got := win.displayScale(); got != 1 {
+		t.Fatalf("initial output scale = %g, want 1", got)
+	}
+
+	puregoInvokeCallback3(rawOutputListener[3], unsafe.Pointer(output), 700, 2)
+	if got := win.displayScale(); got != 2 {
+		t.Fatalf("wl_output.scale fallback = %g, want 2", got)
+	}
+	if win.width != 800 || win.height != 600 {
+		t.Fatalf("2x fallback buffer size = %dx%d, want 800x600", win.width, win.height)
+	}
+}
+
+func TestWaylandOutputScaleDoesNotOverridePreferredScale(t *testing.T) {
+	tests := []struct {
+		name       string
+		fractional uintptr
+		preferred  bool
+	}{
+		{name: "fractional scale", fractional: 1},
+		{name: "preferred buffer scale", preferred: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app := &waylandApplication{
+				globals: waylandGlobals{
+					outputs: map[uintptr]*waylandOutput{
+						700: {proxy: 700, scale: 2},
+					},
+				},
+			}
+			win := &waylandWindow{
+				app:                  app,
+				width:                400,
+				height:               300,
+				fractionalScale:      test.fractional,
+				preferredBufferScale: test.preferred,
+			}
+			win.storeScale(1)
+			win.handleSurfaceEnter(700)
+			if got := win.displayScale(); got != 1 {
+				t.Fatalf("output fallback overrode preferred scale: got %g", got)
+			}
+		})
 	}
 }
 

@@ -106,6 +106,8 @@ func newWaylandApplication() (*waylandApplication, error) {
 		loop:    loop,
 	}
 	app.globals.onCapabilities = app.handleSeatCapabilities
+	app.globals.onOutputScale = app.handleOutputScale
+	app.globals.onOutputRemove = app.handleOutputRemove
 	if err := app.globals.bindGlobals(api, display); err != nil {
 		app.close()
 		return nil, err
