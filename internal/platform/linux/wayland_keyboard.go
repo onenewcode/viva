@@ -16,10 +16,10 @@ import (
 )
 
 const (
-	xkbContextNoFlags        uint32 = 0
-	xkbKeymapFormatTextV1    uint32 = 1
-	xkbKeymapCompileNoFlags  uint32 = 0
-	xkbStateModsEffective    uint32 = 8
+	xkbContextNoFlags       uint32 = 0
+	xkbKeymapFormatTextV1   uint32 = 1
+	xkbKeymapCompileNoFlags uint32 = 0
+	xkbStateModsEffective   uint32 = 8
 )
 
 var (
@@ -34,8 +34,8 @@ type xkbAPI struct {
 
 	contextNew           func(flags uint32) uintptr
 	contextUnref         func(context uintptr)
-	keymapNewFromString func(context uintptr, str *byte, format uint32, flags uint32) uintptr
-	keymapUnref         func(keymap uintptr)
+	keymapNewFromString  func(context uintptr, str *byte, format uint32, flags uint32) uintptr
+	keymapUnref          func(keymap uintptr)
 	stateNew             func(keymap uintptr) uintptr
 	stateUnref           func(state uintptr)
 	stateKeyGetOneSym    func(state uintptr, key uint32) uint32
@@ -371,13 +371,23 @@ func (app *waylandApplication) startKeyRepeat(keyEvent platform.KeyEvent, scanco
 					app.mu.Unlock()
 
 					app.post(func() {
-						_ = win.state.router.dispatchKey(repeatEvent)
+						app.dispatchKeyRepeat(win, repeatEvent, scancode)
 					})
 				}
 			}
 		}(ticker, stopCh, event)
 	})
 	app.mu.Unlock()
+}
+
+func (app *waylandApplication) dispatchKeyRepeat(win *waylandWindow, keyEvent platform.KeyEvent, scancode uint32) {
+	app.mu.Lock()
+	active := app.repeatScancode == scancode && app.keyboardFocus == win
+	app.mu.Unlock()
+	if !active || win == nil || win.closed.Load() || win.state == nil {
+		return
+	}
+	_ = win.state.router.dispatchKey(keyEvent)
 }
 
 func (app *waylandApplication) stopKeyRepeat() {

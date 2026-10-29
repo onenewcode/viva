@@ -122,6 +122,40 @@ func TestWaylandKeyboardRepeat(t *testing.T) {
 	}
 }
 
+func TestWaylandKeyRepeatQueuedAfterDestroyIsIgnored(t *testing.T) {
+	app := &waylandApplication{loop: &waylandLoop{}}
+	win := &waylandWindow{app: app, surface: 204}
+	delivered := false
+	state := &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			OnKey: func(event platform.KeyEvent) (platform.Frame, error) {
+				delivered = true
+				return platform.Frame{}, nil
+			},
+		},
+	}
+	state.router = eventRouter{config: state.config}
+	win.state = state
+	app.windows = []*waylandWindowState{state}
+	app.keyboardFocus = win
+	app.repeatScancode = 28
+
+	win.Close()
+	app.post(func() {
+		app.dispatchKeyRepeat(win, platform.KeyEvent{Repeat: true}, 28)
+	})
+	app.loop.drainCommands()
+
+	if delivered {
+		t.Fatal("queued key repeat was delivered after window destruction")
+	}
+	if win.state != nil {
+		t.Fatal("expected window state to be destroyed")
+	}
+}
+
 func TestWaylandKeyboardFocusAndModifiers(t *testing.T) {
 	focusLostCalled := false
 	app := &waylandApplication{}
