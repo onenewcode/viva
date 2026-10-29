@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/vivaui/viva/internal/dbus"
 	"github.com/vivaui/viva/internal/platform"
 )
 
@@ -115,6 +116,26 @@ func TestWaylandWindowContentOrigin(t *testing.T) {
 	originX, originY = win.contentOrigin()
 	if originX != 0 || originY != 0 {
 		t.Fatalf("expected content origin (0, 0), got (%d, %d)", originX, originY)
+	}
+}
+
+func TestWaylandAtspiReconnectFailureKeepsWatcherPolling(t *testing.T) {
+	app := &waylandApplication{loop: &waylandLoop{}}
+	host := &atspiHost{watcher: &dbus.Conn{}}
+	app.atspi = host
+	address := "unix:path=" + t.TempDir() + "/missing-atspi-bus"
+
+	for range 2 {
+		app.connectAtspi(host, address)
+		if host.watcher == nil {
+			t.Fatal("failed reconnect discarded the AT-SPI watcher")
+		}
+		if len(app.loop.extraFDs) != 1 || app.loop.extraFDs[0] != int32(host.watcher.FD()) {
+			t.Fatalf("watcher poll FDs = %v, want one restored descriptor", app.loop.extraFDs)
+		}
+		if len(app.loop.extraCBs) != 1 || app.loop.extraCBs[0] == nil {
+			t.Fatal("watcher dispatch callback was not restored")
+		}
 	}
 }
 

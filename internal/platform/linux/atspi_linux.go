@@ -424,6 +424,23 @@ func (app *waylandApplication) atspiClose() {
 	app.atspi = nil
 }
 
+func (app *waylandApplication) connectAtspi(host *atspiHost, address string) {
+	if host == nil {
+		return
+	}
+	if app.loop != nil && host.watcher != nil {
+		app.loop.removeExtraFD(int32(host.watcher.FD()))
+	}
+	if host.connectWayland(app, address) {
+		host.dropWatcher()
+		return
+	}
+	// Keep listening for the next PropertiesChanged after a failed reconnect.
+	if app.loop != nil && host.watcher != nil {
+		app.loop.addExtraFD(int32(host.watcher.FD()), app.serveAtspi)
+	}
+}
+
 func (app *waylandApplication) serveAtspi() {
 	host := app.atspi
 	if host == nil {
@@ -456,12 +473,7 @@ func (app *waylandApplication) serveAtspi() {
 			}
 			address, err := atspiAddress(host.watcher)
 			if err == nil {
-				if app.loop != nil && host.watcher != nil {
-					app.loop.removeExtraFD(int32(host.watcher.FD()))
-				}
-				if host.connectWayland(app, address) {
-					host.dropWatcher()
-				}
+				app.connectAtspi(host, address)
 			}
 			return
 		}
