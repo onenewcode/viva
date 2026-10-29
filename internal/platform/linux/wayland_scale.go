@@ -150,6 +150,15 @@ func (win *waylandWindow) applyScale(scale float32) {
 	if oldScale == scale {
 		return
 	}
+	fail := func(err error) bool {
+		if err == nil {
+			return false
+		}
+		if win.app != nil {
+			win.app.fail(err)
+		}
+		return true
+	}
 
 	logicalW := float32(contentSize(win.width, win.margin)) / oldScale
 	logicalH := float32(contentSize(win.height, win.margin)) / oldScale
@@ -170,7 +179,9 @@ func (win *waylandWindow) applyScale(scale float32) {
 		win.width = physContentW + 2*win.margin
 		win.height = physContentH + 2*win.margin
 		if win.state != nil && win.state.renderer != nil {
-			_ = win.state.renderer.setFrameMargin(win.margin)
+			if fail(win.state.renderer.setFrameMargin(win.margin)) {
+				return
+			}
 		}
 	} else {
 		win.width = physContentW
@@ -179,8 +190,12 @@ func (win *waylandWindow) applyScale(scale float32) {
 
 	// Update Vulkan renderer scale & resize swapchain
 	if win.state != nil && win.state.renderer != nil {
-		_ = win.state.renderer.setScale(scale)
-		_ = win.state.renderer.resize(win.width, win.height)
+		if fail(win.state.renderer.setScale(scale)) {
+			return
+		}
+		if fail(win.state.renderer.resize(win.width, win.height)) {
+			return
+		}
 	}
 
 	// Configure viewport destination logical dimensions (entire surface)
@@ -194,10 +209,12 @@ func (win *waylandWindow) applyScale(scale float32) {
 	win.updateInputRegion()
 
 	if win.state != nil && win.state.config.OnResize != nil {
-		if frame, err := win.state.config.OnResize(win.logicalSize()); err == nil {
-			if win.state.router.present != nil {
-				_ = win.state.router.present(frame)
-			}
+		frame, err := win.state.config.OnResize(win.logicalSize())
+		if fail(err) {
+			return
+		}
+		if win.state.router.present != nil && fail(win.state.router.present(frame)) {
+			return
 		}
 	}
 	win.reportFrame()

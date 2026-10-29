@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/vivaui/viva/internal/platform"
@@ -102,6 +103,78 @@ func TestWaylandApplyScaleAndViewport(t *testing.T) {
 	}
 }
 
+func TestWaylandScaleErrorsStopTransition(t *testing.T) {
+	callbackErr := errors.New("scale callback failed")
+	routerErr := errors.New("scale present failed")
+	tests := []struct {
+		name            string
+		margin          uint32
+		device          uintptr
+		commandPool     uintptr
+		noRenderer      bool
+		callbackErr     error
+		routerErr       error
+		wantErr         error
+		wantResizeCalls int
+	}{
+		{name: "frame margin", margin: 24, device: 1, commandPool: 1},
+		{name: "renderer scale", device: 1, commandPool: 1},
+		{name: "renderer resize"},
+		{name: "resize callback", noRenderer: true, callbackErr: callbackErr, wantErr: callbackErr, wantResizeCalls: 1},
+		{name: "router present", noRenderer: true, routerErr: routerErr, wantErr: routerErr, wantResizeCalls: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app := &waylandApplication{}
+			win := &waylandWindow{
+				app:     app,
+				surface: 1,
+				width:   800,
+				height:  600,
+				margin:  test.margin,
+			}
+			win.storeScale(1)
+			resizeCalls := 0
+			state := &waylandWindowState{
+				app: app,
+				win: win,
+				config: platform.Config{
+					OnResize: func(platform.Size) (platform.Frame, error) {
+						resizeCalls++
+						return platform.Frame{}, test.callbackErr
+					},
+				},
+			}
+			state.router.present = func(platform.Frame) error { return test.routerErr }
+			if !test.noRenderer {
+				state.renderer = &vulkanRenderer{
+					api: &vulkanAPI{
+						deviceWaitIdle: func(uintptr) int32 { return vkErrorDeviceLost },
+					},
+					device:      test.device,
+					commandPool: test.commandPool,
+					width:       800,
+					height:      600,
+					scale:       1,
+				}
+				state.renderer.frame.margin = test.margin
+			}
+			win.state = state
+
+			win.applyScale(1.5)
+			if app.firstErr == nil {
+				t.Fatal("scale failure did not reach the application")
+			}
+			if test.wantErr != nil && !errors.Is(app.firstErr, test.wantErr) {
+				t.Fatalf("application error = %v, want %v", app.firstErr, test.wantErr)
+			}
+			if resizeCalls != test.wantResizeCalls {
+				t.Fatalf("OnResize calls = %d, want %d", resizeCalls, test.wantResizeCalls)
+			}
+		})
+	}
+}
+
 func TestWaylandSurfaceEnterLeaveOutput(t *testing.T) {
 	win := &waylandWindow{}
 
@@ -132,7 +205,7 @@ func TestWaylandSurfaceEnterLeaveOutput(t *testing.T) {
 
 func TestWaylandScaledWindowGeometryAndInputRegion(t *testing.T) {
 	var (
-		setGeomX, setGeomY, setGeomW, setGeomH int32
+		setGeomX, setGeomY, setGeomW, setGeomH                 int32
 		addedRegionX, addedRegionY, addedRegionW, addedRegionH int32
 	)
 
