@@ -506,6 +506,359 @@ func TestWaylandHiddenRemapResizeWaitsForShow(t *testing.T) {
 	}
 }
 
+func newWaylandPresentTestRenderer(width, height uint32) *vulkanRenderer {
+	return &vulkanRenderer{
+		device: 1, queue: 2, swapchain: 3, width: width, height: height,
+		commands: []uintptr{4}, fence: 5,
+		api: &vulkanAPI{
+			waitForFences: func(uintptr, uint32, *uintptr, uint32, uint64) int32 { return vkSuccess },
+			acquireNextImage: func(_, _ uintptr, _ uint64, _, _ uintptr, image *uint32) int32 {
+				*image = 0
+				return vkSuccess
+			},
+			resetFences:  func(uintptr, uint32, *uintptr) int32 { return vkSuccess },
+			queueSubmit:  func(uintptr, uint32, *vkSubmitInfo, uintptr) int32 { return vkSuccess },
+			queuePresent: func(uintptr, *vkPresentInfo) int32 { return vkSuccess },
+		},
+	}
+}
+
+func newWaylandPresentTestAPI(acked *[]uint32, frameRequests *int) *waylandAPI {
+	return &waylandAPI{
+		proxyMarshalFlags: func(_ uintptr, opcode uint32, _ uintptr, _, _ uint32, args ...any) uintptr {
+			switch opcode {
+			case xdgSurfaceAckConfigureOpcode:
+				*acked = append(*acked, args[0].(uint32))
+			case wlSurfaceFrameOpcode:
+				*frameRequests++
+				return 99
+			}
+			return 0
+		},
+		proxyAddListener: func(uintptr, uintptr, unsafe.Pointer) int32 { return 0 },
+		proxyDestroy:     func(uintptr) {},
+		displayFlush:     func(uintptr) int32 { return 0 },
+	}
+}
+
+func TestWaylandCleanRedrawDoesNotRequestFrame(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{app: app, surface: 1, xdgSurface: 2, configured: true}
+	renderer := newWaylandPresentTestRenderer(400, 300)
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config:     platform.Config{OnRedraw: func() (platform.Frame, error) { return platform.Frame{}, nil }},
+		applyFrame: func(platform.Frame) (bool, error) { return false, nil },
+	}
+
+	win.renderFrame()
+	if renderer.submissions != 0 || frameRequests != 0 || win.framePending {
+		t.Fatalf("clean redraw committed: submissions=%d frameRequests=%d pending=%v", renderer.submissions, frameRequests, win.framePending)
+	}
+	if win.needsRedraw {
+		t.Fatal("clean redraw left a redraw request pending")
+	}
+}
+
+func TestWaylandCleanGeometryChangePresents(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{app: app, surface: 1, xdgSurface: 2, configured: true, geometryDirty: true}
+	renderer := newWaylandPresentTestRenderer(400, 300)
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config:     platform.Config{OnRedraw: func() (platform.Frame, error) { return platform.Frame{}, nil }},
+		applyFrame: func(platform.Frame) (bool, error) { return false, nil },
+	}
+
+	win.renderFrame()
+	if renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatalf("geometry-only change submissions=%d frameRequests=%d, want one each", renderer.submissions, frameRequests)
+	}
+	if win.geometryDirty {
+		t.Fatal("committed geometry change remained dirty")
+	}
+}
+
+func TestWaylandForcedCleanConfigurePresents(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		pendingSerial: 41, forcePresent: true,
+	}
+	renderer := newWaylandPresentTestRenderer(400, 300)
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config:     platform.Config{OnRedraw: func() (platform.Frame, error) { return platform.Frame{}, nil }},
+		applyFrame: func(platform.Frame) (bool, error) { return false, nil },
+	}
+
+	win.renderFrame()
+	if renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatalf("forced clean configure submissions=%d frameRequests=%d, want one each", renderer.submissions, frameRequests)
+	}
+	if len(acked) != 1 || acked[0] != 41 || win.pendingSerial != 0 {
+		t.Fatalf("configure ACK = %v, pending serial = %d", acked, win.pendingSerial)
+	}
+	if win.forcePresent {
+		t.Fatal("successful present retained the force flag")
+	}
+	win.onFrameDone(99, 0)
+	win.needsRedraw = true
+	win.renderFrame()
+	if renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatal("clean redraw after frame completion did not remain idle")
+	}
+}
+
+func TestWaylandCleanResizePresentsOnce(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		pendingWidth: 800, pendingHeight: 600, pendingSerial: 42, forcePresent: true,
+	}
+	win.storeScale(1)
+	renderer := newWaylandPresentTestRenderer(800, 600)
+	resizeCallbacks := 0
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{OnResize: func(platform.Size) (platform.Frame, error) {
+			resizeCallbacks++
+			return platform.Frame{}, nil
+		}},
+		applyFrame: func(platform.Frame) (bool, error) { return false, nil },
+	}
+
+	win.applyPendingResize()
+	if resizeCallbacks != 1 || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatalf("clean resize callbacks=%d submissions=%d frameRequests=%d, want one each", resizeCallbacks, renderer.submissions, frameRequests)
+	}
+	if len(acked) != 1 || acked[0] != 42 {
+		t.Fatalf("resize ACK = %v, want [42]", acked)
+	}
+}
+
+func TestWaylandCleanScalePresentsOnceWithoutRedraw(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+	}
+	win.storeScale(1)
+	renderer := newWaylandPresentTestRenderer(800, 600)
+	resizeCallbacks := 0
+	redraws := 0
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{
+			OnResize: func(platform.Size) (platform.Frame, error) {
+				resizeCallbacks++
+				return platform.Frame{}, nil
+			},
+			OnRedraw: func() (platform.Frame, error) {
+				redraws++
+				return platform.Frame{}, nil
+			},
+		},
+		applyFrame: func(platform.Frame) (bool, error) { return false, nil },
+	}
+
+	win.applyScale(2)
+	if resizeCallbacks != 1 || redraws != 0 || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatalf("clean scale resize=%d redraw=%d submissions=%d frameRequests=%d", resizeCallbacks, redraws, renderer.submissions, frameRequests)
+	}
+	if win.forcePresent {
+		t.Fatal("scale present retained the force flag")
+	}
+}
+
+func TestWaylandApplyFailureDoesNotAckOrRequestFrame(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	expectedErr := errors.New("apply failed")
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		pendingSerial: 43, forcePresent: true,
+	}
+	renderer := newWaylandPresentTestRenderer(400, 300)
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config:     platform.Config{OnRedraw: func() (platform.Frame, error) { return platform.Frame{}, nil }},
+		applyFrame: func(platform.Frame) (bool, error) { return false, expectedErr },
+	}
+
+	win.renderFrame()
+	if !errors.Is(app.firstErr, expectedErr) {
+		t.Fatalf("application error = %v, want %v", app.firstErr, expectedErr)
+	}
+	if len(acked) != 0 || frameRequests != 0 || renderer.submissions != 0 || win.framePending {
+		t.Fatalf("failed apply advanced: ack=%v frameRequests=%d submissions=%d pending=%v", acked, frameRequests, renderer.submissions, win.framePending)
+	}
+	if win.pendingSerial != 43 {
+		t.Fatalf("failed apply consumed serial %d, want 43", win.pendingSerial)
+	}
+}
+
+func TestWaylandPresentFailureCleansNewCallback(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	var destroyed []uintptr
+	app.api.proxyDestroy = func(proxy uintptr) { destroyed = append(destroyed, proxy) }
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		pendingSerial: 41, forcePresent: true,
+	}
+	renderer := newWaylandPresentTestRenderer(400, 300)
+	presentCalls := 0
+	renderer.api.queuePresent = func(uintptr, *vkPresentInfo) int32 {
+		presentCalls++
+		if presentCalls == 1 {
+			return vkErrorDeviceLost
+		}
+		return vkSuccess
+	}
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config:     platform.Config{OnRedraw: func() (platform.Frame, error) { return platform.Frame{}, nil }},
+		applyFrame: func(platform.Frame) (bool, error) { return false, nil },
+	}
+
+	win.renderFrame()
+	if app.firstErr == nil {
+		t.Fatal("present failure did not reach the application")
+	}
+	if win.framePending || win.frameCallback != 0 {
+		t.Fatalf("present failure left callback pending=%v handle=%d", win.framePending, win.frameCallback)
+	}
+	if len(destroyed) != 1 || destroyed[0] != 99 {
+		t.Fatalf("destroyed callbacks = %v, want [99]", destroyed)
+	}
+
+	win.renderFrame()
+	if presentCalls != 2 || renderer.submissions != 1 || frameRequests != 2 {
+		t.Fatalf("retry presentCalls=%d submissions=%d frameRequests=%d", presentCalls, renderer.submissions, frameRequests)
+	}
+	if !win.framePending || win.frameCallback != 99 {
+		t.Fatal("successful retry did not establish a new frame callback")
+	}
+}
+
+func TestWaylandResizePresentFailurePreservesOldCallback(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	var destroyed []uintptr
+	app.api.proxyDestroy = func(proxy uintptr) { destroyed = append(destroyed, proxy) }
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		pendingWidth: 800, pendingHeight: 600, pendingSerial: 42,
+		forcePresent: true, framePending: true, frameCallback: 77,
+	}
+	win.storeScale(1)
+	renderer := newWaylandPresentTestRenderer(800, 600)
+	presentCalls := 0
+	renderer.api.queuePresent = func(uintptr, *vkPresentInfo) int32 {
+		presentCalls++
+		if presentCalls == 1 {
+			return vkErrorDeviceLost
+		}
+		return vkSuccess
+	}
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{
+			OnResize: func(platform.Size) (platform.Frame, error) { return platform.Frame{}, nil },
+			OnRedraw: func() (platform.Frame, error) { return platform.Frame{}, nil },
+		},
+		applyFrame: func(platform.Frame) (bool, error) { return false, nil },
+	}
+
+	win.applyPendingResize()
+	if app.firstErr == nil {
+		t.Fatal("resize present failure did not reach the application")
+	}
+	if !win.framePending || win.frameCallback != 77 {
+		t.Fatalf("resize failure replaced old callback: pending=%v handle=%d", win.framePending, win.frameCallback)
+	}
+	if len(destroyed) != 0 || frameRequests != 0 {
+		t.Fatalf("resize failure destroyed old callback or created a new one: destroyed=%v requests=%d", destroyed, frameRequests)
+	}
+
+	win.onFrameDone(77, 0)
+	if presentCalls != 2 || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatalf("frame-done recovery presentCalls=%d submissions=%d requests=%d", presentCalls, renderer.submissions, frameRequests)
+	}
+	if !win.framePending || win.frameCallback != 99 {
+		t.Fatal("frame-done recovery did not establish a new callback")
+	}
+}
+
+func TestWaylandResizeScaleApplyFailurePreservesTransaction(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		apply func(*waylandWindow)
+	}{
+		{name: "resize", apply: (*waylandWindow).applyPendingResize},
+		{name: "scale", apply: func(win *waylandWindow) { win.applyScale(2) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var acked []uint32
+			frameRequests := 0
+			app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+			geometryCalls := 0
+			baseMarshal := app.api.proxyMarshalFlags
+			app.api.proxyMarshalFlags = func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+				if opcode == xdgSurfaceSetWindowGeometryOpcode || (proxy == 7 && opcode == 2) {
+					geometryCalls++
+				}
+				return baseMarshal(proxy, opcode, interfacePtr, version, flags, args...)
+			}
+			expectedErr := errors.New("resize apply failed")
+			win := &waylandWindow{
+				app: app, surface: 1, xdgSurface: 2, viewport: 7, configured: true,
+				width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+				pendingWidth: 800, pendingHeight: 600, pendingSerial: 44, forcePresent: true,
+			}
+			win.storeScale(1)
+			renderer := newWaylandPresentTestRenderer(800, 600)
+			win.state = &waylandWindowState{
+				app: app, win: win, renderer: renderer,
+				config: platform.Config{OnResize: func(platform.Size) (platform.Frame, error) {
+					return platform.Frame{}, nil
+				}},
+				applyFrame: func(platform.Frame) (bool, error) { return false, expectedErr },
+			}
+
+			test.apply(win)
+			if !errors.Is(app.firstErr, expectedErr) {
+				t.Fatalf("application error = %v, want %v", app.firstErr, expectedErr)
+			}
+			if geometryCalls != 0 || len(acked) != 0 || frameRequests != 0 || renderer.submissions != 0 {
+				t.Fatalf("failed apply advanced: geometry=%d ack=%v requests=%d submissions=%d", geometryCalls, acked, frameRequests, renderer.submissions)
+			}
+			if !win.geometryDirty {
+				t.Fatal("failed apply consumed geometryDirty")
+			}
+			if win.pendingSerial != 44 {
+				t.Fatalf("failed apply consumed serial %d, want 44", win.pendingSerial)
+			}
+		})
+	}
+}
+
 func TestWaylandRedrawErrorsReachApplication(t *testing.T) {
 	callbackErr := errors.New("redraw callback failed")
 	routerErr := errors.New("scene upload failed")

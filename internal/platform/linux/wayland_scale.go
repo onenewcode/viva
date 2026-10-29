@@ -271,28 +271,18 @@ func (win *waylandWindow) applyScale(scale float32) {
 		}
 	}
 
-	// Configure viewport destination logical dimensions (entire surface)
-	win.updateViewportDestination()
 	if win.viewport == 0 && win.app != nil && win.app.api != nil && win.surface != 0 {
 		win.app.api.surfaceSetBufferScale(win.surface, int32(math.Ceil(float64(scale))))
 	}
 
+	// Scale changes use the same mandatory-present transaction as configure.
 	win.geometryDirty = true
-	win.updateWindowGeometry()
-	win.updateInputRegion()
-
-	if win.state != nil && win.state.config.OnResize != nil {
-		frame, err := win.state.config.OnResize(win.logicalSize())
-		if fail(err) {
-			return
-		}
-		if win.state.router.present != nil && fail(win.state.router.present(frame)) {
-			return
-		}
+	win.pendingWidth = int32(logicalW)
+	win.pendingHeight = int32(logicalH)
+	if win.state != nil {
+		win.forcePresent = true
 	}
-	win.reportFrame()
-
-	win.renderFrame()
+	win.applyPendingResize()
 }
 
 func (app *waylandApplication) handleOutputScale(output uintptr, scale int32) {

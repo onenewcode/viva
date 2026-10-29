@@ -99,8 +99,8 @@
 
 ## Task 6：分离 scene apply 与 surface commit，统一强制呈现
 
-- 状态：待开始
-- Review：未进行
+- 状态：已提交
+- Review：PASS（首轮 FAIL 的 callback 清理、geometry 顺序及文档状态问题已修复，复审通过）
 - 依赖：Task 5 已提交。
 - 目标：clean scene 只在无强制提交原因时跳过 present；configure/scale/remap/rebuild 即使 clean 也正确提交。
 - 主要文件：

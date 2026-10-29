@@ -378,15 +378,15 @@ Vulkan fake 至少跟踪：
 | Wayland-First 与 X11 override | 已具备 | 保持文档与实际探测时机一致 |
 | PureGo 动态绑定 | 已具备 | 继续用 ABI/协议测试保护 |
 | 共享 Vulkan 和 eventRouter | 已具备 | 收敛资源所有权和 present 契约 |
-| eventfd 命令队列 | 已具备基础 | 补 EINTR、关闭竞态和代际检查 |
+| eventfd 命令队列 | 已具备基础，EINTR 已修复 | 关闭竞态、代际检查和长期错误模型仍需收敛 |
 | flush POLLOUT 恢复 | 已具备 | 纳入统一 event-source 错误模型 |
 | prepare/read 标准流程 | 尚未完整实现 | 按 libwayland 推荐流程收敛 |
 | 键盘 repeat 主循环定时器 | 尚未实现 | 替换独立 ticker goroutine |
-| 显式 surface/configure 状态机 | 部分实现 | 修复 Show 重新 configure、首次 roundtrip 错误传播，并集中 serial、ACK 和 commit 所有权 |
-| clean/forced present 区分 | 未实现 | 修复 Show、resize、scale 和 rebuild |
-| frame callback 与 commit 配对 | 部分实现 | 禁止无 commit 的 pending 状态 |
-| Vulkan oldSwapchain 唯一销毁 | 存在缺陷 | 统一失败和成功路径所有权 |
-| Vulkan SUBOPTIMAL 恢复 | 存在缺陷 | 在当前帧完成后消费标志并于受控边界重建 |
+| 显式 surface/configure 状态机 | 首次/remap 门限已修复 | 继续集中 serial、ACK 和完整状态机 |
+| clean/forced present 区分 | 已实现 | 保留 clean/forced 回归测试并做实机验收 |
+| frame callback 与 commit 配对 | 已实现 | 不为 clean frame 或失败提交留下孤立 pending，验证真实时序 |
+| Vulkan oldSwapchain 唯一销毁 | 已修复 | 保持成功/失败路径销毁次数测试 |
+| Vulkan SUBOPTIMAL 恢复 | 已修复 | 当前帧完成后重建，补真实驱动验收 |
 | fractional/整数缩放 | 已具备主要路径 | 保持协议优先级并做实机验收 |
 | 桌面协议核心共享 | 部分共享 | 抽取可共享重连和 event-source 生命周期 |
 | 托盘/后台常驻 | 未完整支持 | 先明确 keep-alive 产品契约 |
@@ -396,12 +396,12 @@ Vulkan fake 至少跟踪：
 
 ## 10. 推荐迁移顺序
 
-1. **先修呈现事务**：区分 scene dirty 与强制 commit，集中 frame callback、ACK 和 present。
-2. **再修资源所有权**：确保 oldSwapchain 和所有部分初始化资源恰好释放一次。
-3. **收敛事件循环**：统一 event source、EINTR、ERR/HUP、timer 和后台命令生命周期。
-4. **显式化窗口状态机**：减少布尔组合，集中 configure 事务和 surface 映射状态。
-5. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉。
-6. **补验证体系**：先让 Linux mock/unit 测试进入 CI，再进行 headless compositor 和真实环境验收。
+本轮 `task.md` 已完成呈现事务、newly-unmapped remap、oldSwapchain、SUBOPTIMAL、eventfd EINTR 和 frame-margin 错误传播修复，并分别通过独立 review。后续架构迁移按以下顺序继续：
+
+1. **收敛事件循环**：统一 event source、ERR/HUP、prepare/read、timer 和后台命令生命周期。
+2. **完善显式窗口状态机**：继续减少布尔组合，集中 configure 事务和 surface 映射状态。
+3. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉。
+4. **补验证体系**：先让 Linux mock/unit 测试进入 CI，再进行 headless compositor 和真实环境验收。
 
 该顺序保留现有后端调度、PureGo、共享渲染和协议核心，不要求推倒重写。
 

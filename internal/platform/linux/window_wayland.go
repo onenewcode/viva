@@ -115,6 +115,7 @@ type waylandWindow struct {
 	framePending         bool
 	frameCallback        uintptr
 	needsRedraw          bool
+	forcePresent         bool
 	maximized            bool
 	fullscreen           bool
 	resizing             bool
@@ -132,14 +133,15 @@ type waylandWindow struct {
 
 // waylandWindowState maintains platform window state and render loop pipeline.
 type waylandWindowState struct {
-	app      *waylandApplication
-	win      *waylandWindow
-	config   platform.Config
-	renderer *vulkanRenderer
-	router   eventRouter
-	text     *linuxTextInput
-	profile  bool
-	started  time.Time
+	app        *waylandApplication
+	win        *waylandWindow
+	config     platform.Config
+	renderer   *vulkanRenderer
+	router     eventRouter
+	applyFrame func(platform.Frame) (bool, error)
+	text       *linuxTextInput
+	profile    bool
+	started    time.Time
 }
 
 // displayScale returns the device pixels per logical pixel for this window.
@@ -260,16 +262,13 @@ func (win *waylandWindow) updateViewportDestination() {
 	win.app.api.viewportSetDestination(win.viewport, totalLogicalW, totalLogicalH)
 }
 
-// renderFrame presents the current content atomically to the Wayland surface.
+// renderFrame applies new content, then atomically acknowledges and presents
+// only when either the scene changed or a protocol transition requires a frame.
 func (win *waylandWindow) renderFrame() {
 	if win.closed.Load() || win.surface == 0 || win.state == nil {
 		return
 	}
-	if win.awaitingConfigure {
-		win.needsRedraw = true
-		return
-	}
-	if win.hidden {
+	if win.awaitingConfigure || win.hidden {
 		win.needsRedraw = true
 		return
 	}
@@ -279,42 +278,67 @@ func (win *waylandWindow) renderFrame() {
 	}
 	win.needsRedraw = false
 
-	if win.pendingSerial != 0 && win.app != nil && win.app.api != nil && win.xdgSurface != 0 {
-		win.app.api.xdgSurfaceAckConfigure(win.xdgSurface, win.pendingSerial)
-		win.pendingSerial = 0
-	}
-
-	if win.geometryDirty {
-		win.updateWindowGeometry()
-		win.updateInputRegion()
-		win.updateViewportDestination()
-		win.geometryDirty = false
-	}
-
-	// Request next frame callback BEFORE committing current frame
-	win.requestFrameCallback()
-
-	if win.state.renderer != nil {
-		var err error
-		if win.state.config.OnRedraw != nil {
-			var frame platform.Frame
-			frame, err = win.state.config.OnRedraw()
-			if err == nil && win.state.router.present != nil {
-				err = win.state.router.present(frame)
-			}
-		} else {
-			err = win.state.renderer.present()
+	ackConfigure := func() {
+		if win.app != nil && win.app.api != nil && win.xdgSurface != 0 && win.pendingSerial != 0 {
+			win.app.api.xdgSurfaceAckConfigure(win.xdgSurface, win.pendingSerial)
+			win.pendingSerial = 0
 		}
-		if err != nil {
-			if win.app != nil {
-				win.app.fail(err)
-			}
-			return
-		}
-	} else if win.app != nil && win.app.api != nil {
-		win.app.api.surfaceCommit(win.surface)
 	}
-
+	var err error
+	if win.state.renderer != nil && win.state.config.OnRedraw != nil && win.state.applyFrame != nil {
+		var frame platform.Frame
+		frame, err = win.state.config.OnRedraw()
+		if err == nil {
+			var changed bool
+			changed, err = win.state.applyFrame(frame)
+			if err == nil {
+				if !changed && !win.forcePresent && !win.geometryDirty {
+					return
+				}
+				if win.geometryDirty {
+					win.updateWindowGeometry()
+					win.updateInputRegion()
+					win.updateViewportDestination()
+					win.geometryDirty = false
+				}
+				ackConfigure()
+				err = win.presentWithFrameCallback(win.state.renderer.present)
+			}
+		}
+	} else {
+		// States without a separate scene applier use the legacy callback path;
+		// openWindow always installs applyFrame for real windows.
+		if win.geometryDirty {
+			win.updateWindowGeometry()
+			win.updateInputRegion()
+			win.updateViewportDestination()
+			win.geometryDirty = false
+		}
+		ackConfigure()
+		if win.state.renderer != nil {
+			if win.state.config.OnRedraw != nil {
+				var frame platform.Frame
+				frame, err = win.state.config.OnRedraw()
+				if err == nil && win.state.router.present != nil {
+					err = win.presentWithFrameCallback(func() error {
+						return win.state.router.present(frame)
+					})
+				}
+			} else {
+				err = win.presentWithFrameCallback(win.state.renderer.present)
+			}
+		} else if win.app != nil && win.app.api != nil {
+			win.requestFrameCallback()
+			win.app.api.surfaceCommit(win.surface)
+		}
+	}
+	if err != nil {
+		if win.app != nil {
+			win.app.fail(err)
+		}
+		return
+	}
+	win.forcePresent = false
 	if win.app != nil && win.app.api != nil && win.app.api.displayFlush != nil && win.app.display != 0 {
 		win.app.api.displayFlush(win.app.display)
 	}
@@ -457,19 +481,6 @@ func (win *waylandWindow) applyPendingResize() {
 			win.pendingSerial = 0
 		}
 	}
-
-	// Synchronize window geometry, viewport destination and input region prior
-	// to Vulkan present/commit so the compositor updates anchors and geometry atomically.
-	if win.geometryDirty {
-		win.updateWindowGeometry()
-		win.updateInputRegion()
-		win.updateViewportDestination()
-		win.geometryDirty = false
-	}
-
-	// Request next frame callback BEFORE committing current frame
-	win.requestFrameCallback()
-
 	var err error
 	if win.state.renderer != nil {
 		err = win.state.renderer.resize(win.width, win.height)
@@ -494,20 +505,43 @@ func (win *waylandWindow) applyPendingResize() {
 		hasResizeFrame = true
 	}
 
-	// The compositor requires the configure ACK before the matching buffer.
-	ackConfigure()
-	if win.state.renderer != nil {
-		if hasResizeFrame && win.state.router.present != nil {
-			err = win.state.router.present(frame)
-		} else {
-			err = win.state.renderer.present()
+	if win.state.renderer != nil && hasResizeFrame && win.state.applyFrame != nil {
+		// A resize is a mandatory present even when the new scene compares clean.
+		_, err = win.state.applyFrame(frame)
+		if err == nil {
+			if win.geometryDirty {
+				win.updateWindowGeometry()
+				win.updateInputRegion()
+				win.updateViewportDestination()
+				win.geometryDirty = false
+			}
+			ackConfigure()
+			err = win.presentWithFrameCallback(win.state.renderer.present)
 		}
 	} else {
-		if hasResizeFrame && win.state.router.present != nil {
-			err = win.state.router.present(frame)
+		if win.geometryDirty {
+			win.updateWindowGeometry()
+			win.updateInputRegion()
+			win.updateViewportDestination()
+			win.geometryDirty = false
 		}
-		if err == nil && win.app != nil && win.app.api != nil {
-			win.app.api.surfaceCommit(win.surface)
+		ackConfigure()
+		if win.state.renderer != nil {
+			if hasResizeFrame && win.state.router.present != nil {
+				err = win.presentWithFrameCallback(func() error {
+					return win.state.router.present(frame)
+				})
+			} else {
+				err = win.presentWithFrameCallback(win.state.renderer.present)
+			}
+		} else {
+			win.requestFrameCallback()
+			if hasResizeFrame && win.state.router.present != nil {
+				err = win.state.router.present(frame)
+			}
+			if err == nil && win.app != nil && win.app.api != nil {
+				win.app.api.surfaceCommit(win.surface)
+			}
 		}
 	}
 	if err != nil {
@@ -516,6 +550,7 @@ func (win *waylandWindow) applyPendingResize() {
 		}
 		return
 	}
+	win.forcePresent = false
 	if win.state.renderer != nil {
 		win.reportFrame()
 	}
@@ -528,6 +563,9 @@ func (win *waylandWindow) handleXdgSurfaceConfigure(serial uint32) {
 	win.pendingSerial = serial
 	win.configured = true
 	win.awaitingConfigure = false
+	if win.state != nil {
+		win.forcePresent = true
+	}
 
 	scale := win.displayScale()
 	w, h := win.pendingWidth, win.pendingHeight
@@ -993,6 +1031,21 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 	win.state = state
 
 	var ime *linuxIME
+	applyFrame := func(frame platform.Frame) (bool, error) {
+		if ime != nil {
+			defer ime.sync()
+		}
+		if frame.Accessibility != nil && app != nil {
+			app.atspiFrame(state, frame.Accessibility)
+		}
+		merged, dirty, err := textInput.prepare(frame)
+		if err != nil || !dirty {
+			return false, err
+		}
+		changed, err := renderer.apply(merged)
+		return changed, err
+	}
+	state.applyFrame = applyFrame
 	state.router = eventRouter{
 		config:  config,
 		text:    textInput,
@@ -1000,17 +1053,7 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 		scale:   win.displayScale,
 		clicks:  &input.ClickCounter{Interval: 500 * time.Millisecond, Distance: 4},
 		present: func(frame platform.Frame) error {
-			if ime != nil {
-				defer ime.sync()
-			}
-			if frame.Accessibility != nil && app != nil {
-				app.atspiFrame(state, frame.Accessibility)
-			}
-			merged, dirty, err := textInput.prepare(frame)
-			if err != nil || !dirty {
-				return err
-			}
-			changed, err := renderer.apply(merged)
+			changed, err := applyFrame(frame)
 			if err != nil || !changed {
 				return err
 			}

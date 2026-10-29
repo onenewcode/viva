@@ -8,6 +8,8 @@
 - 范围：Wayland 后端、窗口呈现、共享 Vulkan 重建路径、事件循环及相关测试和 CI
 - 类型：只读源码审查；本文档不修改实现代码
 
+> 后续状态：本文 findings 已进入 [task.md](task.md)，六项任务均已完成实现、独立 review 和提交。本文保留审查时的控制流证据；当前未解决事项以 [08-linux-wayland-review-findings.md](08-linux-wayland-review-findings.md) 和任务状态为准。
+
 ## 1. 总体结论
 
 当前 HEAD 已针对前次审查的 19 项问题逐一提交修复，主干架构和大部分原始触发路径已经得到针对性处理。
