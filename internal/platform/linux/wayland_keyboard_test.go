@@ -157,6 +157,29 @@ func TestWaylandKeyRepeatQueuedAfterDestroyIsIgnored(t *testing.T) {
 	}
 }
 
+func TestWaylandIBusModifiersUseXMask(t *testing.T) {
+	app := &waylandApplication{
+		modifiers: input.ModifierShift | input.ModifierControl | input.ModifierAlt | input.ModifierMeta,
+	}
+	context := &fakeIMEContext{}
+	ime := &linuxIME{app: app, active: true, context: context}
+	win := &waylandWindow{app: app}
+	state := &waylandWindowState{app: app, win: win}
+	state.router.ime = ime
+	ime.router = state.router
+	win.state = state
+	app.keyboardFocus = win
+
+	app.handleKey(1, 100, 57, 1)
+	if len(context.keys) != 1 {
+		t.Fatalf("IBus received %d keys, want 1", len(context.keys))
+	}
+	want := uint32(xcbModShift | xcbModControl | xcbMod1 | xcbMod4)
+	if got := context.keys[0].state; got != want {
+		t.Fatalf("IBus modifier mask = %#x, want X mask %#x", got, want)
+	}
+}
+
 func TestWaylandKeyboardErrorsReachApplication(t *testing.T) {
 	expectedErr := errors.New("key failed")
 	app := &waylandApplication{}

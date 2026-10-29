@@ -272,6 +272,23 @@ func (app *waylandApplication) handleModifiers(depressed, latched, locked, group
 	}
 }
 
+func ibusModifierMask(modifiers input.Modifiers) uint32 {
+	var state uint32
+	if modifiers&input.ModifierShift != 0 {
+		state |= xcbModShift
+	}
+	if modifiers&input.ModifierControl != 0 {
+		state |= xcbModControl
+	}
+	if modifiers&input.ModifierAlt != 0 {
+		state |= xcbMod1
+	}
+	if modifiers&input.ModifierMeta != 0 {
+		state |= xcbMod4
+	}
+	return state
+}
+
 func (app *waylandApplication) resolveKeysym(scancode uint32) uint32 {
 	if app.xkb != nil && app.xkbState != 0 {
 		return app.xkb.stateKeyGetOneSym(app.xkbState, scancode+8)
@@ -302,7 +319,7 @@ func (app *waylandApplication) handleKey(serial, timeMs, scancode, state uint32)
 	}
 
 	if isDown {
-		if win.state.router.ime != nil && win.state.router.ime.processKeyDirect(keysym, scancode, uint32(app.modifiers), keyEvent) {
+		if win.state.router.ime != nil && win.state.router.ime.processKeyDirect(keysym, scancode, ibusModifierMask(app.modifiers), keyEvent) {
 			return
 		}
 		app.startKeyRepeat(keyEvent, scancode)
