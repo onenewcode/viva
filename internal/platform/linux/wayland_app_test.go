@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/vivaui/viva/internal/dbus"
 	"github.com/vivaui/viva/internal/platform"
@@ -182,6 +183,35 @@ func TestWaylandCloseReleasesInputMethod(t *testing.T) {
 	}
 	if len(loop.extraFDs) != 0 || app.ibus != nil || app.ibusFDSet {
 		t.Fatalf("IBus teardown left state: FDs=%v bus=%v FDSet=%v", loop.extraFDs, app.ibus != nil, app.ibusFDSet)
+	}
+}
+
+func TestWaylandPostDoesNotUseWindowMutex(t *testing.T) {
+	app := &waylandApplication{loop: &waylandLoop{wakeFD: -1}}
+	done := make(chan struct{})
+	go func() {
+		app.mu.Lock()
+		defer app.mu.Unlock()
+		app.post(func() {})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("post deadlocked with the window callback mutex held")
+	}
+}
+
+func TestWaylandPostAfterCloseDoesNotExecute(t *testing.T) {
+	app := &waylandApplication{loop: &waylandLoop{wakeFD: -1}}
+	app.close()
+	executed := 0
+	app.post(func() { executed++ })
+	if executed != 0 {
+		t.Fatal("post after application close executed on the calling goroutine")
+	}
+	if app.loop != nil {
+		t.Fatal("application close retained its event loop")
 	}
 }
 

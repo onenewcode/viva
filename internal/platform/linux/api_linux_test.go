@@ -1234,6 +1234,82 @@ func TestWaylandLoopCloseReleasesWakeFD(t *testing.T) {
 	}
 }
 
+func TestWaylandLoopCloseWaitsForWakeWrite(t *testing.T) {
+	writeStarted := make(chan struct{})
+	releaseWrite := make(chan struct{})
+	var writeCalls atomic.Int32
+	var closed atomic.Bool
+	var writeAfterClose atomic.Bool
+	mockLibc := &libcAPI{
+		write: func(_ int32, _ unsafe.Pointer, size uintptr) int {
+			if writeCalls.Add(1) == 1 {
+				close(writeStarted)
+				<-releaseWrite
+			}
+			if closed.Load() {
+				writeAfterClose.Store(true)
+			}
+			return int(size)
+		},
+		close: func(int32) int32 {
+			closed.Store(true)
+			return 0
+		},
+	}
+	loop := &waylandLoop{libc: mockLibc, wakeFD: 11}
+
+	postDone := make(chan struct{})
+	go func() {
+		loop.post(func() {})
+		close(postDone)
+	}()
+	<-writeStarted
+	closeDone := make(chan struct{})
+	go func() {
+		loop.close()
+		close(closeDone)
+	}()
+
+	prematureClose := false
+	select {
+	case <-closeDone:
+		prematureClose = true
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(releaseWrite)
+	<-postDone
+	<-closeDone
+	if prematureClose || writeAfterClose.Load() {
+		t.Fatalf("wake write raced close: premature=%v writeAfterClose=%v", prematureClose, writeAfterClose.Load())
+	}
+}
+
+func TestWaylandLoopPostAfterCloseIsRejected(t *testing.T) {
+	writes := 0
+	loop := &waylandLoop{
+		wakeFD: 11,
+		libc: &libcAPI{
+			write: func(_ int32, _ unsafe.Pointer, size uintptr) int {
+				writes++
+				return int(size)
+			},
+			close: func(int32) int32 { return 0 },
+		},
+	}
+	loop.close()
+	writesAfterClose := writes
+	queueAfterClose := len(loop.cmdQueue)
+	executed := 0
+	loop.post(func() { executed++ })
+	if writes != writesAfterClose || len(loop.cmdQueue) != queueAfterClose || executed != 0 {
+		t.Fatalf("post after close: writes=%d/%d queue=%d/%d executed=%d", writes, writesAfterClose, len(loop.cmdQueue), queueAfterClose, executed)
+	}
+	loop.drainCommands()
+	if executed != 0 {
+		t.Fatal("post after close executed a command")
+	}
+}
+
 func TestWaylandConnectDisconnectFDLeak(t *testing.T) {
 	if os.Getenv("WAYLAND_DISPLAY") == "" {
 		t.Log("WAYLAND_DISPLAY not set, skipping live 100x connect/disconnect test")

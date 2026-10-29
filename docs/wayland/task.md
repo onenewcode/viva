@@ -126,8 +126,8 @@
 
 ## Task 7：修复 eventfd post/close 竞态
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（首轮 FAIL 的窗口锁重入死锁已改用独立 loopMu 修复，复审通过）
 - 目标：`post` 不得与 `close` 交错后写入已关闭并可能复用的 FD，关闭后的命令不得进入调用 goroutine 直接执行。
 - 主要文件：
   - `internal/platform/linux/wayland_loop.go`

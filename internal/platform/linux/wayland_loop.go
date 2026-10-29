@@ -182,15 +182,17 @@ func (l *waylandLoop) post(cmd waylandCommand) {
 		return
 	}
 	l.cmdMu.Lock()
+	defer l.cmdMu.Unlock()
+	if l.wakeFD < 0 {
+		return
+	}
 	l.cmdQueue = append(l.cmdQueue, cmd)
-	wakeFD := l.wakeFD
-	l.cmdMu.Unlock()
 
-	if l.libc != nil && l.libc.write != nil && wakeFD >= 0 {
+	if l.libc != nil && l.libc.write != nil {
 		var val [8]byte
 		binary.NativeEndian.PutUint64(val[:], 1)
 		for {
-			written := l.libc.write(wakeFD, unsafe.Pointer(&val[0]), 8)
+			written := l.libc.write(l.wakeFD, unsafe.Pointer(&val[0]), 8)
 			if written >= 0 || l.libc.errno() != syscall.EINTR {
 				break
 			}

@@ -34,6 +34,7 @@ type waylandApplication struct {
 	libc    *libcAPI
 	display uintptr
 	loop    *waylandLoop
+	loopMu  sync.Mutex
 	globals waylandGlobals
 
 	pointer            uintptr
@@ -134,10 +135,14 @@ func newWaylandApplication() (*waylandApplication, error) {
 
 // post enqueues a command onto the main loop waker pipeline.
 func (app *waylandApplication) post(cmd waylandCommand) {
-	if app.loop != nil {
-		app.loop.post(cmd)
-	} else if cmd != nil {
-		cmd()
+	if cmd == nil {
+		return
+	}
+	app.loopMu.Lock()
+	loop := app.loop
+	app.loopMu.Unlock()
+	if loop != nil {
+		loop.post(cmd)
 	}
 }
 
@@ -564,9 +569,12 @@ func (app *waylandApplication) close() {
 	if app.globals.compositor != 0 {
 		app.globals.destroy(app.api)
 	}
-	if app.loop != nil {
-		app.loop.close()
-		app.loop = nil
+	app.loopMu.Lock()
+	loop := app.loop
+	app.loop = nil
+	app.loopMu.Unlock()
+	if loop != nil {
+		loop.close()
 	}
 	if app.display != 0 && app.api != nil {
 		app.api.displayDisconnect(app.display)
