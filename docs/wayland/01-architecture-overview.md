@@ -2,7 +2,6 @@
 
 - 更新日期：2026-10-29
 - 适用分支：`docs/linux-render-refresh-flicker`
-- 实施与审查记录：[task.md](task.md)
 - 文档性质：架构目标、协议约束和迁移方向；不代表全部能力已经实现或验收
 
 ## 1. 架构目标与判断原则
@@ -392,11 +391,9 @@ Vulkan fake 至少跟踪：
 | 托盘/后台常驻 | 未完整支持 | 先明确 keep-alive 产品契约 |
 | Linux 平台测试持续执行 | 当前 CI 缺少 | 增加真正运行平台测试的 CI 任务 |
 
-各任务的实现、回归测试、独立 review 和提交状态见 [task.md](task.md)。
-
 ## 10. 推荐迁移顺序
 
-本轮 `task.md` 已完成呈现事务、newly-unmapped remap、oldSwapchain、SUBOPTIMAL、eventfd EINTR 和 frame-margin 错误传播修复，并分别通过独立 review。后续架构迁移按以下顺序继续：
+本轮六项修复已完成呈现事务、newly-unmapped remap、oldSwapchain、SUBOPTIMAL、eventfd EINTR 和 frame-margin 错误传播修复，并分别通过独立 review。后续架构迁移按以下顺序继续：
 
 1. **收敛事件循环**：统一 event source、ERR/HUP、prepare/read、timer 和后台命令生命周期。
 2. **完善显式窗口状态机**：继续减少布尔组合，集中 configure 事务和 surface 映射状态。
