@@ -2568,6 +2568,7 @@ func TestWaylandRestoreToSavedFloatingSize(t *testing.T) {
 	}
 	win.handleXdgToplevelConfigure(1920, 1080, &statesArray)
 	win.handleXdgSurfaceConfigure(501)
+	win.onFrameDone(99, 0)
 
 	if !win.maximized {
 		t.Fatal("expected window to be maximized")

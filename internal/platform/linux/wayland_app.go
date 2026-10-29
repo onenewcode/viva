@@ -32,12 +32,13 @@ type waylandInputMethod interface {
 // waylandApplication coordinates the Wayland client display connection,
 // event loop, and window lifecycle.
 type waylandApplication struct {
-	api     *waylandAPI
-	libc    *libcAPI
-	display uintptr
-	loop    *waylandLoop
-	loopMu  sync.Mutex
-	globals waylandGlobals
+	api        *waylandAPI
+	libc       *libcAPI
+	display    uintptr
+	loop       *waylandLoop
+	loopMu     sync.Mutex
+	loopClosed bool
+	globals    waylandGlobals
 
 	pointer            uintptr
 	keyboard           uintptr
@@ -144,9 +145,14 @@ func (app *waylandApplication) post(cmd waylandCommand) {
 	}
 	app.loopMu.Lock()
 	loop := app.loop
+	closed := app.loopClosed
 	app.loopMu.Unlock()
 	if loop != nil {
 		loop.post(cmd)
+	} else if !closed {
+		// Before Run starts there is no loop to dispatch to yet. Once close
+		// detaches the loop, reject work rather than run it on a caller thread.
+		cmd()
 	}
 }
 
@@ -626,6 +632,7 @@ func (app *waylandApplication) close() {
 	app.loopMu.Lock()
 	loop := app.loop
 	app.loop = nil
+	app.loopClosed = true
 	app.loopMu.Unlock()
 	if loop != nil {
 		loop.close()

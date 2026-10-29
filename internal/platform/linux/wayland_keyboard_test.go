@@ -353,7 +353,14 @@ func TestWaylandKeyRepeatCleanupAndIndependentRelease(t *testing.T) {
 }
 
 func TestWaylandKeyRepeatRejectsPreviousPressGeneration(t *testing.T) {
-	app := &waylandApplication{repeatRate: 50, repeatDelay: 50}
+	app := &waylandApplication{
+		repeatRate:  50,
+		repeatDelay: 50,
+		xkbState:    1,
+		xkb: &xkbAPI{
+			stateKeyGetOneSym: func(uintptr, uint32) uint32 { return 'a' },
+		},
+	}
 	win := &waylandWindow{app: app, surface: 205}
 	repeatEvents := 0
 	state := &waylandWindowState{
@@ -381,11 +388,12 @@ func TestWaylandKeyRepeatRejectsPreviousPressGeneration(t *testing.T) {
 		t.Fatal("same-key press reused the previous generation")
 	}
 
-	app.dispatchKeyRepeat(win, platform.KeyEvent{Repeat: true}, 30, oldGeneration)
+	keyEvent := app.repeatKey
+	app.dispatchKeyRepeat(win, keyEvent, 30, oldGeneration)
 	if repeatEvents != 0 {
 		t.Fatal("previous press generation delivered after same-key re-press")
 	}
-	app.dispatchKeyRepeat(win, platform.KeyEvent{Repeat: true}, 30, app.repeatGeneration)
+	app.dispatchKeyRepeat(win, keyEvent, 30, app.repeatGeneration)
 	if repeatEvents != 1 {
 		t.Fatalf("current press generation delivered %d events, want 1", repeatEvents)
 	}

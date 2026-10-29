@@ -747,19 +747,22 @@ func TestSuboptimalRecreatesAfterCompletedFrame(t *testing.T) {
 	}
 }
 
-func TestSuboptimalPersistsAfterRecreationReturnsError(t *testing.T) {
+func TestSuboptimalPersistsAfterRecreationPresentsWithoutRetry(t *testing.T) {
 	recreations := 0
 	renderer := newSuboptimalTestRenderer(vkSuccess, vkSuboptimal, &recreations)
 	renderer.api.queuePresent = func(uintptr, *vkPresentInfo) int32 { return vkSuboptimal }
 
-	if err := renderer.presentRebuilding(); err == nil {
-		t.Fatal("presentRebuilding ignored a persistently suboptimal new swapchain")
+	if err := renderer.presentRebuilding(); err != nil {
+		t.Fatalf("presentRebuilding rejected a usable recreated swapchain: %v", err)
 	}
 	if renderer.submissions != 2 || recreations != 1 {
 		t.Fatalf("persistent recovery submissions=%d recreations=%d, want 2/1", renderer.submissions, recreations)
 	}
 	if renderer.swapchain != 99 {
 		t.Fatalf("persistent recovery swapchain = %d, want 99", renderer.swapchain)
+	}
+	if !renderer.swapchainSuboptimal {
+		t.Fatal("recreated swapchain lost its driver's suboptimal status")
 	}
 }
 

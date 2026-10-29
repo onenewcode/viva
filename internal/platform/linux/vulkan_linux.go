@@ -991,7 +991,10 @@ func (renderer *vulkanRenderer) presentRebuilding() error {
 		if err != nil {
 			return err
 		}
-		if !rebuild && !renderer.swapchainSuboptimal {
+		if !rebuild && (!renderer.swapchainSuboptimal || attempt == 1) {
+			// The recreated swapchain has presented, even if its driver still
+			// reports SUBOPTIMAL. A later frame may rebuild it, but repeatedly
+			// recreating a usable swapchain cannot make that status converge.
 			return nil
 		}
 		if attempt == 1 {
