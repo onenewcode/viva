@@ -166,8 +166,8 @@
 
 ## Task 9：修复 Wayland 缩放往返与 viewporter 回退
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（独立只读审查）
 - 目标：scale 往返不截断逻辑尺寸；缺少 viewporter 时不进入需要 viewport 的 fractional-scale 呈现路径。
 - 主要文件：
   - `internal/platform/linux/wayland_scale.go`

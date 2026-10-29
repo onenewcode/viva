@@ -142,22 +142,25 @@ func (app *waylandApplication) setupWindowScale(win *waylandWindow) {
 		return
 	}
 
-	// 1. Fractional Scale Manager
-	if app.globals.scaleMgr != 0 {
+	// Fractional scale requires a viewport to map the scaled buffer back to
+	// logical surface coordinates. Without either capability, use the integer
+	// preferred-buffer-scale/wl_output fallback instead.
+	if app.globals.scaleMgr != 0 && app.globals.viewporter != 0 {
 		win.fractionalScale = app.api.getFractionalScale(app.globals.scaleMgr, win.surface)
 		if win.fractionalScale != 0 {
-			initScaleListeners()
-			app.api.proxyAddListener(win.fractionalScale, uintptr(unsafe.Pointer(&rawFractionalScaleListener[0])), unsafe.Pointer(win))
+			win.viewport = app.api.getViewport(app.globals.viewporter, win.surface)
+			if win.viewport != 0 {
+				initScaleListeners()
+				app.api.proxyAddListener(win.fractionalScale, uintptr(unsafe.Pointer(&rawFractionalScaleListener[0])), unsafe.Pointer(win))
+				win.updateViewportDestination()
+			} else {
+				app.api.fractionalScaleDestroy(win.fractionalScale)
+				win.fractionalScale = 0
+			}
 		}
 	}
 
-	// 2. Viewporter
-	if app.globals.viewporter != 0 {
-		win.viewport = app.api.getViewport(app.globals.viewporter, win.surface)
-		win.updateViewportDestination()
-	}
-
-	// 3. Surface enter/leave for output tracking
+	// Surface enter/leave for output tracking
 	initSurfaceListeners()
 	app.api.proxyAddListener(win.surface, uintptr(unsafe.Pointer(&rawSurfaceListener[0])), unsafe.Pointer(win))
 }
@@ -244,6 +247,9 @@ func (win *waylandWindow) applyScale(scale float32) {
 			logicalH = float32(h)
 		}
 	}
+
+	logicalW = float32(math.Round(float64(logicalW)))
+	logicalH = float32(math.Round(float64(logicalH)))
 
 	if !win.maximized && !win.fullscreen {
 		win.savedLogicalW = logicalW
