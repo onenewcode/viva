@@ -568,6 +568,49 @@ func TestSwapchainRecreationPassesOldHandle(t *testing.T) {
 	}
 }
 
+func TestSwapchainRecreationDestroysOldHandleOnceWhenCreateFails(t *testing.T) {
+	var destroyed []uintptr
+	renderer := vulkanRenderer{
+		device:    10,
+		swapchain: 42,
+		api: &vulkanAPI{
+			deviceWaitIdle: func(uintptr) int32 { return vkSuccess },
+			getSurfaceCapabilities: func(_, _ uintptr, capabilities *vkSurfaceCapabilities) int32 {
+				capabilities.Current = vkExtent2D{Width: 100, Height: 100}
+				capabilities.MinImages = 2
+				capabilities.CompositeAlpha = vkCompositeOpaque
+				capabilities.Usage = vkImageUsageColorAttachment
+				return vkSuccess
+			},
+			getSurfaceFormats: func(_, _ uintptr, count *uint32, formats *vkSurfaceFormat) int32 {
+				*count = 1
+				if formats != nil {
+					*formats = vkSurfaceFormat{Format: vkFormatBGRA8, ColorSpace: vkColorSpaceSRGB}
+				}
+				return vkSuccess
+			},
+			createSwapchain: func(uintptr, *vkSwapchainCreateInfo, unsafe.Pointer, *uintptr) int32 {
+				return vkErrorInitializationFailed
+			},
+			destroySwapchain: func(_ uintptr, swapchain uintptr, _ unsafe.Pointer) {
+				destroyed = append(destroyed, swapchain)
+			},
+		},
+	}
+
+	// oldSwapchain is retired by the creation attempt even when it fails, so
+	// the error cleanup must release that handle exactly once.
+	if err := renderer.recreateSwapchain(); err == nil {
+		t.Fatal("recreateSwapchain succeeded after a creation failure")
+	}
+	if !slices.Equal(destroyed, []uintptr{42}) {
+		t.Fatalf("destroyed swapchains = %v, want [42]", destroyed)
+	}
+	if renderer.swapchain != 0 {
+		t.Fatalf("swapchain retained after failure: %d", renderer.swapchain)
+	}
+}
+
 func TestSuboptimalDoesNotRecreateInFrame(t *testing.T) {
 	var recreations int
 	renderer := vulkanRenderer{

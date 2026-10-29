@@ -740,9 +740,6 @@ func (renderer *vulkanRenderer) createSwapchainWithOld(oldSwapchain uintptr) (er
 	info := vkSwapchainCreateInfo{SType: vkStructureSwapchainCreateInfo, Surface: renderer.surface, MinImages: imageCount, Format: selected.Format, ColorSpace: selected.ColorSpace, Extent: extent, Layers: 1, Usage: vkImageUsageColorAttachment, SharingMode: vkSharingExclusive, PreTransform: capabilities.CurrentTransform, CompositeAlpha: composite, PresentMode: presentMode, Clipped: 1, OldSwapchain: oldSwapchain}
 	var newSwapchain uintptr
 	if err := vkCheck(renderer.api.createSwapchain(renderer.device, &info, nil, &newSwapchain), "create swapchain"); err != nil {
-		if oldSwapchain != 0 {
-			renderer.api.destroySwapchain(renderer.device, oldSwapchain, nil)
-		}
 		return err
 	}
 	if oldSwapchain != 0 {
