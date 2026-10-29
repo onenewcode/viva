@@ -14,7 +14,6 @@ import (
 // field would receive go to the engine first, and what the engine composes comes
 // back as the same text events a native editor produces, so the field shows the
 // marked text and commits the choice exactly as it does on the other platforms.
-//
 type imeHost interface {
 	fail(err error)
 	checkInputMethod()
@@ -288,10 +287,14 @@ func (ime *linuxIME) release(keymap *xcbKeymap, event *xcbInputEvent) {
 		return
 	}
 	keysym := keymap.keysym(event.Detail, event.State)
-	if keysym == 0 {
+	ime.releaseDirect(keysym, uint32(event.Detail)-8, uint32(event.State))
+}
+
+func (ime *linuxIME) releaseDirect(keysym, keycode, state uint32) {
+	if ime.dead || !ime.active || ime.context == nil || keysym == 0 {
 		return
 	}
-	if err := ime.context.ProcessKey(keysym, uint32(event.Detail)-8, uint32(event.State)|ibus.ReleaseMask, nil); err != nil {
+	if err := ime.context.ProcessKey(keysym, keycode, state|ibus.ReleaseMask, nil); err != nil {
 		ime.app.checkInputMethod()
 	}
 }

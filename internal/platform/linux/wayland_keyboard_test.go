@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vivaui/viva/internal/ibus"
 	"github.com/vivaui/viva/internal/input"
 	"github.com/vivaui/viva/internal/platform"
 )
@@ -177,6 +178,35 @@ func TestWaylandIBusModifiersUseXMask(t *testing.T) {
 	want := uint32(xcbModShift | xcbModControl | xcbMod1 | xcbMod4)
 	if got := context.keys[0].state; got != want {
 		t.Fatalf("IBus modifier mask = %#x, want X mask %#x", got, want)
+	}
+}
+
+func TestWaylandIBusKeyReleaseUsesReleaseMask(t *testing.T) {
+	app := &waylandApplication{modifiers: input.ModifierShift}
+	context := &fakeIMEContext{}
+	ime := &linuxIME{app: app, active: true, context: context}
+	win := &waylandWindow{app: app}
+	state := &waylandWindowState{app: app, win: win}
+	state.router.ime = ime
+	ime.router = state.router
+	win.state = state
+	app.keyboardFocus = win
+
+	app.handleKey(1, 100, 57, 1)
+	app.handleKey(2, 120, 57, 0)
+	if len(context.keys) != 2 {
+		t.Fatalf("IBus received %d keys, want press and release", len(context.keys))
+	}
+	release := context.keys[1]
+	want := uint32(xcbModShift) | ibus.ReleaseMask
+	if release.state != want {
+		t.Fatalf("IBus release mask = %#x, want %#x", release.state, want)
+	}
+	if release.done != nil {
+		t.Fatal("IBus release unexpectedly has an application delivery callback")
+	}
+	if release.keysym != context.keys[0].keysym || release.keycode != context.keys[0].keycode {
+		t.Fatalf("press and release identities differ: press=%+v release=%+v", context.keys[0], release)
 	}
 }
 

@@ -331,6 +331,9 @@ func (app *waylandApplication) handleKey(serial, timeMs, scancode, state uint32)
 		if isRepeatingKey {
 			app.stopKeyRepeat()
 		}
+		if win.state.router.ime != nil {
+			win.state.router.ime.releaseDirect(keysym, scancode, ibusModifierMask(app.modifiers))
+		}
 		if win.state.router.wantsKeyReleases() {
 			app.fail(win.state.router.dispatchKey(keyEvent))
 		}
