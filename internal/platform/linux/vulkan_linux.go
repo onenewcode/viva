@@ -992,6 +992,13 @@ func (renderer *vulkanRenderer) presentRebuilding() error {
 			return err
 		}
 		if !rebuild {
+			if renderer.swapchainSuboptimal {
+				// SUBOPTIMAL still presents the current frame. Recreate at this
+				// completed-frame boundary instead of ignoring it indefinitely.
+				if err := renderer.recreateSwapchain(); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 		if err := renderer.recreateSwapchain(); err != nil {

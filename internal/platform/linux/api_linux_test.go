@@ -611,9 +611,8 @@ func TestSwapchainRecreationDestroysOldHandleOnceWhenCreateFails(t *testing.T) {
 	}
 }
 
-func TestSuboptimalDoesNotRecreateInFrame(t *testing.T) {
-	var recreations int
-	renderer := vulkanRenderer{
+func newSuboptimalTestRenderer(acquireStatus, presentStatus int32, recreations *int) *vulkanRenderer {
+	return &vulkanRenderer{
 		device:    10,
 		queue:     20,
 		swapchain: 30,
@@ -622,28 +621,132 @@ func TestSuboptimalDoesNotRecreateInFrame(t *testing.T) {
 		api: &vulkanAPI{
 			waitForFences: func(uintptr, uint32, *uintptr, uint32, uint64) int32 { return vkSuccess },
 			resetFences:   func(uintptr, uint32, *uintptr) int32 { return vkSuccess },
-			acquireNextImage: func(dev, sw uintptr, timeout uint64, sem, fence uintptr, image *uint32) int32 {
+			acquireNextImage: func(_, _ uintptr, _ uint64, _, _ uintptr, image *uint32) int32 {
 				*image = 0
-				return vkSuccess
+				return acquireStatus
 			},
 			queueSubmit: func(uintptr, uint32, *vkSubmitInfo, uintptr) int32 { return vkSuccess },
-			queuePresent: func(queue uintptr, info *vkPresentInfo) int32 {
-				return vkSuboptimal
+			queuePresent: func(uintptr, *vkPresentInfo) int32 {
+				return presentStatus
 			},
 			deviceWaitIdle: func(uintptr) int32 {
-				recreations++
+				*recreations++
 				return vkSuccess
 			},
+			getSurfaceCapabilities: func(_, _ uintptr, capabilities *vkSurfaceCapabilities) int32 {
+				capabilities.Current = vkExtent2D{Width: 100, Height: 100}
+				capabilities.MinImages = 2
+				capabilities.CompositeAlpha = vkCompositeOpaque
+				capabilities.Usage = vkImageUsageColorAttachment
+				return vkSuccess
+			},
+			getSurfaceFormats: func(_, _ uintptr, count *uint32, formats *vkSurfaceFormat) int32 {
+				*count = 1
+				if formats != nil {
+					*formats = vkSurfaceFormat{Format: vkFormatBGRA8, ColorSpace: vkColorSpaceSRGB}
+				}
+				return vkSuccess
+			},
+			createSwapchain: func(_ uintptr, _ *vkSwapchainCreateInfo, _ unsafe.Pointer, swapchain *uintptr) int32 {
+				*swapchain = 99
+				return vkSuccess
+			},
+			destroySwapchain: func(uintptr, uintptr, unsafe.Pointer) {},
+			getSwapchainImages: func(_, _ uintptr, count *uint32, images *uintptr) int32 {
+				if images == nil {
+					*count = 1
+					return vkSuccess
+				}
+				*images = 101
+				return vkSuccess
+			},
+			createImageView: func(_ uintptr, _ *vkImageViewCreateInfo, _ unsafe.Pointer, view *uintptr) int32 {
+				*view = 201
+				return vkSuccess
+			},
+			createRenderPass: func(_ uintptr, _ *vkRenderPassCreateInfo, _ unsafe.Pointer, renderPass *uintptr) int32 {
+				*renderPass = 301
+				return vkSuccess
+			},
+			createFramebuffer: func(_ uintptr, _ *vkFramebufferCreateInfo, _ unsafe.Pointer, framebuffer *uintptr) int32 {
+				*framebuffer = 401
+				return vkSuccess
+			},
+			createCommandPool: func(_ uintptr, _ *vkCommandPoolCreateInfo, _ unsafe.Pointer, pool *uintptr) int32 {
+				*pool = 501
+				return vkSuccess
+			},
+			allocateCommandBuffers: func(_ uintptr, _ *vkCommandBufferAllocateInfo, buffers *uintptr) int32 {
+				*buffers = 601
+				return vkSuccess
+			},
+			createPipelineLayout: func(_ uintptr, _ *vkPipelineLayoutCreateInfo, _ unsafe.Pointer, layout *uintptr) int32 {
+				*layout = 701
+				return vkSuccess
+			},
+			createShaderModule: func(_ uintptr, _ *vkShaderModuleCreateInfo, _ unsafe.Pointer, module *uintptr) int32 {
+				*module = 801
+				return vkSuccess
+			},
+			destroyShaderModule: func(uintptr, uintptr, unsafe.Pointer) {},
+			createGraphicsPipelines: func(_, _ uintptr, _ uint32, _ *vkGraphicsPipelineCreateInfo, _ unsafe.Pointer, pipeline *uintptr) int32 {
+				*pipeline = 901
+				return vkSuccess
+			},
+			beginCommandBuffer: func(uintptr, *vkCommandBufferBeginInfo) int32 { return vkSuccess },
+			cmdBeginRenderPass: func(uintptr, *vkRenderPassBeginInfo, uint32) {},
+			cmdEndRenderPass:   func(uintptr) {},
+			endCommandBuffer:   func(uintptr) int32 { return vkSuccess },
 		},
 	}
-	if err := renderer.presentRebuilding(); err != nil {
-		t.Fatalf("presentRebuilding returned error: %v", err)
+}
+
+func TestSuboptimalRecreatesAfterCompletedFrame(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		acquireStatus int32
+		presentStatus int32
+	}{
+		{name: "acquire", acquireStatus: vkSuboptimal, presentStatus: vkSuccess},
+		{name: "present", acquireStatus: vkSuccess, presentStatus: vkSuboptimal},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recreations := 0
+			renderer := newSuboptimalTestRenderer(test.acquireStatus, test.presentStatus, &recreations)
+			if err := renderer.presentRebuilding(); err != nil {
+				t.Fatalf("presentRebuilding returned error: %v", err)
+			}
+			if renderer.submissions != 1 {
+				t.Fatalf("completed submissions = %d, want 1", renderer.submissions)
+			}
+			if recreations != 1 {
+				t.Fatalf("swapchain recreations = %d, want 1", recreations)
+			}
+			if renderer.swapchain != 99 {
+				t.Fatalf("swapchain = %d, want recreated handle 99", renderer.swapchain)
+			}
+			if renderer.swapchainSuboptimal {
+				t.Fatal("suboptimal flag survived successful recreation")
+			}
+		})
 	}
-	if recreations != 0 {
-		t.Fatalf("recreateSwapchain was called %d times on suboptimal present, want 0", recreations)
+}
+
+func TestSuboptimalRecreationFailureIsReturned(t *testing.T) {
+	recreations := 0
+	renderer := newSuboptimalTestRenderer(vkSuccess, vkSuboptimal, &recreations)
+	renderer.api.createSwapchain = func(uintptr, *vkSwapchainCreateInfo, unsafe.Pointer, *uintptr) int32 {
+		return vkErrorInitializationFailed
 	}
-	if !renderer.swapchainSuboptimal {
-		t.Fatal("expected swapchainSuboptimal flag to be set to true")
+
+	if err := renderer.presentRebuilding(); err == nil {
+		t.Fatal("presentRebuilding ignored recreation failure")
+	}
+	if renderer.submissions != 1 {
+		t.Fatalf("completed submissions = %d, want 1", renderer.submissions)
+	}
+	if recreations != 1 {
+		t.Fatalf("swapchain recreations = %d, want 1", recreations)
 	}
 }
 

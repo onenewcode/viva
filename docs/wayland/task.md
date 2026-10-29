@@ -33,8 +33,8 @@
 
 ## Task 2：在受控帧边界恢复 SUBOPTIMAL swapchain
 
-- 状态：待开始
-- Review：未进行
+- 状态：已提交
+- Review：PASS（独立只读审查）
 - 目标：当前 SUBOPTIMAL 帧可以完成，但随后必须消费标志并在受控边界重建，不能永久忽略。
 - 主要文件：
   - `internal/platform/linux/vulkan_linux.go`
