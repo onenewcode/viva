@@ -74,10 +74,11 @@ type waylandLoop struct {
 
 	running atomic.Bool
 
-	pollMu   sync.Mutex
-	pollFDs  []pollFD
-	extraFDs []int32
-	extraCBs []func()
+	pollMu       sync.Mutex
+	pollFDs      []pollFD
+	extraFDs     []int32
+	extraCBs     []func()
+	flushPending bool
 }
 
 func newWaylandLoop(api *waylandAPI, display uintptr, libc *libcAPI) (*waylandLoop, error) {
@@ -132,6 +133,9 @@ func (l *waylandLoop) rebuildPollFDsLocked() {
 		l.pollFDs = make([]pollFD, total)
 	}
 	l.pollFDs[0] = pollFD{FD: l.waylandFD, Events: 1} // POLLIN = 1
+	if l.flushPending {
+		l.pollFDs[0].Events |= 4 // POLLOUT = 4
+	}
 	l.pollFDs[1] = pollFD{FD: l.wakeFD, Events: 1}
 	for i, fd := range l.extraFDs {
 		l.pollFDs[2+i] = pollFD{FD: fd, Events: 1}
@@ -200,6 +204,41 @@ func (l *waylandLoop) drainCommands() {
 	}
 }
 
+func (l *waylandLoop) setFlushPending(pending bool) {
+	l.pollMu.Lock()
+	l.flushPending = pending
+	if len(l.pollFDs) > 0 {
+		if pending {
+			l.pollFDs[0].Events |= 4 // POLLOUT = 4
+		} else {
+			l.pollFDs[0].Events &^= 4
+		}
+	}
+	l.pollMu.Unlock()
+}
+
+func (l *waylandLoop) flush() bool {
+	if l.wayland == nil || l.wayland.displayFlush == nil {
+		return true
+	}
+	for {
+		if l.wayland.displayFlush(l.display) >= 0 {
+			l.setFlushPending(false)
+			return true
+		}
+		switch l.libc.errno() {
+		case syscall.EINTR:
+			continue
+		case syscall.EAGAIN:
+			l.setFlushPending(true)
+			return true
+		default:
+			l.running.Store(false)
+			return false
+		}
+	}
+}
+
 func (l *waylandLoop) step(timeoutMs int32) bool {
 	if !l.running.Load() {
 		return false
@@ -217,8 +256,8 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 	}
 
 	// 2. Flush outgoing requests to Wayland display socket
-	if l.wayland != nil && l.wayland.displayFlush != nil {
-		l.wayland.displayFlush(l.display)
+	if !l.flush() {
+		return false
 	}
 
 	// 3. Poll for readiness

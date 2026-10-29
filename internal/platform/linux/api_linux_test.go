@@ -798,6 +798,64 @@ func TestWaylandLoopPollErrorStopsUnlessInterrupted(t *testing.T) {
 	}
 }
 
+func TestWaylandLoopFlushBackpressureUsesPollOut(t *testing.T) {
+	errno := syscall.Errno(0)
+	flushes := 0
+	var pollEvents []int16
+	loop := &waylandLoop{
+		libc: &libcAPI{
+			poll: func(fds *pollFD, nfds uintptr, timeout int32) int32 {
+				slice := unsafe.Slice(fds, int(nfds))
+				pollEvents = append(pollEvents, slice[0].Events)
+				if flushes == 1 {
+					slice[0].REvents = 4 // POLLOUT
+					return 1
+				}
+				return 0
+			},
+			errnoLocation: func() *int32 {
+				value := int32(errno)
+				return &value
+			},
+		},
+		wayland: &waylandAPI{
+			displayFlush: func(display uintptr) int32 {
+				flushes++
+				if flushes == 1 {
+					errno = syscall.EAGAIN
+					return -1
+				}
+				errno = 0
+				return 0
+			},
+		},
+		display:   1,
+		waylandFD: 10,
+		wakeFD:    11,
+	}
+	loop.running.Store(true)
+	loop.rebuildPollFDs()
+
+	if !loop.step(0) {
+		t.Fatal("EAGAIN stopped the Wayland loop")
+	}
+	if !loop.flushPending {
+		t.Fatal("EAGAIN did not arm POLLOUT recovery")
+	}
+	if !loop.step(0) {
+		t.Fatal("successful flush stopped the Wayland loop")
+	}
+	if loop.flushPending {
+		t.Fatal("successful flush left POLLOUT armed")
+	}
+	if flushes != 2 {
+		t.Fatalf("flush called %d times, want 2", flushes)
+	}
+	if len(pollEvents) != 2 || pollEvents[0]&4 == 0 || pollEvents[1]&4 != 0 {
+		t.Fatalf("Wayland poll events = %v, want POLLOUT only while flush is blocked", pollEvents)
+	}
+}
+
 func TestApplicationPostWithoutWindows(t *testing.T) {
 	var quitCalled atomic.Bool
 	wakeCh := make(chan struct{}, 1)
