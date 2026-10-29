@@ -8,7 +8,7 @@
 
 ## 执行规则
 
-1. 按 Task 1 → Task 8 顺序实施，不在前一个任务提交前开始下一个任务。
+1. 按 Task 1 → Task 11 顺序实施，不在前一个任务提交前开始下一个任务。
 2. 每个任务必须包含实现和对应回归测试；CI/文档任务按其实际交付物验收。
 3. 每个任务完成后进行独立只读 review；发现阻断问题则修复并重新 review，PASS 后才提交。
 4. 每个任务单独提交，提交信息包含 `Task N`，提交哈希以 `git log` 为准。
@@ -76,7 +76,54 @@
   - ERR/HUP/NVAL 不再被静默忽略；
   - 正常关闭释放 IBus 连接和 pending keys。
 
-## Task 4：修复 eventfd post/close 竞态
+## Task 4：保留 pending configure 在 scale 前的最新几何
+
+- 状态：待实施
+- Review：待进行
+- 目标：configure 因旧 frame pending 而延迟时，后续 scale 不得用旧窗口尺寸覆盖待提交逻辑几何。
+- 主要文件：
+  - `internal/platform/linux/window_wayland.go`
+  - `internal/platform/linux/wayland_scale.go`
+  - `internal/platform/linux/wayland_window_test.go`
+- 实施要点：区分 compositor 待确认尺寸与由 scale 派生的尺寸；延迟的是 renderer/ACK/callback/present，不是最新 configure 几何记录。
+- 验收条件：
+  - 400×300@1 pending 到 800×600 后，再在 callback 前 applyScale(2)，最终按 800×600 逻辑尺寸和 1600×1200 设备尺寸完成；
+  - OnResize 收到最新逻辑尺寸，ACK 对应正确 serial；
+  - 连续 configure 不被旧 savedLogical 尺寸覆盖。
+
+## Task 5：在持续 deferred resize 中应用最新 redraw
+
+- 状态：待实施
+- Review：待进行
+- 依赖：Task 4 已提交。
+- 目标：`OnResize=nil` 时，deferred resize 事务获取并应用最新 OnRedraw，避免连续 resize 一直呈现旧场景。
+- 主要文件：
+  - `internal/platform/linux/window_wayland.go`
+  - `internal/platform/linux/wayland_window_test.go`
+- 实施要点：在同一 resize 事务内选择 OnResize frame 或最新 OnRedraw frame，成功呈现后才消费 needsRedraw。
+- 验收条件：
+  - 每次 callback 前都有新 configure 的连续 resize 仍能推进最新内容；
+  - OnResize 存在时不额外重复 OnRedraw；
+  - apply/present 失败保留可恢复状态，不伪造 redraw 已完成。
+
+## Task 6：让 frame callback 分配失败可恢复
+
+- 状态：待实施
+- Review：待进行
+- 依赖：Task 5 已提交。
+- 目标：新 `wl_callback` 创建失败时不得 ACK、present 或消费事务状态，恢复后仍能建立配对 callback 并提交。
+- 主要文件：
+  - `internal/platform/linux/wayland_frame.go`
+  - `internal/platform/linux/window_wayland.go`
+  - `internal/platform/linux/wayland_window_test.go`
+- 实施要点：让 callback 获取返回成功/失败；将失败纳入现有错误和事务回滚路径，避免旧 callback 被误销毁。
+- 验收条件：
+  - `proxyMarshalFlags` 返回 0 时没有 ACK、present 或新 commit；
+  - pendingSerial、forcePresent、needsRedraw 和旧 callback 按事务语义保留；
+  - 后续分配成功只提交一次并恢复背压；
+  - open、普通 redraw、resize/scale 路径一致处理。
+
+## Task 7：修复 eventfd post/close 竞态
 
 - 状态：待实施
 - Review：待进行
@@ -93,11 +140,11 @@
   - 应用 teardown 后外部 post 不直接在后台线程执行；
   - 现有 waker、Quit 和无窗口 post 测试保持兼容或按新契约更新。
 
-## Task 5：将 IBus 超时和键盘 repeat 纳入主循环调度
+## Task 8：将 IBus 超时和键盘 repeat 纳入主循环调度
 
 - 状态：待实施
 - Review：待进行
-- 依赖：Task 3、Task 4 已提交。
+- 依赖：Task 3、Task 7 已提交。
 - 目标：Wayland 使用最近 deadline 驱动 poll timeout，实际执行 IBus Expire，并以主循环按键代际替代 repeat ticker goroutine。
 - 主要文件：
   - `internal/platform/linux/wayland_app.go`
@@ -115,7 +162,7 @@
   - 无 timer 时仍可持续 poll，Quit 可唤醒；
   - repeat 不再依赖独立 ticker goroutine。
 
-## Task 6：修复 Wayland 缩放往返与 viewporter 回退
+## Task 9：修复 Wayland 缩放往返与 viewporter 回退
 
 - 状态：待实施
 - Review：待进行
@@ -131,7 +178,7 @@
   - 只有 scale manager、没有 viewporter 时不产生缩小 surface；
   - 正常 fractional + viewport 和整数回退测试保持通过。
 
-## Task 7：在 SUBOPTIMAL 新交换链上强制呈现
+## Task 10：在 SUBOPTIMAL 新交换链上强制呈现
 
 - 状态：待实施
 - Review：待进行
@@ -146,11 +193,11 @@
   - 重建失败返回错误；
   - 新交换链持续异常时有明确终止条件，不形成无限恢复。
 
-## Task 8：让 Linux 平台测试进入 CI 并同步验收文档
+## Task 11：让 Linux 平台测试进入 CI 并同步验收文档
 
 - 状态：待实施
 - Review：待进行
-- 依赖：Task 1–7 已提交。
+- 依赖：Task 1–10 已提交。
 - 目标：现有 Linux mock/unit 测试不再只存在于源码中，仓库能力文档不再声称原生 Wayland 未实现。
 - 主要文件：
   - `.github/workflows/ci.yml`
