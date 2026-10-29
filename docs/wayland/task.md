@@ -77,8 +77,8 @@
 
 ## Task 5：修复初始 configure 与 Show 重新映射协议序列
 
-- 状态：待开始
-- Review：未进行
+- 状态：已提交
+- Review：PASS（首轮 FAIL 的 hidden resize 旁路已修复，复审通过）
 - 目标：首次映射和 newly-unmapped 后的重新映射都遵守 empty commit → configure → ACK → buffer commit。
 - 主要文件：
   - `internal/platform/linux/window_wayland.go`

@@ -109,6 +109,7 @@ type waylandWindow struct {
 	pendingWidth         int32
 	pendingHeight        int32
 	configured           bool
+	awaitingConfigure    bool
 	firstConfigureDone   bool
 	initialResizePending bool
 	framePending         bool
@@ -264,6 +265,10 @@ func (win *waylandWindow) renderFrame() {
 	if win.closed.Load() || win.surface == 0 || win.state == nil {
 		return
 	}
+	if win.awaitingConfigure {
+		win.needsRedraw = true
+		return
+	}
 	if win.hidden {
 		win.needsRedraw = true
 		return
@@ -407,6 +412,10 @@ func (win *waylandWindow) applyPendingResize() {
 	if win.closed.Load() || win.surface == 0 {
 		return
 	}
+	if win.hidden || win.awaitingConfigure {
+		win.needsRedraw = true
+		return
+	}
 	win.needsRedraw = false
 
 	scale := win.displayScale()
@@ -518,6 +527,7 @@ func (win *waylandWindow) applyPendingResize() {
 func (win *waylandWindow) handleXdgSurfaceConfigure(serial uint32) {
 	win.pendingSerial = serial
 	win.configured = true
+	win.awaitingConfigure = false
 
 	scale := win.displayScale()
 	w, h := win.pendingWidth, win.pendingHeight
@@ -783,7 +793,8 @@ func (win *waylandWindow) Hide() {
 	})
 }
 
-// Show shows a hidden window.
+// Show starts remapping a hidden window. A newly-unmapped xdg_toplevel must
+// repeat the initial empty commit and wait for a new configure before presenting.
 func (win *waylandWindow) Show() {
 	if win == nil || win.closed.Load() {
 		return
@@ -793,7 +804,13 @@ func (win *waylandWindow) Show() {
 			return
 		}
 		win.hidden = false
-		win.renderFrame()
+		win.configured = false
+		win.awaitingConfigure = true
+		win.needsRedraw = true
+		if win.surface != 0 && win.app != nil && win.app.api != nil {
+			win.app.api.surfaceCommit(win.surface)
+			win.app.api.displayFlush(win.app.display)
+		}
 	})
 }
 
@@ -921,9 +938,20 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 
 	win.setMinimumSize(config.MinWidth, config.MinHeight)
 
-	// Trigger initial surface commit to receive configure sequence
+	// Trigger initial surface commit to receive configure sequence.
 	app.api.surfaceCommit(surface)
-	_ = app.api.displayRoundtrip(app.display)
+	if app.api.displayRoundtrip(app.display) < 0 {
+		err := fmt.Errorf("linux: Wayland initial configure failed")
+		if app.loop != nil {
+			err = app.loop.displayError("initial configure")
+		}
+		win.destroy()
+		return nil, err
+	}
+	if !win.configured {
+		win.destroy()
+		return nil, fmt.Errorf("linux: Wayland compositor did not configure the initial surface")
+	}
 
 	textInput, err := newLinuxTextInput(&config)
 	if err != nil {

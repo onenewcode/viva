@@ -5,6 +5,7 @@ package linux
 import (
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -278,20 +279,89 @@ func TestWaylandFrameMarginErrorsStopTransitions(t *testing.T) {
 	}
 }
 
-func TestWaylandHiddenRedrawWaitsForShow(t *testing.T) {
-	app := &waylandApplication{}
-	win := &waylandWindow{
-		app:         app,
-		surface:     1,
-		hidden:      true,
-		needsRedraw: true,
+func newInitialConfigureTestApplication(roundtrip int32, destroyed *[]uintptr) *waylandApplication {
+	app := &waylandApplication{display: 1}
+	app.globals.compositor = 1
+	app.globals.xdgWmBase = 1
+	app.api = &waylandAPI{
+		proxyAddListener: func(uintptr, uintptr, unsafe.Pointer) int32 { return 0 },
+		proxyMarshalFlags: func(_ uintptr, opcode uint32, _ uintptr, _, _ uint32, _ ...any) uintptr {
+			switch opcode {
+			case wlCompositorCreateSurfaceOpcode:
+				return 10
+			case xdgWmBaseGetXdgSurfaceOpcode:
+				return 20
+			case xdgSurfaceGetToplevelOpcode:
+				return 30
+			default:
+				return 0
+			}
+		},
+		displayRoundtrip: func(uintptr) int32 { return roundtrip },
+		proxyDestroy:     func(proxy uintptr) { *destroyed = append(*destroyed, proxy) },
 	}
+	return app
+}
+
+func TestWaylandOpenWindowRequiresInitialConfigure(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		roundtrip int32
+		wantError string
+	}{
+		{name: "roundtrip failure", roundtrip: -1, wantError: "initial configure failed"},
+		{name: "missing configure", roundtrip: 0, wantError: "did not configure"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var destroyed []uintptr
+			app := newInitialConfigureTestApplication(test.roundtrip, &destroyed)
+			win, err := app.openWindow(platform.Config{Width: 400, Height: 300})
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("openWindow error = %v, want substring %q", err, test.wantError)
+			}
+			if win != nil {
+				t.Fatal("openWindow returned a window without initial configure")
+			}
+			if len(destroyed) != 3 || destroyed[0] != 30 || destroyed[1] != 20 || destroyed[2] != 10 {
+				t.Fatalf("destroyed proxies = %v, want [30 20 10]", destroyed)
+			}
+		})
+	}
+}
+
+func TestWaylandHiddenRedrawWaitsForRemapConfigure(t *testing.T) {
+	var commits int
+	var nilAttachments int
+	var acked []uint32
+	api := &waylandAPI{
+		proxyMarshalFlags: func(_ uintptr, opcode uint32, _ uintptr, _, _ uint32, args ...any) uintptr {
+			switch opcode {
+			case wlSurfaceCommitOpcode:
+				commits++
+			case wlSurfaceAttachOpcode:
+				if len(args) > 0 && args[0] == uintptr(0) {
+					nilAttachments++
+				}
+			case xdgSurfaceAckConfigureOpcode:
+				if len(args) > 0 {
+					acked = append(acked, args[0].(uint32))
+				}
+			}
+			return 0
+		},
+		displayFlush: func(uintptr) int32 { return 0 },
+	}
+	app := &waylandApplication{api: api}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		configured: true, firstConfigureDone: true, needsRedraw: true,
+	}
+	win.storeScale(1)
 	redraws := 0
 	presents := 0
 	state := &waylandWindowState{
-		app:      app,
-		win:      win,
-		renderer: &vulkanRenderer{},
+		app: app, win: win, renderer: &vulkanRenderer{},
 		config: platform.Config{
 			OnRedraw: func() (platform.Frame, error) {
 				redraws++
@@ -299,12 +369,13 @@ func TestWaylandHiddenRedrawWaitsForShow(t *testing.T) {
 			},
 		},
 	}
-	state.router.present = func(frame platform.Frame) error {
+	state.router.present = func(platform.Frame) error {
 		presents++
 		return nil
 	}
 	win.state = state
 
+	win.Hide()
 	win.renderFrame()
 	if redraws != 0 || presents != 0 {
 		t.Fatalf("hidden redraw called OnRedraw %d times and present %d times", redraws, presents)
@@ -314,8 +385,124 @@ func TestWaylandHiddenRedrawWaitsForShow(t *testing.T) {
 	}
 
 	win.Show()
+	if commits != 2 || nilAttachments != 1 {
+		t.Fatalf("Hide/Show commits = %d, nil attachments = %d; want 2 and 1", commits, nilAttachments)
+	}
+	if !win.awaitingConfigure {
+		t.Fatal("Show did not enter the remap configure wait")
+	}
+	win.renderFrame() // A Waker must not bypass the new configure.
+	if redraws != 0 || presents != 0 {
+		t.Fatalf("Show presented before configure: redraws=%d presents=%d", redraws, presents)
+	}
+
+	win.handleXdgSurfaceConfigure(77)
 	if redraws != 1 || presents != 1 {
-		t.Fatalf("Show called OnRedraw %d times and present %d times, want one each", redraws, presents)
+		t.Fatalf("configure produced redraws=%d presents=%d, want one each", redraws, presents)
+	}
+	if len(acked) != 1 || acked[0] != 77 {
+		t.Fatalf("acknowledged serials = %v, want [77]", acked)
+	}
+	if win.awaitingConfigure {
+		t.Fatal("configure did not release the remap wait")
+	}
+	win.Show()
+	if commits != 2 {
+		t.Fatalf("repeated Show added a commit: commits = %d, want 2", commits)
+	}
+}
+
+func TestWaylandCloseWhileAwaitingRemapConfigure(t *testing.T) {
+	api := &waylandAPI{
+		proxyMarshalFlags: func(uintptr, uint32, uintptr, uint32, uint32, ...any) uintptr { return 0 },
+		proxyDestroy:      func(uintptr) {},
+		displayFlush:      func(uintptr) int32 { return 0 },
+	}
+	app := &waylandApplication{api: api}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, xdgToplevel: 3,
+		hidden: true, configured: true, firstConfigureDone: true,
+	}
+	win.state = &waylandWindowState{app: app, win: win, renderer: &vulkanRenderer{}}
+
+	win.Show()
+	if !win.awaitingConfigure {
+		t.Fatal("Show did not enter the remap configure wait")
+	}
+	win.Close()
+	if !win.closed.Load() || win.state != nil {
+		t.Fatal("Close did not destroy the window awaiting remap configure")
+	}
+	if win.framePending {
+		t.Fatal("Close left a frame callback pending")
+	}
+}
+
+func TestWaylandHiddenRemapResizeWaitsForShow(t *testing.T) {
+	var acked []uint32
+	commits := 0
+	api := &waylandAPI{
+		proxyMarshalFlags: func(_ uintptr, opcode uint32, _ uintptr, _, _ uint32, args ...any) uintptr {
+			switch opcode {
+			case wlSurfaceCommitOpcode:
+				commits++
+			case xdgSurfaceAckConfigureOpcode:
+				acked = append(acked, args[0].(uint32))
+			}
+			return 0
+		},
+		displayFlush: func(uintptr) int32 { return 0 },
+	}
+	app := &waylandApplication{api: api}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		pendingWidth: 400, pendingHeight: 300,
+		configured: true, firstConfigureDone: true,
+	}
+	win.storeScale(1)
+	resizeCallbacks := 0
+	presents := 0
+	win.state = &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			OnResize: func(platform.Size) (platform.Frame, error) {
+				resizeCallbacks++
+				return platform.Frame{}, nil
+			},
+		},
+	}
+	win.state.router.present = func(platform.Frame) error {
+		presents++
+		return nil
+	}
+
+	win.Hide()
+	win.Show()
+	win.Hide() // The next configure must not remap this hidden surface.
+	win.pendingWidth, win.pendingHeight = 800, 600
+	win.handleXdgSurfaceConfigure(88)
+	if resizeCallbacks != 0 || presents != 0 || len(acked) != 0 || commits != 3 {
+		t.Fatalf("hidden configure advanced: resize=%d present=%d ack=%v commits=%d", resizeCallbacks, presents, acked, commits)
+	}
+	if win.pendingSerial != 88 {
+		t.Fatalf("hidden configure serial = %d, want retained serial 88", win.pendingSerial)
+	}
+
+	win.Show()
+	win.handleXdgSurfaceConfigure(89)
+	if resizeCallbacks != 1 || presents != 1 {
+		t.Fatalf("visible remap resize = %d callbacks, %d presents; want one each", resizeCallbacks, presents)
+	}
+	if len(acked) != 1 || acked[0] != 89 {
+		t.Fatalf("acknowledged serials = %v, want [89]", acked)
+	}
+	if commits != 5 {
+		t.Fatalf("commit count = %d, want 5 after the visible buffer commit", commits)
+	}
+	if win.width != 800 || win.height != 600 {
+		t.Fatalf("remapped size = %dx%d, want 800x600", win.width, win.height)
 	}
 }
 
