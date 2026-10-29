@@ -75,7 +75,9 @@ func (win *waylandWindow) onFrameDone(callback uintptr, callbackData uint32) {
 	win.frameCallback = 0
 	win.framePending = false
 
-	if win.needsRedraw || win.forcePresent {
+	if win.resizeDeferred {
+		win.applyPendingResize()
+	} else if win.needsRedraw || win.forcePresent {
 		win.renderFrame()
 	}
 }

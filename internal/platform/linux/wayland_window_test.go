@@ -815,6 +815,153 @@ func TestWaylandCleanScalePresentsOnceWithoutRedraw(t *testing.T) {
 	}
 }
 
+func TestWaylandPendingResizePreservesRedraw(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		pendingWidth: 800, pendingHeight: 600, pendingSerial: 42,
+		framePending: true, frameCallback: 99, needsRedraw: true, forcePresent: true,
+	}
+	win.storeScale(1)
+	renderer := newWaylandPresentTestRenderer(800, 600)
+	redraws := 0
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{OnRedraw: func() (platform.Frame, error) {
+			redraws++
+			return platform.Frame{}, nil
+		}},
+		applyFrame: func(platform.Frame) (bool, error) { return true, nil },
+	}
+
+	win.applyPendingResize()
+	if !win.resizeDeferred || renderer.submissions != 0 || frameRequests != 0 || len(acked) != 0 {
+		t.Fatalf("pending resize committed early: deferred=%v submissions=%d frameRequests=%d ack=%v", win.resizeDeferred, renderer.submissions, frameRequests, acked)
+	}
+	if win.pendingSerial != 42 || !win.forcePresent || !win.needsRedraw {
+		t.Fatal("pending resize discarded its configure or redraw state")
+	}
+
+	win.onFrameDone(99, 0)
+	if win.resizeDeferred || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatalf("deferred resize submissions=%d frameRequests=%d deferred=%v", renderer.submissions, frameRequests, win.resizeDeferred)
+	}
+	if len(acked) != 1 || acked[0] != 42 || redraws != 0 {
+		t.Fatalf("deferred resize ack=%v redraws=%d", acked, redraws)
+	}
+	if !win.needsRedraw {
+		t.Fatal("resize without OnResize consumed the queued redraw")
+	}
+
+	win.onFrameDone(99, 0)
+	if redraws != 1 || renderer.submissions != 2 || frameRequests != 2 {
+		t.Fatalf("queued redraw=%d submissions=%d frameRequests=%d", redraws, renderer.submissions, frameRequests)
+	}
+	if win.needsRedraw {
+		t.Fatal("latest content remained pending after its frame completed")
+	}
+}
+
+func TestWaylandPendingScaleUsesResizeFrameOnce(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		framePending: true, frameCallback: 99, needsRedraw: true,
+	}
+	win.storeScale(1)
+	renderer := newWaylandPresentTestRenderer(800, 600)
+	resizeCallbacks := 0
+	redraws := 0
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{
+			OnResize: func(platform.Size) (platform.Frame, error) {
+				resizeCallbacks++
+				return platform.Frame{}, nil
+			},
+			OnRedraw: func() (platform.Frame, error) {
+				redraws++
+				return platform.Frame{}, nil
+			},
+		},
+		applyFrame: func(platform.Frame) (bool, error) { return false, nil },
+	}
+
+	win.applyScale(2)
+	if !win.resizeDeferred || resizeCallbacks != 0 || renderer.submissions != 0 || frameRequests != 0 {
+		t.Fatalf("pending scale advanced early: deferred=%v resize=%d submissions=%d frameRequests=%d", win.resizeDeferred, resizeCallbacks, renderer.submissions, frameRequests)
+	}
+
+	win.onFrameDone(99, 0)
+	if resizeCallbacks != 1 || redraws != 0 || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatalf("deferred scale resize=%d redraw=%d submissions=%d frameRequests=%d", resizeCallbacks, redraws, renderer.submissions, frameRequests)
+	}
+	if win.needsRedraw || win.forcePresent {
+		t.Fatal("resize frame did not consume the queued update")
+	}
+
+	win.onFrameDone(99, 0)
+	if resizeCallbacks != 1 || redraws != 0 || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatal("completed scale frame caused a duplicate resize or redraw")
+	}
+}
+
+func TestWaylandDeferredScaleCompletesAfterRemap(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		framePending: true, frameCallback: 99, needsRedraw: true,
+	}
+	win.storeScale(1)
+	renderer := newWaylandPresentTestRenderer(800, 600)
+	resizeCallbacks := 0
+	redraws := 0
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{
+			OnResize: func(platform.Size) (platform.Frame, error) {
+				resizeCallbacks++
+				return platform.Frame{}, nil
+			},
+			OnRedraw: func() (platform.Frame, error) {
+				redraws++
+				return platform.Frame{}, nil
+			},
+		},
+		applyFrame: func(platform.Frame) (bool, error) { return false, nil },
+	}
+
+	win.applyScale(2)
+	win.Hide()
+	win.Show()
+	if !win.resizeDeferred || !win.awaitingConfigure {
+		t.Fatal("remap did not retain the deferred scale transaction")
+	}
+	win.pendingWidth = 400
+	win.pendingHeight = 300
+	win.handleXdgSurfaceConfigure(43)
+	if win.resizeDeferred || resizeCallbacks != 1 || redraws != 0 || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatalf("remap resize deferred=%v resize=%d redraw=%d submissions=%d requests=%d", win.resizeDeferred, resizeCallbacks, redraws, renderer.submissions, frameRequests)
+	}
+	if len(acked) != 1 || acked[0] != 43 {
+		t.Fatalf("remap ACK = %v, want [43]", acked)
+	}
+
+	win.onFrameDone(99, 0)
+	if resizeCallbacks != 1 || redraws != 0 || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatal("remap completion caused a duplicate resize or present")
+	}
+}
+
 func TestWaylandApplyFailureDoesNotAckOrRequestFrame(t *testing.T) {
 	var acked []uint32
 	frameRequests := 0
@@ -888,7 +1035,7 @@ func TestWaylandPresentFailureCleansNewCallback(t *testing.T) {
 	}
 }
 
-func TestWaylandResizePresentFailurePreservesOldCallback(t *testing.T) {
+func TestWaylandDeferredResizePresentFailureLifecycle(t *testing.T) {
 	var acked []uint32
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
@@ -920,22 +1067,30 @@ func TestWaylandResizePresentFailurePreservesOldCallback(t *testing.T) {
 	}
 
 	win.applyPendingResize()
-	if app.firstErr == nil {
-		t.Fatal("resize present failure did not reach the application")
+	if app.firstErr != nil || !win.resizeDeferred || presentCalls != 0 {
+		t.Fatalf("pending resize advanced early: err=%v deferred=%v presents=%d", app.firstErr, win.resizeDeferred, presentCalls)
 	}
-	if !win.framePending || win.frameCallback != 77 {
-		t.Fatalf("resize failure replaced old callback: pending=%v handle=%d", win.framePending, win.frameCallback)
-	}
-	if len(destroyed) != 0 || frameRequests != 0 {
-		t.Fatalf("resize failure destroyed old callback or created a new one: destroyed=%v requests=%d", destroyed, frameRequests)
+	if !win.framePending || win.frameCallback != 77 || len(destroyed) != 0 || frameRequests != 0 {
+		t.Fatal("pending resize disturbed the previous callback")
 	}
 
 	win.onFrameDone(77, 0)
-	if presentCalls != 2 || renderer.submissions != 1 || frameRequests != 1 {
-		t.Fatalf("frame-done recovery presentCalls=%d submissions=%d requests=%d", presentCalls, renderer.submissions, frameRequests)
+	if app.firstErr == nil || presentCalls != 1 || frameRequests != 1 {
+		t.Fatalf("deferred resize failure err=%v presents=%d requests=%d", app.firstErr, presentCalls, frameRequests)
+	}
+	if win.framePending || win.frameCallback != 0 || len(destroyed) != 2 || destroyed[0] != 77 || destroyed[1] != 99 {
+		t.Fatalf("failed resize callback state pending=%v handle=%d destroyed=%v", win.framePending, win.frameCallback, destroyed)
+	}
+	if len(acked) != 1 || acked[0] != 42 {
+		t.Fatalf("failed resize ACK = %v, want [42]", acked)
+	}
+
+	win.renderFrame()
+	if presentCalls != 2 || renderer.submissions != 1 || frameRequests != 2 {
+		t.Fatalf("retry presentCalls=%d submissions=%d requests=%d", presentCalls, renderer.submissions, frameRequests)
 	}
 	if !win.framePending || win.frameCallback != 99 {
-		t.Fatal("frame-done recovery did not establish a new callback")
+		t.Fatal("successful retry did not establish a new callback")
 	}
 }
 
@@ -1449,6 +1604,10 @@ func TestWaylandResizeErrorsStopConfigureCompletion(t *testing.T) {
 			win.state = state
 
 			win.applyPendingResize()
+			if app.firstErr != nil || !win.resizeDeferred || acks != 0 || rendererPresents != 0 {
+				t.Fatalf("pending resize advanced early: err=%v deferred=%v acks=%d presents=%d", app.firstErr, win.resizeDeferred, acks, rendererPresents)
+			}
+			win.onFrameDone(0, 0)
 			if app.firstErr == nil {
 				t.Fatal("resize failure did not reach the application")
 			}

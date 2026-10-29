@@ -112,6 +112,7 @@ type waylandWindow struct {
 	awaitingConfigure    bool
 	firstConfigureDone   bool
 	initialResizePending bool
+	resizeDeferred       bool
 	framePending         bool
 	frameCallback        uintptr
 	needsRedraw          bool
@@ -471,7 +472,11 @@ func (win *waylandWindow) applyPendingResize() {
 		win.needsRedraw = true
 		return
 	}
-	win.needsRedraw = false
+	if win.framePending {
+		win.resizeDeferred = true
+		return
+	}
+	win.resizeDeferred = false
 
 	scale := win.displayScale()
 	w, h := win.pendingWidth, win.pendingHeight
@@ -581,6 +586,9 @@ func (win *waylandWindow) applyPendingResize() {
 		}
 		return
 	}
+	if hasResizeFrame {
+		win.needsRedraw = false
+	}
 	win.forcePresent = false
 	if win.state.renderer != nil {
 		win.reportFrame()
@@ -618,7 +626,7 @@ func (win *waylandWindow) handleXdgSurfaceConfigure(serial uint32) {
 		}
 	}
 
-	if resized {
+	if resized || win.resizeDeferred {
 		win.applyPendingResize()
 	} else if win.state != nil {
 		win.renderFrame()

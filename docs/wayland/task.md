@@ -39,8 +39,8 @@
 
 ## Task 2：修复 frame pending 期间 resize/scale 的 redraw 与 callback 事务
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（首轮 FAIL 的 remap 残留和失败测试契约问题已修复，复审通过）
 - 依赖：Task 1 已提交。
 - 目标：旧 frame pending 时发生 resize/scale，不清除尚未执行的 redraw，不在没有新 callback 的情况下直接提交。
 - 主要文件：
