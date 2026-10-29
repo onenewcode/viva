@@ -980,6 +980,32 @@ func TestWaylandImmediateAtomicResizeAndConfigureAck(t *testing.T) {
 	}
 }
 
+func TestWaylandMinimumSizeHints(t *testing.T) {
+	calls := 0
+	var gotWidth, gotHeight int32
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			if opcode == xdgToplevelSetMinSizeOpcode {
+				calls++
+				gotWidth = args[0].(int32)
+				gotHeight = args[1].(int32)
+			}
+			return 0
+		},
+	}
+	app := &waylandApplication{api: api}
+	win := &waylandWindow{app: app, xdgToplevel: 30}
+
+	win.setMinimumSize(400, 300)
+	if calls != 1 || gotWidth != 400 || gotHeight != 300 {
+		t.Fatalf("minimum size calls=%d size=%dx%d, want one 400x300 request", calls, gotWidth, gotHeight)
+	}
+	win.setMinimumSize(0, 0)
+	if calls != 1 {
+		t.Fatal("zero minimum size sent an unnecessary protocol request")
+	}
+}
+
 func TestWaylandStartResizeFlushesDisplay(t *testing.T) {
 	flushed := false
 	resized := false

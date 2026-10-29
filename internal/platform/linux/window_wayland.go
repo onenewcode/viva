@@ -587,6 +587,13 @@ func (win *waylandWindow) toggleMaximize() {
 	win.setMaximized(!win.maximized)
 }
 
+func (win *waylandWindow) setMinimumSize(width, height int) {
+	if (width <= 0 && height <= 0) || win.xdgToplevel == 0 || win.app == nil || win.app.api == nil {
+		return
+	}
+	win.app.api.xdgToplevelSetMinSize(win.xdgToplevel, int32(width), int32(height))
+}
+
 func (win *waylandWindow) minimize() {
 	if win.xdgToplevel != 0 && win.app != nil && win.app.api != nil {
 		win.app.api.xdgToplevelSetMinimized(win.xdgToplevel)
@@ -898,6 +905,8 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 			Maximized:      func() bool { return win.maximized },
 		}
 	}
+
+	win.setMinimumSize(config.MinWidth, config.MinHeight)
 
 	// Trigger initial surface commit to receive configure sequence
 	app.api.surfaceCommit(surface)
