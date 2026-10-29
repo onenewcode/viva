@@ -395,3 +395,549 @@ func TestWaylandProtocolSignatures(t *testing.T) {
 	}
 }
 
+func TestWaylandViewportDestinationSync(t *testing.T) {
+	var destViewport uintptr
+	var destW, destH int32
+
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			if opcode == 2 && proxy == 0xbeef && len(args) >= 2 { // wp_viewport.set_destination
+				destViewport = proxy
+				if w, ok := args[0].(int32); ok {
+					destW = w
+				}
+				if h, ok := args[1].(int32); ok {
+					destH = h
+				}
+			}
+			return 0
+		},
+	}
+	app := &waylandApplication{api: api}
+
+	// 1. Initial size at 1.25x scaling with margin (custom titlebar)
+	// Logical content: 800x600. Scale: 1.25.
+	// contentW = round(800 * 1.25) = 1000
+	// contentH = round(600 * 1.25) = 750
+	// margin = frameMargin(1.25) = round(24 * 1.25) = 30
+	// totalW = 1000 + 60 = 1060, totalH = 750 + 60 = 810
+	win := &waylandWindow{
+		app:      app,
+		viewport: 0xbeef,
+		width:    1060,
+		height:   810,
+		margin:   30,
+	}
+	win.storeScale(1.25)
+
+	win.updateViewportDestination()
+	if destViewport != 0xbeef || destW != 848 || destH != 648 {
+		t.Fatalf("expected viewport destination (848, 648) at 1.25x with margin, got (%d, %d)", destW, destH)
+	}
+
+	// 2. Maximized window at 1.25x (no margin)
+	// totalW = 1250, totalH = 1000
+	win.margin = 0
+	win.width = 1250
+	win.height = 1000
+	win.updateViewportDestination()
+	if destW != 1000 || destH != 800 {
+		t.Fatalf("expected viewport destination (1000, 800) at 1.25x maximized, got (%d, %d)", destW, destH)
+	}
+
+	// 3. Configure event with new dimensions
+	win.pendingWidth = 1200 // new logical width
+	win.pendingHeight = 900 // new logical height
+	win.handleXdgSurfaceConfigure(42)
+
+	expectedLogicalW := int32(math.Round(float64(float32(win.width) / 1.25)))
+	expectedLogicalH := int32(math.Round(float64(float32(win.height) / 1.25)))
+	if destW != expectedLogicalW || destH != expectedLogicalH {
+		t.Fatalf("expected configure to sync viewport destination to (%d, %d), got (%d, %d)", expectedLogicalW, expectedLogicalH, destW, destH)
+	}
+}
+
+func TestWaylandAtomicConfigureResizeSequence(t *testing.T) {
+	type protocolEvent struct {
+		name string
+		val  any
+	}
+	var events []protocolEvent
+
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			switch opcode {
+			case xdgSurfaceAckConfigureOpcode:
+				if len(args) > 0 {
+					events = append(events, protocolEvent{name: "ack_configure", val: args[0]})
+				}
+			case xdgSurfaceSetWindowGeometryOpcode:
+				if len(args) >= 4 {
+					events = append(events, protocolEvent{name: "set_window_geometry", val: [4]int32{args[0].(int32), args[1].(int32), args[2].(int32), args[3].(int32)}})
+				}
+			case 2: // wp_viewport.set_destination
+				if len(args) >= 2 {
+					events = append(events, protocolEvent{name: "set_destination", val: [2]int32{args[0].(int32), args[1].(int32)}})
+				}
+			case wlSurfaceCommitOpcode:
+				events = append(events, protocolEvent{name: "surface_commit", val: proxy})
+			}
+			return 0
+		},
+		proxyAddListener: func(proxy uintptr, implementation uintptr, data unsafe.Pointer) int32 {
+			return 0
+		},
+		displayFlush: func(display uintptr) int32 {
+			events = append(events, protocolEvent{name: "display_flush", val: nil})
+			return 0
+		},
+	}
+
+	app := &waylandApplication{api: api, display: 0x111}
+	win := &waylandWindow{
+		app:        app,
+		surface:    0x222,
+		xdgSurface: 0x333,
+		viewport:   0x444,
+		width:      800,
+		height:     600,
+		margin:     0,
+	}
+	state := &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			OnResize: func(size platform.Size) (platform.Frame, error) {
+				events = append(events, protocolEvent{name: "on_resize", val: size})
+				return platform.Frame{}, nil
+			},
+		},
+	}
+	win.state = state
+
+	// Simulate compositor configuring a top-left resize from 800x600 down to 780x570
+	win.pendingWidth = 780
+	win.pendingHeight = 570
+	win.handleXdgSurfaceConfigure(9999)
+
+	// Verify order:
+	// 1. ack_configure must occur before surface_commit
+	// 2. set_window_geometry must reflect new size (780, 570) before surface_commit
+	// 3. Exactly one commit per configure event!
+	ackIdx := -1
+	geomIdx := -1
+	commitIdx := -1
+	commitCount := 0
+
+	for i, ev := range events {
+		switch ev.name {
+		case "ack_configure":
+			if ackIdx == -1 {
+				ackIdx = i
+			}
+			if ev.val != uint32(9999) {
+				t.Errorf("expected ack serial 9999, got %v", ev.val)
+			}
+		case "set_window_geometry":
+			if geomIdx == -1 {
+				geomIdx = i
+			}
+			geom := ev.val.([4]int32)
+			if geom[2] != 780 || geom[3] != 570 {
+				t.Errorf("expected set_window_geometry width=780, height=570, got %+v", geom)
+			}
+		case "surface_commit":
+			commitCount++
+			if commitIdx == -1 {
+				commitIdx = i
+			}
+		}
+	}
+
+	if ackIdx == -1 {
+		t.Fatal("expected ack_configure event")
+	}
+	if geomIdx == -1 {
+		t.Fatal("expected set_window_geometry event")
+	}
+	if commitIdx == -1 {
+		t.Fatal("expected surface_commit event")
+	}
+	if ackIdx > commitIdx {
+		t.Errorf("ack_configure (index %d) occurred after surface_commit (index %d)", ackIdx, commitIdx)
+	}
+	if geomIdx > commitIdx {
+		t.Errorf("set_window_geometry (index %d) occurred after surface_commit (index %d)", geomIdx, commitIdx)
+	}
+	if commitCount != 1 {
+		t.Errorf("expected exactly 1 commit for resize configure, got %d", commitCount)
+	}
+}
+
+func TestWaylandImmediateAtomicResizeAndConfigureAck(t *testing.T) {
+	type protocolEvent struct {
+		name string
+		val  any
+	}
+	var events []protocolEvent
+	var nextCallbackId uintptr = 0x555
+
+	const (
+		mockSurface    = 0x222
+		mockXdgSurface = 0x333
+	)
+
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			if proxy == mockXdgSurface {
+				switch opcode {
+				case xdgSurfaceAckConfigureOpcode:
+					if len(args) > 0 {
+						events = append(events, protocolEvent{name: "ack_configure", val: args[0]})
+					}
+				case xdgSurfaceSetWindowGeometryOpcode:
+					if len(args) >= 4 {
+						events = append(events, protocolEvent{name: "set_window_geometry", val: [4]int32{args[0].(int32), args[1].(int32), args[2].(int32), args[3].(int32)}})
+					}
+				}
+			} else if proxy == mockSurface {
+				switch opcode {
+				case wlSurfaceFrameOpcode:
+					id := nextCallbackId
+					nextCallbackId++
+					events = append(events, protocolEvent{name: "surface_frame", val: id})
+					return id
+				case wlSurfaceCommitOpcode:
+					events = append(events, protocolEvent{name: "surface_commit", val: proxy})
+				}
+			}
+			return 0
+		},
+		proxyAddListener: func(proxy uintptr, implementation uintptr, data unsafe.Pointer) int32 {
+			return 0
+		},
+		proxyDestroy: func(proxy uintptr) {
+			events = append(events, protocolEvent{name: "proxy_destroy", val: proxy})
+		},
+		displayFlush: func(display uintptr) int32 {
+			events = append(events, protocolEvent{name: "display_flush", val: nil})
+			return 0
+		},
+	}
+
+	app := &waylandApplication{api: api, display: 0x111}
+	win := &waylandWindow{
+		app:        app,
+		surface:    mockSurface,
+		xdgSurface: mockXdgSurface,
+		viewport:   0x444,
+		width:      800,
+		height:     600,
+		margin:     0,
+	}
+	state := &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			OnResize: func(size platform.Size) (platform.Frame, error) {
+				events = append(events, protocolEvent{name: "on_resize", val: size})
+				return platform.Frame{}, nil
+			},
+		},
+	}
+	win.state = state
+
+	// 1. Initial resize configure (500x400, serial 101)
+	win.pendingWidth = 500
+	win.pendingHeight = 400
+	win.handleXdgSurfaceConfigure(101)
+
+	// Since framePending was false, this first configure triggers applyPendingResize immediately
+	if !win.framePending {
+		t.Fatal("expected framePending to be true after first configure commit")
+	}
+	if win.width != 500 || win.height != 400 {
+		t.Fatalf("expected width=500, height=400, got (%d, %d)", win.width, win.height)
+	}
+
+	// Count commits so far
+	commitsAfterFirst := 0
+	for _, ev := range events {
+		if ev.name == "surface_commit" {
+			commitsAfterFirst++
+		}
+	}
+	if commitsAfterFirst != 1 {
+		t.Fatalf("expected 1 commit after first configure, got %d", commitsAfterFirst)
+	}
+
+	// 2. Interactive configure event 2 arrives (520x410, serial 102) -> immediately acknowledged and applied
+	win.pendingWidth = 520
+	win.pendingHeight = 410
+	win.handleXdgSurfaceConfigure(102)
+
+	if win.width != 520 || win.height != 410 {
+		t.Fatalf("expected width=520, height=410, got (%d, %d)", win.width, win.height)
+	}
+
+	// 3. Interactive configure event 3 arrives (540x420, serial 103) -> immediately acknowledged and applied
+	win.pendingWidth = 540
+	win.pendingHeight = 420
+	win.handleXdgSurfaceConfigure(103)
+
+	if win.width != 540 || win.height != 420 {
+		t.Fatalf("expected width=540, height=420, got (%d, %d)", win.width, win.height)
+	}
+
+	// Verify all 3 configure events were acknowledged in sequence and committed with matching geometry
+	var acks []uint32
+	var geoms [][4]int32
+	totalCommits := 0
+	for _, ev := range events {
+		switch ev.name {
+		case "surface_commit":
+			totalCommits++
+		case "ack_configure":
+			acks = append(acks, ev.val.(uint32))
+		case "set_window_geometry":
+			geoms = append(geoms, ev.val.([4]int32))
+		}
+	}
+
+	if totalCommits != 3 {
+		t.Fatalf("expected exactly 3 commits for 3 interactive configure events, got %d", totalCommits)
+	}
+	if len(acks) != 3 || acks[0] != 101 || acks[1] != 102 || acks[2] != 103 {
+		t.Fatalf("expected acks [101, 102, 103], got %v", acks)
+	}
+	if len(geoms) != 3 || geoms[2][2] != 540 || geoms[2][3] != 420 {
+		t.Fatalf("expected latest geometry (540, 420), got %+v", geoms)
+	}
+}
+
+func TestWaylandStartResizeFlushesDisplay(t *testing.T) {
+	flushed := false
+	resized := false
+	moved := false
+
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			switch opcode {
+			case xdgToplevelResizeOpcode:
+				resized = true
+			case xdgToplevelMoveOpcode:
+				moved = true
+			}
+			return 0
+		},
+		displayFlush: func(display uintptr) int32 {
+			flushed = true
+			return 0
+		},
+	}
+	app := &waylandApplication{
+		api:     api,
+		display: 0x111,
+		globals: waylandGlobals{seat: 0x222},
+	}
+	win := &waylandWindow{
+		app:         app,
+		xdgToplevel: 0x333,
+	}
+
+	flushed = false
+	win.startResize(42, platform.EdgeBottomRight)
+	if !resized || !flushed {
+		t.Fatalf("startResize: resized=%v, flushed=%v; want true, true", resized, flushed)
+	}
+
+	flushed = false
+	win.startMove(43)
+	if !moved || !flushed {
+		t.Fatalf("startMove: moved=%v, flushed=%v; want true, true", moved, flushed)
+	}
+}
+
+func TestWaylandRestoreToSavedFloatingSize(t *testing.T) {
+	var (
+		resizes []platform.Size
+		commits int
+		acks    []uint32
+	)
+
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			if proxy == 0x222 { // xdgSurface
+				if opcode == xdgSurfaceAckConfigureOpcode && len(args) > 0 {
+					acks = append(acks, args[0].(uint32))
+				}
+			} else if proxy == 0x111 { // surface
+				if opcode == wlSurfaceCommitOpcode {
+					commits++
+				}
+			}
+			return 0
+		},
+		proxyAddListener: func(proxy uintptr, implementation uintptr, data unsafe.Pointer) int32 { return 0 },
+		proxyDestroy:     func(proxy uintptr) {},
+		displayFlush:     func(display uintptr) int32 { return 0 },
+	}
+
+	app := &waylandApplication{api: api, display: 0x99}
+	win := &waylandWindow{
+		app:           app,
+		surface:       0x111,
+		xdgSurface:    0x222,
+		xdgToplevel:   0x333,
+		viewport:      0x444,
+		width:         548,
+		height:        448,
+		margin:        24,
+		savedLogicalW: 500,
+		savedLogicalH: 400,
+		frameWanted:   true,
+	}
+	win.storeScale(1.0)
+	state := &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			OnResize: func(size platform.Size) (platform.Frame, error) {
+				resizes = append(resizes, size)
+				return platform.Frame{}, nil
+			},
+		},
+	}
+	win.state = state
+
+	// 1. Toplevel configure: Maximized state at 1920x1080
+	statesData := []uint32{xdgToplevelStateMaximized}
+	statesArray := wlArray{
+		Size:  uintptr(len(statesData) * 4),
+		Alloc: uintptr(len(statesData) * 4),
+		Data:  unsafe.Pointer(&statesData[0]),
+	}
+	win.handleXdgToplevelConfigure(1920, 1080, &statesArray)
+	win.handleXdgSurfaceConfigure(501)
+
+	if !win.maximized {
+		t.Fatal("expected window to be maximized")
+	}
+	if win.margin != 0 {
+		t.Fatalf("expected margin = 0 when maximized, got %d", win.margin)
+	}
+	if win.width != 1920 || win.height != 1080 {
+		t.Fatalf("expected maximized dimensions (1920, 1080), got (%d, %d)", win.width, win.height)
+	}
+	if win.savedLogicalW != 500 || win.savedLogicalH != 400 {
+		t.Fatalf("expected saved floating size (500, 400), got (%g, %g)", win.savedLogicalW, win.savedLogicalH)
+	}
+
+	// 2. Unmaximize: compositor sends (0, 0)
+	emptyStates := wlArray{}
+	win.handleXdgToplevelConfigure(0, 0, &emptyStates)
+
+	if win.maximized {
+		t.Fatal("expected window to be unmaximized")
+	}
+	if win.margin != 24 {
+		t.Fatalf("expected margin restored to 24, got %d", win.margin)
+	}
+
+	resizesBefore := len(resizes)
+	win.handleXdgSurfaceConfigure(502)
+
+	if win.width != 548 || win.height != 448 {
+		t.Fatalf("expected restored dimensions (548, 448), got (%d, %d)", win.width, win.height)
+	}
+	if len(resizes) != resizesBefore+1 {
+		t.Fatalf("expected OnResize called on restore, got %d calls", len(resizes)-resizesBefore)
+	}
+	lastResize := resizes[len(resizes)-1]
+	if lastResize.Width != 500 || lastResize.Height != 400 {
+		t.Fatalf("expected restored content size (500, 400), got %+v", lastResize)
+	}
+	if logical := win.logicalSize(); logical.Width != 500 || logical.Height != 400 {
+		t.Fatalf("expected win.logicalSize() = (500, 400), got %+v", logical)
+	}
+}
+
+func TestWaylandFractionalScaleTransitionsAcrossOutputs(t *testing.T) {
+	var viewportDests [][2]int32
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			if proxy == 0x444 && opcode == 2 { // wp_viewport.set_destination
+				if len(args) >= 2 {
+					viewportDests = append(viewportDests, [2]int32{args[0].(int32), args[1].(int32)})
+				}
+			}
+			return 0
+		},
+		proxyAddListener: func(proxy uintptr, implementation uintptr, data unsafe.Pointer) int32 { return 0 },
+		proxyDestroy:     func(proxy uintptr) {},
+		displayFlush:     func(display uintptr) int32 { return 0 },
+	}
+
+	app := &waylandApplication{api: api, display: 0x99}
+	win := &waylandWindow{
+		app:           app,
+		surface:       0x111,
+		xdgSurface:    0x222,
+		viewport:      0x444,
+		width:         448, // 400 + 2*24
+		height:        348, // 300 + 2*24
+		margin:        24,
+		savedLogicalW: 400,
+		savedLogicalH: 300,
+		frameWanted:   true,
+	}
+	win.storeScale(1.0)
+	state := &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			OnResize: func(size platform.Size) (platform.Frame, error) {
+				return platform.Frame{}, nil
+			},
+		},
+	}
+	win.state = state
+
+	transitions := []float32{1.25, 1.75, 2.0, 1.0}
+	for _, targetScale := range transitions {
+		win.applyScale(targetScale)
+
+		if got := win.displayScale(); got != targetScale {
+			t.Fatalf("displayScale = %g, want %g", got, targetScale)
+		}
+
+		wantMargin := frameMargin(targetScale)
+		if win.margin != wantMargin {
+			t.Fatalf("scale %g: margin = %d, want %d", targetScale, win.margin, wantMargin)
+		}
+
+		expectedContentW := deviceLength(400, targetScale)
+		expectedContentH := deviceLength(300, targetScale)
+		actualContentW := contentSize(win.width, win.margin)
+		actualContentH := contentSize(win.height, win.margin)
+		if actualContentW != expectedContentW || actualContentH != expectedContentH {
+			t.Fatalf("scale %g: content size = (%d, %d), want (%d, %d)", targetScale, actualContentW, actualContentH, expectedContentW, expectedContentH)
+		}
+
+		logical := win.logicalSize()
+		if math.Abs(float64(logical.Width-400)) > 1.0 || math.Abs(float64(logical.Height-300)) > 1.0 {
+			t.Fatalf("scale %g: logical size = %+v, want ~(400, 300)", targetScale, logical)
+		}
+
+		if len(viewportDests) == 0 {
+			t.Fatalf("scale %g: expected viewport destination update", targetScale)
+		}
+		latestDest := viewportDests[len(viewportDests)-1]
+		wantTotalLogicalW := int32(math.Round(float64(float32(win.width) / targetScale)))
+		wantTotalLogicalH := int32(math.Round(float64(float32(win.height) / targetScale)))
+		if latestDest[0] != wantTotalLogicalW || latestDest[1] != wantTotalLogicalH {
+			t.Fatalf("scale %g: viewport destination = (%d, %d), want (%d, %d)", targetScale, latestDest[0], latestDest[1], wantTotalLogicalW, wantTotalLogicalH)
+		}
+	}
+}
+

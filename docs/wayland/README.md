@@ -18,7 +18,7 @@ Viva 作为以“Go 优先、GPU 原生、无 WebView、零多余捆绑、直通
 
 ## 2. 文档集结构与导航
 
-本技术规范按关注点分离原则，划分为 5 篇深度技术文档：
+本技术规范按关注点分离原则，划分为 7 篇深度技术文档：
 
 | 序号 | 规范文档 | 核心内容概要 | 验收清单覆盖 |
 | :---: | :--- | :--- | :--- |
@@ -27,6 +27,8 @@ Viva 作为以“Go 优先、GPU 原生、无 WebView、零多余捆绑、直通
 | **03** | [03-protocol-and-window-management.md](03-protocol-and-window-management.md) | **Wayland 核心协议与窗口生命周期设计**<br>PureGo 动态绑定 `libwayland-client`、XDG-Shell (`xdg_wm_base`) 状态机、多窗口管理、CSD/SSD 装饰协商。 | **§6 协议与窗口生命周期验收清单**<br>免 CGO 构建、ack_configure 应答、三窗口模式、多窗口并发安全 |
 | **04** | [04-input-scale-and-desktop-integration.md](04-input-scale-and-desktop-integration.md) | **输入、分数缩放与桌面生态集成设计**<br>`wl_seat` 与 XKB 键盘路由、`wp-fractional-scale-v1` 矢量级高分屏、剪贴板/拖放、现代 IME 与 D-Bus 共享桥接。 | **§5 输入、缩放与桌面集成验收清单**<br>亚像素指针、平滑滚动、125%~175% 点对点锐利度、D-Bus 读屏与主题 |
 | **05** | [05-implementation-roadmap-and-migration.md](05-implementation-roadmap-and-migration.md) | **实施路线图、测试套件与迁移规划**<br>5 阶段代码改造清单、单元测试与 Conformance 测试适配方案、主流混成器兼容性矩阵。 | **全流程 5 阶段详细验收清单**<br>单测命令、回归覆盖、Conformance 场景全绿、多混成器实测 |
+| **06** | [06-wayland-window-interaction-and-styling-diagnostics.md](06-wayland-window-interaction-and-styling-diagnostics.md) | **Wayland 窗口拖动误位移与样式对齐定位与修复**<br>Viewport 尺寸生命周期同步、拖拽滞后阈值（Drag Slop）、边框阴影判定校准、KDE/GNOME 原生窗口按钮自适应。 | 窗口拖动、边缘缩放与系统外观对齐验收清单 |
+| **07** | [07-wayland-interactive-resize-and-border-hit-testing-specification.md](07-wayland-interactive-resize-and-border-hit-testing-specification.md) | **Wayland 交互式缩放抖动与延迟优化及 CSD 边框识别规范**<br>Top/Left 逆向缩放原点漂移根因、原子配置回包状态机、非阻塞 Mailbox 呈现与帧节流消除实时缩放延迟、对齐 GTK 4/Qt 6 的全空间 CSD 边框与 24px 角部命中判定算法。 | 逆向平滑缩放、实时缩放 0 延迟、单次原子 Commit、24px 角部判定验收清单 |
 
 ---
 

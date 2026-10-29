@@ -46,7 +46,10 @@ const (
 	vkImageViewType2D                = 1
 	vkSharingExclusive               = 0
 	vkCompositeOpaque                = 1
+	vkPresentImmediate               = 0
+	vkPresentMailbox                 = 1
 	vkPresentFIFO                    = 2
+	vkPresentFIFORelaxed             = 3
 	vkSubpassContentsInline          = 0
 	vkCommandBufferPrimary           = 0
 	vkFenceSignaled                  = 1
@@ -313,6 +316,7 @@ type vulkanAPI struct {
 	getSurfaceSupport                 func(uintptr, uint32, uintptr, *uint32) int32
 	getSurfaceCapabilities            func(uintptr, uintptr, *vkSurfaceCapabilities) int32
 	getSurfaceFormats                 func(uintptr, uintptr, *uint32, *vkSurfaceFormat) int32
+	getSurfacePresentModes            func(uintptr, uintptr, *uint32, *uint32) int32
 	createDevice                      func(uintptr, *vkDeviceCreateInfo, unsafe.Pointer, *uintptr) int32
 	destroyDevice                     func(uintptr, unsafe.Pointer)
 	getDeviceQueue                    func(uintptr, uint32, uint32, *uintptr)
@@ -460,6 +464,7 @@ func loadVulkan() (*vulkanAPI, error) {
 	purego.RegisterLibFunc(&api.getSurfaceSupport, library, "vkGetPhysicalDeviceSurfaceSupportKHR")
 	purego.RegisterLibFunc(&api.getSurfaceCapabilities, library, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR")
 	purego.RegisterLibFunc(&api.getSurfaceFormats, library, "vkGetPhysicalDeviceSurfaceFormatsKHR")
+	purego.RegisterLibFunc(&api.getSurfacePresentModes, library, "vkGetPhysicalDeviceSurfacePresentModesKHR")
 	purego.RegisterLibFunc(&api.createDevice, library, "vkCreateDevice")
 	purego.RegisterLibFunc(&api.destroyDevice, library, "vkDestroyDevice")
 	purego.RegisterLibFunc(&api.getDeviceQueue, library, "vkGetDeviceQueue")
@@ -638,6 +643,26 @@ func (renderer *vulkanRenderer) selectDevice() error {
 	return fmt.Errorf("linux: no Vulkan graphics queue can present to XCB")
 }
 
+func (renderer *vulkanRenderer) choosePresentMode() uint32 {
+	if renderer.api == nil || renderer.api.getSurfacePresentModes == nil || renderer.physical == 0 || renderer.surface == 0 {
+		return vkPresentFIFO
+	}
+	var count uint32
+	if err := vkCheck(renderer.api.getSurfacePresentModes(renderer.physical, renderer.surface, &count, nil), "count surface present modes"); err != nil || count == 0 {
+		return vkPresentFIFO
+	}
+	modes := make([]uint32, count)
+	if err := vkCheck(renderer.api.getSurfacePresentModes(renderer.physical, renderer.surface, &count, &modes[0]), "query surface present modes"); err != nil {
+		return vkPresentFIFO
+	}
+	for _, mode := range modes {
+		if mode == vkPresentMailbox {
+			return vkPresentMailbox
+		}
+	}
+	return vkPresentFIFO
+}
+
 func (renderer *vulkanRenderer) createSwapchain() error {
 	return renderer.createSwapchainWithOld(0)
 }
@@ -678,11 +703,22 @@ func (renderer *vulkanRenderer) createSwapchainWithOld(oldSwapchain uintptr) (er
 		}
 	}
 	extent := capabilities.Current
+	minW := max(1, capabilities.Minimum.Width)
+	minH := max(1, capabilities.Minimum.Height)
+	maxW := max(minW, capabilities.Maximum.Width)
+	maxH := max(minH, capabilities.Maximum.Height)
 	if extent.Width == math.MaxUint32 {
-		extent.Width = clamp(renderer.width, capabilities.Minimum.Width, capabilities.Maximum.Width)
-		extent.Height = clamp(renderer.height, capabilities.Minimum.Height, capabilities.Maximum.Height)
+		extent.Width = clamp(renderer.width, minW, maxW)
+		extent.Height = clamp(renderer.height, minH, maxH)
+	} else {
+		extent.Width = clamp(extent.Width, minW, maxW)
+		extent.Height = clamp(extent.Height, minH, maxH)
 	}
+	presentMode := renderer.choosePresentMode()
 	imageCount := capabilities.MinImages + 1
+	if presentMode == vkPresentMailbox && imageCount < 3 {
+		imageCount = 3
+	}
 	if capabilities.MaxImages > 0 && imageCount > capabilities.MaxImages {
 		imageCount = capabilities.MaxImages
 	}
@@ -701,7 +737,7 @@ func (renderer *vulkanRenderer) createSwapchainWithOld(oldSwapchain uintptr) (er
 	if capabilities.Usage&vkImageUsageColorAttachment == 0 {
 		return fmt.Errorf("linux: Vulkan surface does not support color attachments")
 	}
-	info := vkSwapchainCreateInfo{SType: vkStructureSwapchainCreateInfo, Surface: renderer.surface, MinImages: imageCount, Format: selected.Format, ColorSpace: selected.ColorSpace, Extent: extent, Layers: 1, Usage: vkImageUsageColorAttachment, SharingMode: vkSharingExclusive, PreTransform: capabilities.CurrentTransform, CompositeAlpha: composite, PresentMode: vkPresentFIFO, Clipped: 1, OldSwapchain: oldSwapchain}
+	info := vkSwapchainCreateInfo{SType: vkStructureSwapchainCreateInfo, Surface: renderer.surface, MinImages: imageCount, Format: selected.Format, ColorSpace: selected.ColorSpace, Extent: extent, Layers: 1, Usage: vkImageUsageColorAttachment, SharingMode: vkSharingExclusive, PreTransform: capabilities.CurrentTransform, CompositeAlpha: composite, PresentMode: presentMode, Clipped: 1, OldSwapchain: oldSwapchain}
 	var newSwapchain uintptr
 	if err := vkCheck(renderer.api.createSwapchain(renderer.device, &info, nil, &newSwapchain), "create swapchain"); err != nil {
 		if oldSwapchain != 0 {

@@ -125,29 +125,37 @@ func TestWaylandPointerTitlebarInteraction(t *testing.T) {
 	}
 	win.state = state
 
-	// 1. Press on titlebar move area -> should trigger startMove
+	// 1. Press on titlebar move area -> should be handled and trigger startMove immediately (GTK4 / Qt6 best practice)
 	handled := win.beginTitlebarInteraction(1001, 100, 20, 1000)
 	if !handled || movedSerial != 1001 {
-		t.Fatalf("expected titlebar drag to trigger startMove(1001), handled=%v, movedSerial=%d", handled, movedSerial)
+		t.Fatalf("expected titlebar press to trigger startMove immediately, handled=%v, movedSerial=%d", handled, movedSerial)
 	}
 
-	// 2. Press on top edge resize (x=400, y=2) -> should trigger startResize
+	// 2. Press on top edge resize (x=400, y=2) -> triggers startResize immediately on press (GTK4 / Qt6 best practice)
 	handled = win.beginTitlebarInteraction(1002, 400, 2, 2000)
 	if !handled || resizedSerial != 1002 || resizedXdgEdge != xdgToplevelResizeEdgeTop {
-		t.Fatalf("expected edge resize to trigger startResize(1002, xdgToplevelResizeEdgeTop), handled=%v, resizedSerial=%d, edge=%v", handled, resizedSerial, resizedXdgEdge)
+		t.Fatalf("expected edge resize to trigger startResize immediately on press, handled=%v, resizedSerial=%d, edge=%v", handled, resizedSerial, resizedXdgEdge)
 	}
 
-	// 3. Press on controls area (x=750, y=20) -> should NOT be intercepted by titlebar
+	// 3. Press on shadow/margin (x=400, y=-5) -> should be intercepted as edge resize immediately, NEVER move!
+	resizedSerial = 0
+	handled = win.beginTitlebarInteraction(1005, 400, -5, 2500)
+	if !handled || resizedSerial != 1005 || resizedXdgEdge != xdgToplevelResizeEdgeTop {
+		t.Fatalf("expected margin press to trigger edge resize immediately, handled=%v, resizedSerial=%d, edge=%v", handled, resizedSerial, resizedXdgEdge)
+	}
+
+	// 4. Press on controls area (x=750, y=20) -> should NOT be intercepted by titlebar
 	handled = win.beginTitlebarInteraction(1003, 750, 20, 3000)
 	if handled {
 		t.Fatal("press on control button should not be intercepted as move/resize")
 	}
 
-	// 4. Double-click on titlebar (time diff <= 400ms) -> should trigger toggleMaximize
+	// 5. Double-click on titlebar (time diff <= 400ms) -> should trigger toggleMaximize instead of move
+	movedSerial = 0
 	win.lastClickTime = 4000
 	handled = win.beginTitlebarInteraction(1004, 200, 20, 4200)
-	if !handled {
-		t.Fatal("expected double-click to be handled")
+	if !handled || movedSerial != 0 {
+		t.Fatalf("expected double-click to be handled without starting move, handled=%v, movedSerial=%d", handled, movedSerial)
 	}
 	_ = maximizedToggleCount
 }

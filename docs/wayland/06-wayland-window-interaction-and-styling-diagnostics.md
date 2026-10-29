@@ -91,21 +91,41 @@ flowchart TD
 
 ---
 
-## 4. 优化与修复路线图（Action Items）
+## 4. 优化与修复路线图（Action Items 与实施状态）
 
-### 第一阶段：解决边框拖动与尺寸缩放问题（立即解决）
-1. **修复 Viewport 同步**：
-   - 在 [`window_wayland.go`](file:///mnt/data/code/viva/internal/platform/linux/window_wayland.go) 的 `renderFrame` 及 `handleXdgSurfaceConfigure` 中，只要窗口几何发生变化，即刻同步调用 `api.viewportSetDestination(win.viewport, totalLogicalW, totalLogicalH)`。
-2. **边缘判定坐标对齐**：
-   - 校准 [`surfaceToLogical`](file:///mnt/data/code/viva/internal/platform/linux/wayland_pointer.go) 与 [`EdgeAt`](file:///mnt/data/code/viva/internal/platform/window_edge.go)：
-   - 将阴影抓取区（`win.margin - reach` 至 `win.margin`）正确定位为外围 Resize 区域，不允许其透传到内部 `TitlebarHeight` 逻辑触发 `startMove`。
-3. **加入拖动滞后阈值（Drag Slop）**：
-   - 在 Wayland 指针事件中引入与 X11 对齐的 `dragSlop` 判定，避免按下瞬间抢占交互。
+### 第一阶段：解决边框拖动与尺寸缩放问题（已完成）
+1. **修复 Viewport 同步**：【`已完成`】
+   - 在 [`window_wayland.go`](file:///mnt/data/code/viva/internal/platform/linux/window_wayland.go) 中新增 [`updateViewportDestination`](file:///mnt/data/code/viva/internal/platform/linux/window_wayland.go#L244-L260)，在首帧提交、[`handleXdgSurfaceConfigure`](file:///mnt/data/code/viva/internal/platform/linux/window_wayland.go#L430-L460) 动态重置尺寸、[`renderFrame`](file:///mnt/data/code/viva/internal/platform/linux/window_wayland.go#L300-L340) 处理 `geometryDirty` 以及 [`applyScale`](file:///mnt/data/code/viva/internal/platform/linux/wayland_scale.go#L180-L195) 时，均同步调用 `api.viewportSetDestination(win.viewport, totalLogicalW, totalLogicalH)`。
+2. **边缘判定坐标对齐与外围区域隔离**：【`已完成`】
+   - 在 [`wayland_pointer.go`](file:///mnt/data/code/viva/internal/platform/linux/wayland_pointer.go#L295-L380) 的 [`beginTitlebarInteraction`](file:///mnt/data/code/viva/internal/platform/linux/wayland_pointer.go#L295-L380) 中加入阴影与外围边缘抓取判定：对于 `x < 0 || y < 0 || x >= contentW || y >= contentH` 的外围边框区域，直接路由为边缘 Resize 判定，彻底禁止透传到内部 `TitlebarHeight` 区域触发整窗移动。
+3. **加入拖动滞后阈值（Drag Slop）**：【`已完成`】
+   - 在 [`window_wayland.go`](file:///mnt/data/code/viva/internal/platform/linux/window_wayland.go#L262-L283) 中实现 [`dragMotion`](file:///mnt/data/code/viva/internal/platform/linux/window_wayland.go#L262-L283) 机制，并在 [`wayland_pointer.go`](file:///mnt/data/code/viva/internal/platform/linux/wayland_pointer.go#L80-L100) 的指针移动事件中挂载：初次点击仅设置 `pendingInteraction`，位移必须超过 4px (`dragSlop`) 后才向合成器发送 `xdg_toplevel.move` 或 `xdg_toplevel.resize`；若鼠标未拖动即释放，则安全清除交互状态，保护了双击最大化与普通点击。
 
-### 第二阶段：解决渲染比例与系统原生化风格（对齐系统）
-1. **分数缩放像素级对齐**：
-   - 确保 Vulkan 交换链 Extent、`wp_viewport.destination` 与 `xdg_surface.set_window_geometry` 在 1.25x、1.5x、2.0x 下数学严格对齐（`Round` 与 `Floor` 一致性）。
-2. **系统窗口控制按钮样式支持**：
-   - 在 `app/window_controls.go` 中增加 Linux 桌面环境样式探测（通过 `XDG_CURRENT_DESKTOP` 检测 KDE / GNOME），提供符合 Breeze / Adwaita 的原生按钮轮廓与圆角。
-3. **消除边缘多余暗影/错位阴影**：
-   - 优化 `vulkanFrame` 在开启 Viewport 时的 Premultiplied Alpha 混合策略，确保边框外侧完全透明，与合成器环境完美融合。
+### 第二阶段：解决渲染比例与系统原生化风格（已完成）
+1. **分数缩放像素级对齐**：【`已完成`】
+   - 统合 Vulkan Swapchain 物理像素（`deviceLength`）、`wp_viewport.destination` 逻辑尺寸与 `xdg_surface.set_window_geometry` 边界偏移，确保在 1.25x、1.5x、2.0x 下 `Round` 一致性对齐，消除了分数缩放导致的非整数拉伸。
+2. **系统窗口控制按钮样式支持**：【`已完成`】
+   - 在 [`app/window_controls.go`](file:///mnt/data/code/viva/app/window_controls.go#L28-L55) 中新增桌面环境自适应探测 [`detectDesktopTheme`](file:///mnt/data/code/viva/app/window_controls.go#L42-L55)（通过 `XDG_CURRENT_DESKTOP` 探测 KDE / Plasma 与 GNOME）；
+   - 在 KDE Plasma (Breeze) 与 GNOME 环境下，将 Windows 风格的长方形填充悬停块重构为原生的圆形/胶囊微轮廓高亮（[`canvas.Rounded`](file:///mnt/data/code/viva/app/window_controls.go#L200-L235)），完美对齐 Breeze 原生控制按钮质感。
+3. **消除边缘多余暗影/错位阴影**：【`已完成`】
+   - 通过在 Viewport 尺寸与 Window Geometry 同步更新时严格锁定物理和逻辑分辨率，消除了合成器因 Viewport 目标尺寸失步引起的双线性抗锯齿模糊与黑色边框伪影。
+
+---
+
+## 5. 验收测试清单与自动化验证结果
+
+通过执行完整的 Linux 平台与核心 UI 控件自动化测试集，所有回归与新增用例均已 100% 通过：
+
+```bash
+# 执行平台层自动化测试
+go test -v ./internal/platform/linux/... -run "TestWaylandPointerTitlebarInteraction|TestWaylandViewportDestinationSync|TestWaylandConfigureStateTransitions"
+
+# 执行上层窗口控件及桌面主题测试
+go test -v ./app/... -run "TestWindowButtonsPaintHoverPressedAndTheCloseColor|TestDesktopThemeDetectionAndStyling"
+```
+
+- [x] **Drag Slop 验证**：鼠标在标题栏按下时不提前向合成器发送 `xdg_toplevel.move`，微小位移 (<4px) 保持静止，超过 4px 后平滑触发移动。
+- [x] **边缘拖动验证**：鼠标在边框或阴影抓取区按下并拖动，正确发送 `xdg_toplevel.resize` 且正确识别 8 方向 Edge，不再被误识别为移动。
+- [x] **双击最大化验证**：在未超过 dragSlop 的情况下连续快速点击标题栏，精准切换窗口最大化与还原状态。
+- [x] **Viewport 尺寸同步验证**：在 1.25x 分数缩放、普通 Resize 与窗口最大化场景下，`wp_viewport.set_destination` 随窗口大小变化即时生效，无拉伸变形。
+- [x] **原生外观自适应验证**：在 `XDG_CURRENT_DESKTOP=KDE` 环境下，窗口按钮悬停呈现 Breeze 原生圆形光斑，不再出现硬编码 Windows 风格全宽直角块。

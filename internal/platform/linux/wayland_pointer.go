@@ -288,10 +288,12 @@ func (win *waylandWindow) beginTitlebarInteraction(serial uint32, x, y float32, 
 	contentW := float32(contentSize(win.width, win.margin)) / scale
 	contentH := float32(contentSize(win.height, win.margin)) / scale
 
-	// 1. Check edge resizing if not maximized
+	inMargin := (x < 0 || y < 0 || x >= contentW || y >= contentH)
+
+	// 1. Edge and corner resizing for non-maximized windows (outer grip or inner border)
 	if !win.maximized && !win.fullscreen {
 		overControl := false
-		if win.state.config.PressAt != nil {
+		if !inMargin && win.state.config.PressAt != nil {
 			overControl = (win.state.config.PressAt(x, y) == platform.PressControl)
 		}
 		edge := platform.EdgeAt(x, y, contentW, contentH, overControl)
@@ -301,10 +303,18 @@ func (win *waylandWindow) beginTitlebarInteraction(serial uint32, x, y float32, 
 		}
 	}
 
-	// 2. Check application-defined titlebar dragging
+	// In margin, never trigger move or pass through to client
+	if inMargin {
+		return true
+	}
+
+	// 3. Check application-defined titlebar dragging
 	if win.state.config.PressAt != nil {
 		press := win.state.config.PressAt(x, y)
-		if press == platform.PressMove {
+		if press == platform.PressControl || press == platform.PressClient {
+			return false
+		}
+		if press == platform.PressMove || press == platform.PressMoveOnDrag {
 			if win.checkDoubleClick(timeMs) {
 				win.toggleMaximize()
 				return true
@@ -312,12 +322,9 @@ func (win *waylandWindow) beginTitlebarInteraction(serial uint32, x, y float32, 
 			win.startMove(serial)
 			return true
 		}
-		if press == platform.PressClient || press == platform.PressControl {
-			return false
-		}
 	}
 
-	// 3. Fallback default titlebar height
+	// 4. Fallback default titlebar height
 	tbHeight := win.state.config.TitlebarHeight
 	if tbHeight <= 0 {
 		tbHeight = 32

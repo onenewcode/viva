@@ -94,6 +94,7 @@ func (app *waylandApplication) setupWindowScale(win *waylandWindow) {
 	// 2. Viewporter
 	if app.globals.viewporter != 0 {
 		win.viewport = app.api.getViewport(app.globals.viewporter, win.surface)
+		win.updateViewportDestination()
 	}
 
 	// 3. Surface enter/leave for output tracking
@@ -153,6 +154,11 @@ func (win *waylandWindow) applyScale(scale float32) {
 	logicalW := float32(contentSize(win.width, win.margin)) / oldScale
 	logicalH := float32(contentSize(win.height, win.margin)) / oldScale
 
+	if !win.maximized && !win.fullscreen {
+		win.savedLogicalW = logicalW
+		win.savedLogicalH = logicalH
+	}
+
 	win.storeScale(scale)
 
 	// Recompute physical dimensions
@@ -178,10 +184,9 @@ func (win *waylandWindow) applyScale(scale float32) {
 	}
 
 	// Configure viewport destination logical dimensions (entire surface)
-	if win.viewport != 0 && win.app != nil && win.app.api != nil {
-		totalLogicalW := int32(math.Round(float64(float32(win.width) / scale)))
-		totalLogicalH := int32(math.Round(float64(float32(win.height) / scale)))
-		win.app.api.viewportSetDestination(win.viewport, totalLogicalW, totalLogicalH)
+	win.updateViewportDestination()
+	if win.viewport == 0 && win.app != nil && win.app.api != nil && win.surface != 0 {
+		win.app.api.surfaceSetBufferScale(win.surface, int32(math.Ceil(float64(scale))))
 	}
 
 	win.geometryDirty = true

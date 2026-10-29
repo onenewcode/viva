@@ -102,7 +102,12 @@ func TestWaylandClipboardSetAndAsyncSend(t *testing.T) {
 	// Trigger async send: callback must return immediately without waiting for pipe reader!
 	start := time.Now()
 	cMime := []byte("text/plain;charset=utf-8\x00")
-	puregoInvokeCallback4(sendCb, unsafe.Pointer(app), 200, uintptr(unsafe.Pointer(&cMime[0])), uintptr(w.Fd()))
+	dupFd, err := syscall.Dup(int(w.Fd()))
+	if err != nil {
+		t.Fatalf("dup failed: %v", err)
+	}
+	puregoInvokeCallback4(sendCb, unsafe.Pointer(app), 200, uintptr(unsafe.Pointer(&cMime[0])), uintptr(dupFd))
+	_ = w.Close()
 	elapsed := time.Since(start)
 
 	if elapsed > 100*time.Millisecond {

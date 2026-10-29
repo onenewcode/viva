@@ -98,24 +98,26 @@ type waylandWindow struct {
 	width, height uint32 // device pixels
 	scaleBits     atomic.Uint32
 	margin        uint32
+	savedLogicalW float32
+	savedLogicalH float32
 	frameWanted   bool
 	geometryDirty bool
 	lastFrame     ui.Rect
 
-	pendingSerial        uint32
-	pendingWidth         int32
-	pendingHeight        int32
-	configured           bool
-	firstConfigureDone   bool
-	framePending         bool
-	frameCallback        uintptr
-	needsRedraw          bool
-	maximized            bool
-	fullscreen           bool
-	resizing             bool
-	activated            bool
-	hidden               bool
-	closed               atomic.Bool
+	pendingSerial      uint32
+	pendingWidth       int32
+	pendingHeight      int32
+	configured         bool
+	firstConfigureDone bool
+	framePending       bool
+	frameCallback      uintptr
+	needsRedraw        bool
+	maximized          bool
+	fullscreen         bool
+	resizing           bool
+	activated          bool
+	hidden             bool
+	closed             atomic.Bool
 
 	pointerX, pointerY float32
 	lastClickTime      uint32
@@ -226,6 +228,25 @@ func (win *waylandWindow) updateInputRegion() {
 	}
 }
 
+func (win *waylandWindow) updateViewportDestination() {
+	if win.viewport == 0 || win.app == nil || win.app.api == nil {
+		return
+	}
+	scale := win.displayScale()
+	if scale <= 0 {
+		scale = 1.0
+	}
+	totalLogicalW := int32(math.Round(float64(float32(win.width) / scale)))
+	totalLogicalH := int32(math.Round(float64(float32(win.height) / scale)))
+	if totalLogicalW <= 0 {
+		totalLogicalW = 1
+	}
+	if totalLogicalH <= 0 {
+		totalLogicalH = 1
+	}
+	win.app.api.viewportSetDestination(win.viewport, totalLogicalW, totalLogicalH)
+}
+
 // renderFrame presents the current content atomically to the Wayland surface.
 func (win *waylandWindow) renderFrame() {
 	if win.closed.Load() || win.surface == 0 || win.state == nil {
@@ -246,7 +267,7 @@ func (win *waylandWindow) renderFrame() {
 	}
 	win.needsRedraw = false
 
-	if win.pendingSerial != 0 {
+	if win.pendingSerial != 0 && win.app != nil && win.app.api != nil && win.xdgSurface != 0 {
 		win.app.api.xdgSurfaceAckConfigure(win.xdgSurface, win.pendingSerial)
 		win.pendingSerial = 0
 	}
@@ -254,6 +275,7 @@ func (win *waylandWindow) renderFrame() {
 	if win.geometryDirty {
 		win.updateWindowGeometry()
 		win.updateInputRegion()
+		win.updateViewportDestination()
 		win.geometryDirty = false
 	}
 
@@ -272,13 +294,12 @@ func (win *waylandWindow) renderFrame() {
 		} else {
 			_ = win.state.renderer.present()
 		}
+	} else if win.app != nil && win.app.api != nil {
+		win.app.api.surfaceCommit(win.surface)
 	}
 
-	if win.app != nil && win.app.api != nil {
-		win.app.api.surfaceCommit(win.surface)
-		if win.app.api.displayFlush != nil && win.app.display != 0 {
-			win.app.api.displayFlush(win.app.display)
-		}
+	if win.app != nil && win.app.api != nil && win.app.api.displayFlush != nil && win.app.display != 0 {
+		win.app.api.displayFlush(win.app.display)
 	}
 }
 
@@ -352,12 +373,97 @@ func (win *waylandWindow) handleXdgToplevelConfigure(width, height int32, states
 	win.pendingHeight = height
 }
 
+func (win *waylandWindow) applyPendingResize() {
+	if win.closed.Load() || win.surface == 0 || win.state == nil {
+		return
+	}
+	win.needsRedraw = false
+
+	scale := win.displayScale()
+	w, h := win.pendingWidth, win.pendingHeight
+	if (w <= 0 || h <= 0) && !win.maximized && !win.fullscreen && win.savedLogicalW > 0 && win.savedLogicalH > 0 {
+		w = int32(math.Round(float64(win.savedLogicalW)))
+		h = int32(math.Round(float64(win.savedLogicalH)))
+	}
+	if w > 0 && h > 0 {
+		if !win.maximized && !win.fullscreen {
+			win.savedLogicalW = float32(w)
+			win.savedLogicalH = float32(h)
+		}
+		newWidth := deviceLength(int(w), scale)
+		newHeight := deviceLength(int(h), scale)
+		if win.margin > 0 {
+			newWidth += 2 * win.margin
+			newHeight += 2 * win.margin
+		}
+		if newWidth != win.width || newHeight != win.height {
+			win.width = newWidth
+			win.height = newHeight
+			win.geometryDirty = true
+		}
+	}
+
+	// Always acknowledge configure BEFORE presenting the new geometry/buffer.
+	// This ensures compositor matches the acknowledged serial with the committed frame.
+	if win.app != nil && win.app.api != nil && win.xdgSurface != 0 && win.pendingSerial != 0 {
+		win.app.api.xdgSurfaceAckConfigure(win.xdgSurface, win.pendingSerial)
+		win.pendingSerial = 0
+	}
+
+	// Synchronize window geometry, viewport destination and input region prior
+	// to Vulkan present/commit so the compositor updates anchors and geometry atomically.
+	if win.geometryDirty {
+		win.updateWindowGeometry()
+		win.updateInputRegion()
+		win.updateViewportDestination()
+		win.geometryDirty = false
+	}
+
+	// Request next frame callback BEFORE committing current frame
+	win.requestFrameCallback()
+
+	if win.state.renderer != nil {
+		_ = win.state.renderer.resize(win.width, win.height)
+		presented := false
+		if win.state.config.OnResize != nil {
+			if frame, err := win.state.config.OnResize(win.logicalSize()); err == nil {
+				if win.state.router.present != nil {
+					_ = win.state.router.present(frame)
+					presented = true
+				}
+			}
+		}
+		if !presented {
+			_ = win.state.renderer.present()
+		}
+		win.reportFrame()
+	} else {
+		if win.state.config.OnResize != nil {
+			if frame, err := win.state.config.OnResize(win.logicalSize()); err == nil {
+				if win.state.router.present != nil {
+					_ = win.state.router.present(frame)
+				}
+			}
+		}
+		if win.app != nil && win.app.api != nil {
+			win.app.api.surfaceCommit(win.surface)
+		}
+	}
+	if win.app != nil && win.app.api != nil && win.app.api.displayFlush != nil && win.app.display != 0 {
+		win.app.api.displayFlush(win.app.display)
+	}
+}
+
 func (win *waylandWindow) handleXdgSurfaceConfigure(serial uint32) {
 	win.pendingSerial = serial
 	win.configured = true
 
 	scale := win.displayScale()
 	w, h := win.pendingWidth, win.pendingHeight
+	if (w <= 0 || h <= 0) && !win.maximized && !win.fullscreen && win.savedLogicalW > 0 && win.savedLogicalH > 0 {
+		w = int32(math.Round(float64(win.savedLogicalW)))
+		h = int32(math.Round(float64(win.savedLogicalH)))
+	}
 	resized := false
 
 	if w > 0 && h > 0 {
@@ -368,26 +474,13 @@ func (win *waylandWindow) handleXdgSurfaceConfigure(serial uint32) {
 			newHeight += 2 * win.margin
 		}
 		if newWidth != win.width || newHeight != win.height {
-			win.width = newWidth
-			win.height = newHeight
 			resized = true
-			win.geometryDirty = true
 		}
 	}
 
-	if resized && win.state != nil && win.state.renderer != nil {
-		_ = win.state.renderer.resize(win.width, win.height)
-		if win.state.config.OnResize != nil {
-			if frame, err := win.state.config.OnResize(win.logicalSize()); err == nil {
-				if win.state.router.present != nil {
-					_ = win.state.router.present(frame)
-				}
-			}
-		}
-		win.reportFrame()
-	}
-
-	if win.state != nil {
+	if resized {
+		win.applyPendingResize()
+	} else if win.state != nil {
 		win.renderFrame()
 	}
 }
@@ -455,6 +548,9 @@ func (win *waylandWindow) minimize() {
 func (win *waylandWindow) startMove(serial uint32) {
 	if win.xdgToplevel != 0 && win.app != nil && win.app.api != nil && win.app.globals.seat != 0 {
 		win.app.api.xdgToplevelMove(win.xdgToplevel, win.app.globals.seat, serial)
+		if win.app.api.displayFlush != nil && win.app.display != 0 {
+			win.app.api.displayFlush(win.app.display)
+		}
 	}
 }
 
@@ -462,6 +558,9 @@ func (win *waylandWindow) startResize(serial uint32, edge platform.WindowEdge) {
 	if win.xdgToplevel != 0 && win.app != nil && win.app.api != nil && win.app.globals.seat != 0 {
 		waylandEdge := xdgResizeEdge(edge)
 		win.app.api.xdgToplevelResize(win.xdgToplevel, win.app.globals.seat, serial, waylandEdge)
+		if win.app.api.displayFlush != nil && win.app.display != 0 {
+			win.app.api.displayFlush(win.app.display)
+		}
 	}
 }
 
@@ -527,6 +626,8 @@ func (win *waylandWindow) destroy() {
 			api.proxyDestroy(win.frameCallback)
 			win.frameCallback = 0
 		}
+		win.framePending = false
+		win.needsRedraw = false
 		if win.fractionalScale != 0 {
 			api.fractionalScaleDestroy(win.fractionalScale)
 			win.fractionalScale = 0
@@ -600,6 +701,12 @@ func (win *waylandWindow) Hide() {
 			return
 		}
 		win.hidden = true
+		if win.frameCallback != 0 && win.app != nil && win.app.api != nil {
+			win.app.api.proxyDestroy(win.frameCallback)
+			win.frameCallback = 0
+		}
+		win.framePending = false
+		win.needsRedraw = false
 		if win.surface != 0 && win.app != nil && win.app.api != nil {
 			win.app.api.surfaceAttach(win.surface, 0, 0, 0)
 			win.app.api.surfaceCommit(win.surface)
@@ -718,6 +825,8 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 		width:          totalW,
 		height:         totalH,
 		margin:         margin,
+		savedLogicalW:  float32(config.Width),
+		savedLogicalH:  float32(config.Height),
 		frameWanted:    frameWanted,
 		geometryDirty:  true,
 	}
@@ -818,6 +927,7 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 
 	win.updateWindowGeometry()
 	win.updateInputRegion()
+	win.updateViewportDestination()
 	win.geometryDirty = false
 
 	if win.pendingSerial != 0 {

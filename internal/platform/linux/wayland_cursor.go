@@ -194,6 +194,9 @@ func (app *waylandApplication) setCursor(shape uint8) {
 	hotspotX := int32(img.HotspotX) / intScale
 	hotspotY := int32(img.HotspotY) / intScale
 	app.api.pointerSetCursor(app.pointer, app.pointerSerial, mgr.cursorSurface, hotspotX, hotspotY)
+	if app.api.displayFlush != nil && app.display != 0 {
+		app.api.displayFlush(app.display)
+	}
 }
 
 func (mgr *waylandCursorManager) destroy(api *waylandAPI) {
