@@ -1,209 +1,431 @@
-# Viva Linux 现代化架构总览：Wayland-First 与多后端调度机制
+# Viva Linux/Wayland 架构：目标设计与实施契约
 
-## 1. 架构目标与设计原则
+- 更新日期：2026-10-29
+- 适用分支：`docs/linux-render-refresh-flicker`
+- 当前实现复核：[09-current-implementation-review.md](09-current-implementation-review.md)
+- 文档性质：架构目标、协议约束和迁移方向；不代表全部能力已经实现或验收
 
-Viva 在 Linux 平台的核心目标是提供一个高性能、零撕裂、低能耗、小体积的现代 GUI 运行时。为了彻底甩脱 X11 的历史包袱，同时兼顾老旧生产环境的连续性，Linux 后端采用 **“Wayland 原生优先，X11 弹性后备（Wayland-First, X11-as-Fallback）”** 的多后端双轨分层架构。
+## 1. 架构目标与判断原则
 
-### 核心原则
-1. **优先现代（Wayland-First）**：默认且优先检测现代 Wayland 会话，享受原子状态提交、无黑白闪烁过渡和硬件级显式同步；
-2. **安全后备（X11-Fallback）**：在仅有纯 X11 环境（如老旧嵌入式、部分容器或轻量级 WM）下，自动无缝降级到现有的 XCB 管线；
-3. **零编译期 C 依赖（Zero CGO / PureGo-Only）**：严格保持 Viva 的二进制纯粹性，无论是 Wayland 还是 X11，均通过 `purego` 运行时动态绑定底层共享库，支持纯 Go 交叉编译；
-4. **最大化核心复用（Maximum Core Reuse）**：Vulkan 渲染命令管线、保留式场景比对、文本测量与 D-Bus 子系统在两套后端之间完全复用。
+Viva Linux 后端采用 **Wayland 原生优先、X11 后备** 的双后端架构，目标是提供低延迟、按需渲染、跨高分屏一致且可长期维护的 GUI 运行时。
 
----
+核心原则：
 
-## 2. 总体架构分层图
+1. **Wayland-First**：在可用 Wayland 会话中优先使用原生后端；强制后端失败时不静默降级。
+2. **X11-as-Fallback**：仅保留必要的 X11/XCB 适配差异，共享场景、文字、输入路由和桌面协议核心。
+3. **Zero CGO / PureGo**：通过 `purego` 动态绑定系统库，保持纯 Go 交叉编译能力。
+4. **单线程平台所有权**：Wayland proxy、窗口状态和 Vulkan 窗口操作由事件循环线程独占；后台 goroutine 只提交不可变命令或事件快照。
+5. **协议状态优先于表面现象**：以 configure、commit、frame callback、swapchain 生命周期为依据设计，不用零散布尔补丁维持表面可用。
+6. **按需而非无条件渲染**：内容不变不代表可以忽略 Show、resize、scale 或 swapchain 重建所要求的强制呈现。
+7. **明确区分现状与目标**：所有“已实现”结论必须由源码和测试支持；真实 compositor、GPU 和桌面服务验收单独记录。
+
+## 2. 总体分层
 
 ```mermaid
 flowchart TD
-    AppLayer["上层应用代码 / ui.Canvas / app.RunApplication"] --> PlatformContract["platform.Contract 统一接口"]
+    App["上层应用 / ui.Canvas / app.RunApplication"] --> Contract["platform.Application 统一契约"]
+    Contract --> Adapter["app 平台适配与配置转换"]
+    Adapter --> Select["internal/platform/linux.selectBackend"]
 
-    subgraph Linux_Dispatcher["Linux 平台调度与环境探测 (backend_linux.go)"]
-        PlatformContract --> SelectBackend{"selectBackend() 运行时探测"}
-        SelectBackend -->|"环境变量 WAYLAND_DISPLAY 或强制 wayland"| WaylandBranch["Wayland 原生后端 (Priority 1)"]
-        SelectBackend -->|"环境变量 DISPLAY 或回退"| X11Branch["X11/XCB 后备后端 (Priority 2)"]
-    end
+    Select -->|"Wayland 环境可用"| Wayland["waylandApplication"]
+    Select -->|"强制 X11 或 Wayland 不可用后的后备"| X11["linuxApplication / XCB"]
 
-    subgraph Wayland_Adapter["Wayland 窗口系统适配层"]
-        WaylandBranch --> WaylandApp["waylandApplication"]
-        WaylandApp --> WClient["libwayland-client.so.0 (purego)"]
-        WaylandApp --> XDG["XDG-Shell 窗口控制器"]
-        WaylandApp --> WSeat["wl_seat 输入收集"]
-        WaylandApp --> WScale["wp-fractional-scale-v1"]
-    end
+    Wayland --> WClient["libwayland-client / PureGo"]
+    Wayland --> XDG["xdg-shell 与 surface 生命周期"]
+    Wayland --> Seat["wl_seat / xkbcommon / IBus"]
+    Wayland --> Scale["fractional-scale / viewport / output scale"]
 
-    subgraph X11_Adapter["X11 窗口系统适配层 (现有实现)"]
-        X11Branch --> X11App["linuxApplication (XCB)"]
-        X11App --> XCB["libxcb.so.1 (purego)"]
-        X11App --> XRandR["libxcb-randr.so.0 缩放"]
-        X11App --> XDND["XDND 拖拽协议"]
-    end
+    X11 --> XCB["libxcb / EWMH / ICCCM"]
+    X11 --> RandR["XRandR 缩放"]
 
-    subgraph Shared_Infrastructure["跨后端共享基础设施 (100% 共用)"]
-        WaylandBranch -->|"提供 VkWaylandSurfaceKHR"| VulkanPipeline["Vulkan 渲染核心 (vulkanRenderer)"]
-        X11Branch -->|"提供 VkXcbSurfaceKHR"| VulkanPipeline
-        
-        WaylandBranch -.-> EventRouter["输入路由与点击计算器 (eventRouter)"]
-        X11Branch -.-> EventRouter
+    Wayland --> WSI["VkWaylandSurfaceKHR"]
+    X11 --> XSI["VkXcbSurfaceKHR"]
+    WSI --> Vulkan["共享 Vulkan 场景与交换链核心"]
+    XSI --> Vulkan
 
-        WaylandBranch -.-> DBusServices["D-Bus 体系服务"]
-        X11Branch -.-> DBusServices
-        
-        DBusServices --> ATSPI["AT-SPI 无障碍 (atspi_bridge.go)"]
-        DBusServices --> SNI["系统托盘 (status_notifier_linux.go)"]
-        DBusServices --> Portal["外观与暗色主题 (desktop_bus_linux.go)"]
+    Wayland --> Router["共享 eventRouter"]
+    X11 --> Router
 
-        VulkanPipeline --> FontEngine["字体引擎 (Fontconfig + Pango/Cairo)"]
-    end
+    Wayland --> Desktop["桌面协议核心与后端 event-source 适配"]
+    X11 --> Desktop
+    Desktop --> ATSPI["AT-SPI"]
+    Desktop --> Tray["StatusNotifier / D-Bus menu"]
+    Desktop --> Portal["Portal settings"]
 ```
 
----
+### 2.1 共享边界
 
-## 3. 后端探测与调度机制
+| 模块 | Wayland 专属 | X11 专属 | 可共享部分 |
+| :--- | :--- | :--- | :--- |
+| 显示连接与事件分发 | libwayland-client、event queue | XCB connection、event queue | event-source 契约、命令队列思想 |
+| 窗口协议 | xdg-shell、wl_surface | EWMH、ICCCM | `platform.Config`、逻辑窗口状态 |
+| GPU surface | `VK_KHR_wayland_surface` | `VK_KHR_xcb_surface` | 场景、文字、裁剪、swapchain 资源管理 |
+| 输入 | wl_pointer、wl_keyboard、data-device | XCB input、XDND | `eventRouter`、点击计数、文本状态 |
+| 缩放 | fractional-scale、viewport、output scale | XRandR | 逻辑坐标、设备像素换算 |
+| 桌面集成 | Wayland FD 注册与连接生命周期 | X11 FD 注册与连接生命周期 | AT-SPI、Portal、StatusNotifier 协议核心 |
 
-### 3.1 探测优先级规范
+桌面集成不是“100% 共享”。可复用的是协议核心和可抽取的重连状态机；FD 注册、显示连接和后端事件分发仍由各自适配层负责。修改一套生命周期实现时，必须审查另一套。
 
-运行入口位于 [`app/backend_linux.go`](file:///Volumes/HIKSEMI/code/viva/app/backend_linux.go)。当 `app.RunApplication` 启动时，调用底层探测调度器 `selectBackend()`：
+## 3. 后端选择契约
 
-1. **显式环境变量覆盖（Override Check）**：
-   - 若设置了 `VIVA_LINUX_BACKEND=wayland`，强制只初始化 Wayland 后端；失败则报错退出，不静默回退。
-   - 若设置了 `VIVA_LINUX_BACKEND=x11`，直接跳过 Wayland 探测，强制使用 XCB 后端。
-2. **Wayland 会话自适应探测（Wayland Probing）**：
-   - 检查环境变量 `os.Getenv("WAYLAND_DISPLAY")`；
-   - 检查 `os.Getenv("XDG_RUNTIME_DIR")` 下是否存在 Wayland 通信 Socket（默认为 `wayland-0`）；
-   - 尝试通过 `purego.Dlopen("libwayland-client.so.0")` 加载 Wayland 客户端库并尝试建立连接 `wl_display_connect(nil)`；
-   - 若上述均成功，选定 **Wayland 原生通道**。
-3. **X11 弹性后备（Fallback to X11）**：
-   - 若 Wayland 探测失败或未检测到环境，检测 `os.Getenv("DISPLAY")`；
-   - 尝试通过 `loadXCB()` 初始化 XCB 连接；
-   - 若成功，选定 **X11 后备通道**。
-4. **无可用图形后端（No Display Failure）**：
-   - 若两者均不可用，返回符合平台规范的 [`platform.ErrNoGraphics`](file:///Volumes/HIKSEMI/code/viva/internal/platform/contract.go#L164) 错误。
+实际入口为 `internal/platform/linux/backend_select.go`。
 
-### 3.2 伪代码实现契约
+### 3.1 当前行为
+
+- `VIVA_LINUX_BACKEND=wayland`：只尝试 Wayland，失败直接返回错误。
+- `VIVA_LINUX_BACKEND=x11`：要求 `DISPLAY` 非空，不尝试 Wayland。
+- 未设置 override：
+  1. `WAYLAND_DISPLAY` 非空，或 `$XDG_RUNTIME_DIR/wayland-0` 存在时，尝试 Wayland；
+  2. Wayland 初始化失败后，如果 `DISPLAY` 非空则选择 X11；
+  3. 两者均不可用时返回 `platform.ErrNoGraphics`。
+- 其他 override 值返回配置错误。
+
+X11 的 `selectBackend` 当前只完成环境检查和对象选择，真正的 XCB 连接可能在后续窗口创建时建立。因此，文档不能把“选择后端时已验证 X server 可连接”作为现有保证。
+
+### 3.2 目标约束
+
+- 探测阶段不创建窗口、不启动后台服务，也不留下全局 hook。
+- 强制模式保留下层错误原因；自动后备可以保留诊断日志，但不能把配置错误误报为无显示。
+- 图形设备/Vulkan 初始化失败与显示连接失败应保留可区分的错误链。
+
+## 4. 单线程事件循环
+
+### 4.1 所有权模型
+
+目标是在 `Run` 锁定的 OS 线程上完成：
+
+- Wayland display、proxy 和 event queue 操作；
+- xdg/wl_surface 状态变更；
+- Vulkan surface、swapchain 和窗口呈现；
+- D-Bus/IBus/AT-SPI FD 的就绪分发；
+- 窗口和应用错误状态推进。
+
+后台 goroutine 不直接读取或修改窗口协议状态，只向命令队列提交不可变数据。库加载和纯计算可以位于其他线程，但不能借此绕过 proxy 和 renderer 的所有权规则。
+
+### 4.2 统一 event source
+
+不要只用“FD + 无参数 callback”表示所有事件源。目标接口至少应表达：
 
 ```go
-// internal/platform/linux/backend_select.go
-
-type platformBackend interface {
-    OpenWindow(config platform.Config) (platform.Window, error)
-    AddStatusItem(config platform.StatusItemConfig) (platform.StatusItem, error)
-    Quit()
-    Run(start platform.ApplicationStart) error
-}
-
-func selectBackend() (platformBackend, error) {
-    target := os.Getenv("VIVA_LINUX_BACKEND")
-    
-    // 1. 尝试 Wayland
-    if target != "x11" {
-        if waylandApp, err := newWaylandApplication(); err == nil {
-            return waylandApp, nil
-        } else if target == "wayland" {
-            return nil, fmt.Errorf("linux: forced Wayland backend failed: %w", err)
-        }
-    }
-    
-    // 2. 尝试 X11 后备
-    if x11App, err := newX11Application(); err == nil {
-        return x11App, nil
-    }
-    
-    return nil, platform.ErrNoGraphics
+type eventSource interface {
+    FD() int32
+    Interest() uint16             // POLLIN、POLLOUT 等
+    Dispatch(revents uint16) error // 包含 ERR、HUP、NVAL
 }
 ```
 
----
+实现可使用不同具体类型，但契约应满足：
 
-## 4. 统一的事件循环与异步 I/O 模型
+- `POLLERR`、`POLLHUP`、`POLLNVAL` 必须进入对应服务的断开/清理路径，不能只处理 `POLLIN`；
+- `POLLOUT` 用于 Wayland flush 背压恢复，恢复后及时取消监听，避免水平触发忙唤醒；
+- 回调错误统一进入应用错误通道；
+- FD 的注册、关闭和移除由同一 owner 管理，避免关闭后复用 FD 导致误分发；
+- 不用平行切片隐式维护 FD 与 callback 的对应关系。
 
-无论是 Wayland 还是 X11，核心事件循环统一基于 Linux 内核的 `epoll` / `poll` 机制，实现统一的单线程主循环驱动：
+Calloop 的 `EventSource`、Generic FD source 和 Timer 是这一方向的成熟参考；Viva 不需要引入 Rust 或对应依赖，但应采用同样的职责划分。
 
-```mermaid
-sequenceDiagram
-    participant MainLoop as 主事件循环 (poll/epoll)
-    participant WlSock as Wayland Socket (wl_display_get_fd)
-    participant DBusSock as D-Bus Socket (Portal/Tray/AT-SPI)
-    participant Waker as Waker 自管道 (eventfd)
-    participant Painter as Viva 渲染器 (OnRedraw)
+### 4.3 libwayland 标准读取流程
 
-    MainLoop->>MainLoop: wl_display_flush(display)
-    MainLoop->>MainLoop: poll(fds, timeout) 挂起等待唤醒
-    
-    alt Wayland 事件到达 (POLLIN)
-        WlSock-->>MainLoop: 唤醒
-        MainLoop->>MainLoop: wl_display_dispatch(display)
-        Note over MainLoop: 处理 configure、pointer、keyboard 事件
-    else D-Bus 信号到达
-        DBusSock-->>MainLoop: 唤醒
-        MainLoop->>MainLoop: 读取外观配置变更或托盘点击
-    else 跨 Goroutine 唤醒
-        Waker-->>MainLoop: 读取 eventfd
-        MainLoop->>Painter: 触发局部或全局重绘
-    end
+目标事件循环采用 libwayland 推荐的 prepare/read 模式：
+
+```text
+dispatch pending commands
+while true:
+    dispatch wl_display_dispatch_pending()
+    while wl_display_prepare_read() == EAGAIN:
+        if wl_display_dispatch_pending() failed: return error
+
+    flush outgoing requests
+    if flush would block: arm POLLOUT
+
+    poll(Wayland FD, wake FD, service FDs, next timer deadline)
+
+    if Wayland FD readable: wl_display_read_events()
+    else:                  wl_display_cancel_read()
+
+    dispatch service FDs and expired timers
+    wl_display_dispatch_pending()
 ```
 
-### 关键设计优势
-1. **完全零额外 Goroutine 轮询**：所有外部输入（Wayland、D-Bus、跨协程 Waker）全部转化为文件描述符注册在同一个 `pollFD` 集合中；
-2. **线程独占安全（Thread Affinity）**：严格保持 `runtime.LockOSThread()`，所有直接操作 Wayland 代理、Vulkan 交换链与系统调用的逻辑都在同一个宿主线程上串行完成，杜绝多线程竞争与死锁。
+约束：
 
-### 4.1 跨 Goroutine 命令总线与 eventfd 唤醒管道
+- `prepare_read` 成功后，必须配对调用 `read_events` 或 `cancel_read`；
+- 进入 `poll` 前先排空已缓冲事件，避免内存队列非空却仍挂起等待 socket；
+- `flush` 对 `EINTR` 重试，对 `EAGAIN` 启用 `POLLOUT`，其他错误终止事件循环；
+- 持续的非 EINTR `poll` 错误必须返回，不能形成忙循环；
+- 当前较简单的单线程 dispatch 实现不应被描述为已经具备完整的 prepare/read 契约。
 
-在 X11 下，Viva 依赖 `postClientMessage` 向每一个窗口的 X11 Socket 广播自定义客户端消息（参见 [`status_item_linux.go:216-223`](file:///Volumes/HIKSEMI/code/viva/internal/platform/linux/status_item_linux.go#L216-L223)），且必须防止“单个窗口在读取前关闭导致命令遗失”。
+### 4.4 eventfd 命令总线
 
-然而，**Wayland 协议在物理规范上不支持客户端向自己的 Socket 发送自定义事件（无 `send_event` 等价机制）**。
-
-因此，Wayland 原生架构采用 Linux 内核级 **`eventfd` 集中式命令管道**：
+Wayland 没有 X11 `send_event` 的等价物，跨 goroutine 操作通过应用级命令队列和 eventfd 唤醒主循环：
 
 ```mermaid
 flowchart LR
-    SubG["任意后台 Goroutine<br/>(Quit / Hide / Invalidate / StatusItem)"] -->|"1. 推入命令队列"| Q["application.cmdQueue (互斥保护)"]
-    SubG -->|"2. 写入 8 字节计数器"| EFD["Linux eventfd (非阻塞)"]
-    EFD -->|"3. POLLIN 瞬时唤醒"| MainLoop["主线程 poll 事件循环"]
-    MainLoop -->|"4. 批量消费执行"| Dispatch["排空队列并在主线程安全执行"]
+    G["后台 goroutine"] -->|"不可变命令入队"| Q["waylandLoop.cmdQueue"]
+    G -->|"8 字节计数写入"| E["eventfd"]
+    E -->|"POLLIN"| L["主事件循环"]
+    L -->|"批量取出并在主线程执行"| D["命令处理"]
 ```
 
-#### 关键实现契约
-1. **管道初始化**：
-   - 应用程序初始化时创建应用级非阻塞描述符：
-     ```go
-     wakeFD, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
-     ```
-   - 将 `wakeFD` 以 `POLLIN` 标志常驻注册进主循环的 `pollFDs` 数组中。
-2. **命令入队与唤醒**：
-   - 任何后台协程调用跨线程操作时：
-     ```go
-     func (app *waylandApplication) post(cmd applicationCommand) {
-         app.cmdMu.Lock()
-         app.cmdQueue = append(app.cmdQueue, cmd)
-         app.cmdMu.Unlock()
-         
-         // 写入 8 字节唤醒信号，瞬时打破主线程 poll 挂起
-         var val [8]byte
-         binary.NativeEndian.PutUint64(val[:], 1)
-         unix.Write(app.wakeFD, val[:])
-     }
-     ```
-3. **主线程排空执行**：
-   - 主事件循环检测到 `wakeFD` 就绪时，读取清空计数器，锁定并 `take` 消费全部待决指令，在线程安全保障下执行窗口关闭、显隐或渲染刷新。
-4. **核心优势**：
-   - **解耦窗口生命周期**：即使当前无任何可见窗口（例如应用仅在系统托盘运行），`Quit()` 或配置变更依然 100% 可达，彻底根治 X11 下“窗口关闭导致命令丢包”的隐患；
-   - **微秒级低延迟**：内核级 `eventfd` 零 IPC 往返开销，唤醒耗时在微秒级。
+必须满足：
 
+- 先入队再唤醒；主循环批量取出后在锁外执行；
+- eventfd 使用 `EFD_CLOEXEC | EFD_NONBLOCK`；
+- `write` 在写入前被 `EINTR` 打断时重试；
+- 非阻塞写入的 `EAGAIN` 通常表示计数器已有未读值，FD 已经可读，不需要为每次 post 等待可写；
+- 读取和关闭同样处理 `EINTR` 与所有权，关闭后的 post 不得写入可能已经复用的 FD；
+- `stop` 必须能唤醒正在 `poll(-1)` 的主循环；
+- 命令闭包执行前重新验证窗口代际或生命周期，入队前检查不能代替执行前检查。
 
----
+### 4.5 定时器与键盘 repeat
 
-## 5. 跨后端公共抽象边界
+键盘 repeat、延迟任务和超时不应各自创建轮询 goroutine。目标采用以下任一方式：
 
-为了防止代码膨胀与重复，对模块边界做清晰界定：
+- 根据最近 deadline 计算本次 `poll` timeout；或
+- 将 `timerfd` 注册为统一 event source。
 
-| 模块类别 | 属于 Wayland 专属 | 属于 X11 专属 | 跨后端共享实现或契约 |
-| :--- | :---: | :---: | :---: |
-| **窗口连接与消息分发** | `libwayland-client` 封装 | `libxcb` 封装 | - |
-| **几何拓扑与窗口模式** | `xdg-shell` 协议处理 | EWMH / ICCCM 属性 | `platform.Config` / `platform.Window` |
-| **GPU 渲染管线** | `VK_KHR_wayland_surface` | `VK_KHR_xcb_surface` | **Instanced Rectangles、着色器、文字、裁剪** |
-| **输入事件路由** | `wl_pointer` / `wl_keyboard` | `xcbInputEvent` 解码 | **`eventRouter`、点击计数、焦点状态** |
-| **高分屏与缩放** | `wp-fractional-scale-v1` / `wl_output.scale` | `libxcb-randr` 探测 | **`ui.Point` / 逻辑像素坐标系统** |
-| **系统桌面集成** | 连接生命周期与 FD dispatch | 连接生命周期与 FD dispatch | **AT-SPI、D-Bus 托盘、Portal 的协议核心** |
+主循环到期后向当前焦点窗口投递 repeat，并在执行时重新验证 key generation、焦点和窗口生命周期。这与 Calloop Timer 的统一调度实践一致，也能减少跨线程窗口状态读取。
 
-> **边界说明**：桌面集成并非“100% 共享”。AT-SPI、D-Bus 托盘和 Portal 复用协议核心，但 X11 与 Wayland 分别实现连接建立、重连及 FD 事件分发；修改其中一套生命周期实现时，必须同时审查另一套。
+## 5. Surface、Configure 与呈现事务
+
+这是当前架构最需要优先收敛的部分。
+
+### 5.1 显式 surface 生命周期
+
+建议使用明确状态而不是多个布尔量自由组合：
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created
+    Created --> AwaitInitialConfigure: initial empty commit
+    AwaitInitialConfigure --> Mapped: ACK + buffer commit
+    Mapped --> Unmapped: nil buffer commit / hide
+    Unmapped --> AwaitInitialConfigure: repeat initial empty commit / show
+    AwaitInitialConfigure --> Mapped: ACK + buffer commit
+    Mapped --> Closed: destroy
+    Unmapped --> Closed: destroy
+    AwaitInitialConfigure --> Closed: destroy
+```
+
+规则：
+
+- 创建 xdg_surface 和 role object 后，先进行不带 buffer 的初始 commit；
+- 收到初始 `xdg_surface.configure` 前不附加用于映射的 buffer；
+- 隐藏使用 nil buffer + commit；toplevel 因 nil buffer 变为 newly-unmapped 后，重新显示必须再次执行无 buffer 的 initial commit，等待新的 configure，再 ACK 并提交实际 buffer；
+- 等待重新 configure 时不得提前 attach buffer，也不得制造没有对应 commit 的 `framePending`；
+- 关闭后的异步命令、frame callback 和 repeat 均不得继续访问已销毁状态。
+
+初始 configure 可以通过状态机异步等待，不应把阻塞 roundtrip 作为长期架构前提。
+
+### 5.2 Configure 是事务，不是零散回调
+
+每次 configure 至少关联：serial、逻辑尺寸、窗口状态、缩放和 geometry。实现可以合并连续 configure，但必须明确：
+
+- 哪个对象持有最新 serial；
+- 谁负责 `ack_configure`；
+- 哪次 buffer commit 对应该 ACK；
+- 准备场景或 Vulkan 失败时如何终止，避免报告已经成功的新几何。
+
+ACK 应集中在提交事务中。xdg-shell 允许在 commit 前确认多个 configure，最后一次 ACK 决定该 commit 对应的配置；因此不应由 open、resize 和普通 redraw 多条路径各自猜测 ACK 时机。
+
+### 5.3 Scene update 不等于 present/commit
+
+`platform.Frame` 的内容 dirty 只表示场景是否变化，不能回答 surface 是否需要提交。目标拆分为：
+
+```text
+applyScene(frame) -> changed, error
+commitSurface(reason) -> committed, error
+```
+
+`reason` 至少区分：
+
+- content：普通内容更新；
+- initial：初始映射；
+- show/remap：重新 configure 后从 nil buffer 恢复；
+- configure：尺寸、状态或 geometry 改变；
+- scale：buffer scale、viewport 或文字比例改变；
+- rebuild：swapchain/device/surface 重建；
+- input：需要立即反馈的输入更新。
+
+强制规则：
+
+1. clean scene 只能在不存在强制提交原因时跳过 present；
+2. 初始映射、重新 configure 后的 Show、swapchain 重建等场景即使内容不变，也必须重新呈现已有场景；
+3. present 结果必须能区分“未变化、未提交”和“已提交”；
+4. 只有确定执行实际 commit 时，才建立与该 commit 配对的 frame callback；
+5. 先生成并准备帧，再进入 ACK、callback、present/commit 的单一事务，避免回调错误留下半成品状态。
+
+### 5.4 Frame callback 背压
+
+Wayland `wl_surface.frame` 对**下一次 commit**生效，callback 是 compositor 给出的绘制节流提示，不是可靠定时器。
+
+- 持续动画：等待上一帧 callback，再绘制下一帧；
+- 合并多次 Waker：只保留最新场景，避免无效排队；
+- 不可见 surface 可能长期收不到 callback，不得让 Quit、输入状态、Show 或关键业务逻辑依赖它；
+- 不为没有 commit 的 clean frame 留下 `framePending=true`；
+- 隐藏/销毁时明确处理 callback proxy 和对应状态；
+- 重新显示先重复 initial empty commit 并等待 configure，再在对应提交事务中强制呈现，而不是直接 remap 或等待一个可能永远不存在的 callback。
+
+GTK FrameClock 和 Wayland Book 的 frame-callback 模型均体现了“按 compositor 节奏绘制、不可见时停止”的原则。
+
+### 5.5 Vulkan WSI 与资源所有权
+
+共享 Vulkan 核心应遵守：
+
+- `VK_ERROR_OUT_OF_DATE_KHR`：当前帧不能按原路径继续，重建后再呈现；
+- `VK_SUBOPTIMAL_KHR`：可以完成当前帧，但应记录并在受控边界安排重建，避免无限重建或永久忽略；
+- resize 标记与 WSI 返回值共同驱动重建，不能只依赖驱动立即报告 out-of-date；
+- acquire/submit/present 错误统一进入恢复或应用错误通道，并限制恢复次数；
+- surface、swapchain、render pass、pipeline、framebuffer 和 command pool 的销毁顺序集中管理；
+- `oldSwapchain` 在传入创建调用后即进入退休语义，**即使新 swapchain 创建失败也会退休**；应用仍负责销毁，但必须恰好一次；
+- 不让局部错误分支和 deferred cleanup 同时拥有同一个 handle 的销毁责任；
+- 初版可以使用 `vkDeviceWaitIdle` 换取简单正确性，后续再通过帧代际延迟销毁降低主线程停顿。
+
+Vulkan WSI 的 acquire/present semaphore 和 fence 是当前同步基础。除非实现自行管理 wl_buffer 与 drm-syncobj，不把“硬件级显式同步协议已落地”作为既有能力宣称。
+
+## 6. 高分屏与多输出缩放
+
+缩放优先级：
+
+1. **`wp_fractional_scale_v1`**：采用 compositor 的 `preferred_scale`，数值以 120 为分母；提交高分辨率 buffer，并配合 `wp_viewport` 设置逻辑 surface 尺寸；此路径 `wl_surface.set_buffer_scale` 保持 1。
+2. **`wl_surface.preferred_buffer_scale`（v6）**：无 fractional-scale 时采用 compositor 给出的整数 buffer scale。
+3. **`wl_output.scale` 回退**：旧 compositor 下跟踪 surface enter/leave 的输出集合和每个 output 的整数 scale；采用覆盖输出的最大 scale 是 GLFW 等成熟客户端使用的回退策略。
+
+其他约束：
+
+- 输入和窗口 API 使用逻辑坐标，buffer/swapchain 使用设备像素；
+- 明确尺寸舍入规则，避免 scale 往返产生一像素漂移；
+- scale 变化同时更新 renderer 文字比例、frame margin、viewport/geometry、input region 和 swapchain；
+- scale 或输出集合变化后必须强制呈现，即使场景内容未变；
+- 多输出切换期间保留可恢复的单一 scale 来源，避免 fractional 与 output fallback 相互覆盖。
+
+## 7. 输入、IME 与桌面集成
+
+### 7.1 输入和 IME
+
+- 使用 xkbcommon keymap/state 解析 keysym 和 modifier；
+- 传给 IBus 的 modifier 使用 X/IBus mask，不能直接复用 Viva 内部位集；
+- key press 和 release 均按 IME 契约转发，release 带 `IBUS_RELEASE_MASK`；
+- 异步 IME 回复需要处理顺序、超时、断开和焦点切换；
+- repeat 由主循环定时器驱动，不直接访问后台窗口状态；
+- 输入导致的画面更新也进入统一的场景/呈现错误通道。
+
+### 7.2 拖放和剪贴板
+
+- 只有确认 offer 包含文件 MIME 后才进入 FileDrop hover 状态；
+- enter、motion、leave、drop 必须形成可终止的状态机；
+- data offer、serial、action 和焦点生命周期在主线程维护；
+- hover 高亮需要实际呈现，但 clean frame 仍不能破坏 frame callback 状态。
+
+### 7.3 AT-SPI、Portal 与托盘
+
+- 协议编解码、模型和通知逻辑尽量共享；
+- FD event source、连接建立、断开清理和重连策略使用统一接口；
+- watcher 注册失败后必须仍能被后续配置变化或新窗口触发恢复；
+- 一个桌面服务的故障不应被静默转换为正常应用退出。
+
+### 7.4 应用运行与托盘生命周期
+
+不能只用 `hasWindows()` 表达所有应用生命周期。目标采用显式 keep-alive 契约，例如：
+
+```text
+运行条件 = 存在窗口 OR 存在注册的托盘项 OR 应用显式请求后台常驻
+```
+
+普通 Portal/AT-SPI watcher 不应无意中让应用永久存活；最后一个托盘项移除后是否退出应有一致规则。`Quit` 始终可跨 goroutine 唤醒并终止循环。
+
+当前实现尚不支持该完整契约，不能在验收文档中把托盘常驻描述为已具备能力。
+
+## 8. 错误处理与测试架构
+
+### 8.1 统一错误通道
+
+- 平台回调统一返回错误，或由统一 wrapper 调用 `fail`，避免每个监听者自行选择一种模式；
+- 保存首个根因，后续清理错误可通过 `errors.Join` 附加但不能覆盖根因；
+- compositor 断开、持续 poll 错误、Vulkan 不可恢复错误不能表现为正常 `nil` 退出；
+- 局部服务允许降级时，要明确标记 degraded，而不是静默吞错；
+- 失败后的清理仍执行，但不得重复销毁资源或继续 ACK/present。
+
+### 8.2 测试 fake 应验证协议，而非只记录回调次数
+
+Wayland fake 至少跟踪：
+
+- attach、commit、nil buffer、ACK serial；
+- frame request 与对应 commit；
+- surface 是否 mapped；
+- callback done 是否可能到达；
+- proxy destroy 和输入 serial。
+
+Vulkan fake 至少跟踪：
+
+- 每个 handle 的创建、退休和销毁次数；
+- OUT_OF_DATE、SUBOPTIMAL、device lost 和创建中途失败；
+- 旧 swapchain 在成功与失败重建中的唯一销毁；
+- clean scene 与强制 present 的组合。
+
+### 8.3 验证分层
+
+1. **Linux CI 单元测试**：实际执行 `internal/platform/linux`，不能只交叉编译或 vet；
+2. **协议集成测试**：使用 headless compositor 验证初始 configure、Hide/Show、resize 和断开；
+3. **Vulkan validation/lavapipe**：验证失败清理、swapchain 重建和同步；
+4. **真实环境验收**：至少覆盖 GNOME、KDE、Sway/wlroots，以及分数/整数缩放、多屏、IBus、拖放和 AT-SPI；
+5. **性能验收**：分别测量空闲唤醒、resize 延迟、frame 背压和 GPU wait，不以微基准替代实际体验。
+
+## 9. 当前实现与目标差距
+
+| 能力 | 当前状态 | 目标/缺口 |
+| :--- | :--- | :--- |
+| Wayland-First 与 X11 override | 已具备 | 保持文档与实际探测时机一致 |
+| PureGo 动态绑定 | 已具备 | 继续用 ABI/协议测试保护 |
+| 共享 Vulkan 和 eventRouter | 已具备 | 收敛资源所有权和 present 契约 |
+| eventfd 命令队列 | 已具备基础 | 补 EINTR、关闭竞态和代际检查 |
+| flush POLLOUT 恢复 | 已具备 | 纳入统一 event-source 错误模型 |
+| prepare/read 标准流程 | 尚未完整实现 | 按 libwayland 推荐流程收敛 |
+| 键盘 repeat 主循环定时器 | 尚未实现 | 替换独立 ticker goroutine |
+| 显式 surface/configure 状态机 | 部分实现 | 修复 Show 重新 configure、首次 roundtrip 错误传播，并集中 serial、ACK 和 commit 所有权 |
+| clean/forced present 区分 | 未实现 | 修复 Show、resize、scale 和 rebuild |
+| frame callback 与 commit 配对 | 部分实现 | 禁止无 commit 的 pending 状态 |
+| Vulkan oldSwapchain 唯一销毁 | 存在缺陷 | 统一失败和成功路径所有权 |
+| Vulkan SUBOPTIMAL 恢复 | 存在缺陷 | 在当前帧完成后消费标志并于受控边界重建 |
+| fractional/整数缩放 | 已具备主要路径 | 保持协议优先级并做实机验收 |
+| 桌面协议核心共享 | 部分共享 | 抽取可共享重连和 event-source 生命周期 |
+| 托盘/后台常驻 | 未完整支持 | 先明确 keep-alive 产品契约 |
+| Linux 平台测试持续执行 | 当前 CI 缺少 | 增加真正运行平台测试的 CI 任务 |
+
+详细代码问题见 [09-current-implementation-review.md](09-current-implementation-review.md)。
+
+## 10. 推荐迁移顺序
+
+1. **先修呈现事务**：区分 scene dirty 与强制 commit，集中 frame callback、ACK 和 present。
+2. **再修资源所有权**：确保 oldSwapchain 和所有部分初始化资源恰好释放一次。
+3. **收敛事件循环**：统一 event source、EINTR、ERR/HUP、timer 和后台命令生命周期。
+4. **显式化窗口状态机**：减少布尔组合，集中 configure 事务和 surface 映射状态。
+5. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉。
+6. **补验证体系**：先让 Linux mock/unit 测试进入 CI，再进行 headless compositor 和真实环境验收。
+
+该顺序保留现有后端调度、PureGo、共享渲染和协议核心，不要求推倒重写。
+
+## 11. 业界参考
+
+### Wayland 与协议
+
+- [libwayland Client API：dispatch、prepare/read、flush 与 event queue](https://wayland.freedesktop.org/docs/html/apa.html)
+- [Wayland core protocol：wl_surface、frame callback、preferred_buffer_scale、wl_output](https://wayland.app/protocols/wayland)
+- [xdg-shell：初始 configure、ack_configure 与 commit](https://wayland.app/protocols/xdg-shell)
+- [fractional-scale-v1：preferred_scale 与 120 分母](https://wayland.app/protocols/fractional-scale-v1)
+- [viewporter：buffer 与 surface 坐标变换](https://wayland.app/protocols/viewporter)
+- [Wayland Book：Frame callbacks](https://wayland-book.com/surfaces-in-depth/frame-callbacks.html)
+
+### 成熟客户端和事件循环
+
+- [GLFW Wayland 实现：fractional scale、viewport 与 output-scale 回退](https://github.com/glfw/glfw/blob/master/src/wl_window.c)
+- [Calloop：统一 EventSource、FD 和 Timer 调度](https://docs.rs/calloop/latest/calloop/)
+- [GTK 绘制模型与 FrameClock](https://docs.gtk.org/gtk4/drawing-model.html)
+
+### Vulkan 与系统调用
+
+- [VkSwapchainCreateInfoKHR：oldSwapchain 退休语义](https://docs.vulkan.org/spec/latest/man/html/VkSwapchainCreateInfoKHR.html)
+- [Vulkan Tutorial：Swap chain recreation](https://docs.vulkan.org/tutorial/latest/04_Drawing_a_triangle/03_Drawing/03_Swap_chain_recreation.html)
+- [eventfd(2)](https://man7.org/linux/man-pages/man2/eventfd.2.html)
+- [write(2)：EINTR 与 EAGAIN](https://man7.org/linux/man-pages/man2/write.2.html)
+- [poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html)
