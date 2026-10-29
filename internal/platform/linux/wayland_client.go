@@ -17,6 +17,7 @@ type waylandAPI struct {
 	displayConnect         func(name *byte) uintptr
 	displayDisconnect      func(display uintptr)
 	displayGetFd           func(display uintptr) int32
+	displayGetError        func(display uintptr) int32
 	displayDispatch        func(display uintptr) int32
 	displayDispatchPending func(display uintptr) int32
 	displayFlush           func(display uintptr) int32
@@ -39,6 +40,7 @@ func loadWaylandClient() (*waylandAPI, error) {
 	purego.RegisterLibFunc(&api.displayConnect, library, "wl_display_connect")
 	purego.RegisterLibFunc(&api.displayDisconnect, library, "wl_display_disconnect")
 	purego.RegisterLibFunc(&api.displayGetFd, library, "wl_display_get_fd")
+	purego.RegisterLibFunc(&api.displayGetError, library, "wl_display_get_error")
 	purego.RegisterLibFunc(&api.displayDispatch, library, "wl_display_dispatch")
 	purego.RegisterLibFunc(&api.displayDispatchPending, library, "wl_display_dispatch_pending")
 	purego.RegisterLibFunc(&api.displayFlush, library, "wl_display_flush")

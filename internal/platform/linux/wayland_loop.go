@@ -73,6 +73,7 @@ type waylandLoop struct {
 	cmdQueue []waylandCommand
 
 	running atomic.Bool
+	err     error
 
 	pollMu       sync.Mutex
 	pollFDs      []pollFD
@@ -217,6 +218,28 @@ func (l *waylandLoop) setFlushPending(pending bool) {
 	l.pollMu.Unlock()
 }
 
+func (l *waylandLoop) fail(err error) {
+	if err == nil {
+		return
+	}
+	if l.err == nil {
+		l.err = err
+	}
+	l.running.Store(false)
+}
+
+func (l *waylandLoop) displayError(operation string) error {
+	if l.wayland != nil && l.wayland.displayGetError != nil {
+		if code := l.wayland.displayGetError(l.display); code != 0 {
+			return fmt.Errorf("linux: Wayland %s failed (error %d)", operation, code)
+		}
+	}
+	if errno := l.libc.errno(); errno != 0 {
+		return fmt.Errorf("linux: Wayland %s failed: %w", operation, errno)
+	}
+	return fmt.Errorf("linux: Wayland %s failed", operation)
+}
+
 func (l *waylandLoop) flush() bool {
 	if l.wayland == nil || l.wayland.displayFlush == nil {
 		return true
@@ -233,7 +256,7 @@ func (l *waylandLoop) flush() bool {
 			l.setFlushPending(true)
 			return true
 		default:
-			l.running.Store(false)
+			l.fail(l.displayError("flush"))
 			return false
 		}
 	}
@@ -252,7 +275,10 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 	// 1. Dispatch any pending Wayland events already in the client library buffer BEFORE polling!
 	// This prevents hanging in poll if events were already read into memory.
 	if l.wayland != nil && l.wayland.displayDispatchPending != nil {
-		l.wayland.displayDispatchPending(l.display)
+		if l.wayland.displayDispatchPending(l.display) < 0 {
+			l.fail(l.displayError("dispatch pending events"))
+			return false
+		}
 	}
 
 	// 2. Flush outgoing requests to Wayland display socket
@@ -269,10 +295,11 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 	if l.libc != nil && l.libc.poll != nil {
 		ret := l.libc.poll(pfd, nfds, timeoutMs)
 		if ret < 0 {
-			if l.libc.errno() == syscall.EINTR {
+			errno := l.libc.errno()
+			if errno == syscall.EINTR {
 				return l.running.Load()
 			}
-			l.running.Store(false)
+			l.fail(fmt.Errorf("linux: poll Wayland connections failed (errno %d)", errno))
 			return false
 		}
 	}
@@ -312,17 +339,20 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 	if waylandIn {
 		if l.wayland != nil && l.wayland.displayDispatch != nil {
 			if l.wayland.displayDispatch(l.display) < 0 {
-				l.running.Store(false)
+				l.fail(l.displayError("dispatch"))
 				return false
 			}
 		}
 	} else if l.wayland != nil && l.wayland.displayDispatchPending != nil {
-		l.wayland.displayDispatchPending(l.display)
+		if l.wayland.displayDispatchPending(l.display) < 0 {
+			l.fail(l.displayError("dispatch pending events"))
+			return false
+		}
 	}
 
 	// 7. Check for hangup / error on Wayland socket
 	if waylandErr {
-		l.running.Store(false)
+		l.fail(errors.New("linux: Wayland socket error or hangup"))
 		return false
 	}
 

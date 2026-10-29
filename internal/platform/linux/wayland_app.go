@@ -173,6 +173,9 @@ func (app *waylandApplication) Run(start platform.ApplicationStart) error {
 	for app.hasWindows() && app.loop != nil && app.loop.step(-1) {
 	}
 
+	if app.loop != nil {
+		return app.loop.err
+	}
 	return nil
 }
 

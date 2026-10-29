@@ -788,6 +788,12 @@ func TestWaylandLoopPollErrorStopsUnlessInterrupted(t *testing.T) {
 			if loop.running.Load() != test.running {
 				t.Fatalf("running = %v after %v, want %v", loop.running.Load(), test.errno, test.running)
 			}
+			if test.running && loop.err != nil {
+				t.Fatalf("EINTR recorded an error: %v", loop.err)
+			}
+			if !test.running && loop.err == nil {
+				t.Fatalf("%v stopped the loop without recording an error", test.errno)
+			}
 			if loop.step(0) != test.running {
 				t.Fatalf("second step disagrees about whether the loop remains active")
 			}
@@ -853,6 +859,74 @@ func TestWaylandLoopFlushBackpressureUsesPollOut(t *testing.T) {
 	}
 	if len(pollEvents) != 2 || pollEvents[0]&4 == 0 || pollEvents[1]&4 != 0 {
 		t.Fatalf("Wayland poll events = %v, want POLLOUT only while flush is blocked", pollEvents)
+	}
+}
+
+func TestWaylandLoopTransportFailuresRecordErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		api     *waylandAPI
+		errno   syscall.Errno
+		revents int16
+		want    string
+	}{
+		{
+			name: "flush",
+			api: &waylandAPI{displayFlush: func(display uintptr) int32 {
+				return -1
+			}},
+			errno: syscall.EPIPE,
+			want:  "flush",
+		},
+		{
+			name: "dispatch",
+			api: &waylandAPI{
+				displayDispatch: func(display uintptr) int32 { return -1 },
+				displayGetError: func(display uintptr) int32 { return int32(syscall.EPIPE) },
+			},
+			revents: 1,
+			want:    "dispatch",
+		},
+		{
+			name: "dispatch pending",
+			api: &waylandAPI{displayDispatchPending: func(display uintptr) int32 {
+				return -1
+			}},
+			want: "dispatch pending events",
+		},
+		{
+			name:    "socket hangup",
+			api:     &waylandAPI{},
+			revents: 0x0010,
+			want:    "socket",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			errno := int32(test.errno)
+			loop := &waylandLoop{
+				libc: &libcAPI{
+					poll: func(fds *pollFD, nfds uintptr, timeout int32) int32 {
+						fds.REvents = test.revents
+						return 1
+					},
+					errnoLocation: func() *int32 { return &errno },
+				},
+				wayland:   test.api,
+				display:   1,
+				waylandFD: 10,
+				wakeFD:    11,
+			}
+			loop.running.Store(true)
+			loop.rebuildPollFDs()
+
+			if loop.step(0) {
+				t.Fatal("transport failure left the loop running")
+			}
+			if loop.err == nil || !strings.Contains(loop.err.Error(), test.want) {
+				t.Fatalf("loop error = %v, want a reason containing %q", loop.err, test.want)
+			}
+		})
 	}
 }
 

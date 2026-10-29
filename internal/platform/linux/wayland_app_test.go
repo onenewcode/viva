@@ -148,6 +148,16 @@ func TestWaylandAtspiLifecycle(t *testing.T) {
 	}
 }
 
+func TestWaylandRunReturnsLoopError(t *testing.T) {
+	expectedErr := errors.New("wayland transport failed")
+	app := &waylandApplication{loop: &waylandLoop{err: expectedErr}}
+
+	err := app.Run(func(platform.Application) error { return nil })
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("Run error = %v, want %v", err, expectedErr)
+	}
+}
+
 func TestWaylandRunClosesWindowsOnStartError(t *testing.T) {
 	app := &waylandApplication{}
 
