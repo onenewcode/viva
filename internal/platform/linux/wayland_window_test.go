@@ -962,6 +962,93 @@ func TestWaylandDeferredScaleCompletesAfterRemap(t *testing.T) {
 	}
 }
 
+func TestWaylandDeferredConfigureKeepsGeometryAcrossScale(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		framePending: true, frameCallback: 99,
+	}
+	win.storeScale(1)
+	renderer := newWaylandPresentTestRenderer(1600, 1200)
+	var resized platform.Size
+	resizeCallbacks := 0
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{OnResize: func(size platform.Size) (platform.Frame, error) {
+			resizeCallbacks++
+			resized = size
+			return platform.Frame{}, nil
+		}},
+		applyFrame: func(platform.Frame) (bool, error) { return false, nil },
+	}
+
+	win.handleXdgToplevelConfigure(800, 600, nil)
+	win.handleXdgSurfaceConfigure(42)
+	if !win.resizeDeferred || renderer.submissions != 0 || frameRequests != 0 {
+		t.Fatal("pending configure did not defer its presentation")
+	}
+	win.applyScale(2)
+	if win.pendingWidth != 800 || win.pendingHeight != 600 {
+		t.Fatalf("scale replaced deferred geometry with %dx%d", win.pendingWidth, win.pendingHeight)
+	}
+
+	win.onFrameDone(99, 0)
+	if win.width != 1600 || win.height != 1200 || resized.Width != 800 || resized.Height != 600 || resized.Scale != 2 {
+		t.Fatalf("completed geometry device=%dx%d resize=%+v", win.width, win.height, resized)
+	}
+	if resizeCallbacks != 1 || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatalf("completed scale configure resize=%d submissions=%d requests=%d", resizeCallbacks, renderer.submissions, frameRequests)
+	}
+	if len(acked) != 1 || acked[0] != 42 || win.pendingSerial != 0 {
+		t.Fatalf("scale configure ACK = %v, pending serial = %d", acked, win.pendingSerial)
+	}
+}
+
+func TestWaylandDeferredRestoreKeepsGeometryAcrossScale(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 1920, height: 1080, savedLogicalW: 500, savedLogicalH: 400,
+		maximized: true, frameWanted: true, framePending: true, frameCallback: 99,
+	}
+	win.storeScale(1)
+	renderer := newWaylandPresentTestRenderer(1096, 896)
+	var resized platform.Size
+	resizeCallbacks := 0
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{OnResize: func(size platform.Size) (platform.Frame, error) {
+			resizeCallbacks++
+			resized = size
+			return platform.Frame{}, nil
+		}},
+		applyFrame: func(platform.Frame) (bool, error) { return false, nil },
+	}
+
+	win.handleXdgToplevelConfigure(0, 0, nil)
+	win.handleXdgSurfaceConfigure(43)
+	if !win.resizeDeferred || renderer.submissions != 0 || frameRequests != 0 {
+		t.Fatal("zero-size unmaximize did not defer its restore")
+	}
+	win.applyScale(2)
+	win.onFrameDone(99, 0)
+
+	if win.width != 1096 || win.height != 896 || resized.Width != 500 || resized.Height != 400 || resized.Scale != 2 {
+		t.Fatalf("restored geometry device=%dx%d resize=%+v", win.width, win.height, resized)
+	}
+	if resizeCallbacks != 1 || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatalf("restored scale resize=%d submissions=%d requests=%d", resizeCallbacks, renderer.submissions, frameRequests)
+	}
+	if len(acked) != 1 || acked[0] != 43 || win.pendingSerial != 0 {
+		t.Fatalf("restore ACK = %v, pending serial = %d", acked, win.pendingSerial)
+	}
+}
+
 func TestWaylandApplyFailureDoesNotAckOrRequestFrame(t *testing.T) {
 	var acked []uint32
 	frameRequests := 0

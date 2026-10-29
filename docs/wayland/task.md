@@ -78,8 +78,8 @@
 
 ## Task 4：保留 pending configure 在 scale 前的最新几何
 
-- 状态：待实施
-- Review：待进行
+- 状态：已提交
+- Review：PASS（零尺寸恢复和 helper 递归问题已修复，最终复审通过）
 - 目标：configure 因旧 frame pending 而延迟时，后续 scale 不得用旧窗口尺寸覆盖待提交逻辑几何。
 - 主要文件：
   - `internal/platform/linux/window_wayland.go`

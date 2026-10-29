@@ -167,6 +167,17 @@ func (win *waylandWindow) logicalSize() platform.Size {
 	}
 }
 
+// pendingLogicalSize returns the effective geometry of the latest configure.
+// A zero-size floating configure restores the saved logical window size.
+func (win *waylandWindow) pendingLogicalSize() (int32, int32) {
+	w, h := win.pendingWidth, win.pendingHeight
+	if (w <= 0 || h <= 0) && !win.maximized && !win.fullscreen && win.savedLogicalW > 0 && win.savedLogicalH > 0 {
+		w = int32(math.Round(float64(win.savedLogicalW)))
+		h = int32(math.Round(float64(win.savedLogicalH)))
+	}
+	return w, h
+}
+
 func (win *waylandWindow) takeInitialResizeFrame() (platform.Frame, bool, error) {
 	pending := win.initialResizePending
 	win.initialResizePending = false
@@ -479,11 +490,7 @@ func (win *waylandWindow) applyPendingResize() {
 	win.resizeDeferred = false
 
 	scale := win.displayScale()
-	w, h := win.pendingWidth, win.pendingHeight
-	if (w <= 0 || h <= 0) && !win.maximized && !win.fullscreen && win.savedLogicalW > 0 && win.savedLogicalH > 0 {
-		w = int32(math.Round(float64(win.savedLogicalW)))
-		h = int32(math.Round(float64(win.savedLogicalH)))
-	}
+	w, h := win.pendingLogicalSize()
 	if w > 0 && h > 0 {
 		if !win.maximized && !win.fullscreen {
 			win.savedLogicalW = float32(w)
@@ -607,11 +614,7 @@ func (win *waylandWindow) handleXdgSurfaceConfigure(serial uint32) {
 	}
 
 	scale := win.displayScale()
-	w, h := win.pendingWidth, win.pendingHeight
-	if (w <= 0 || h <= 0) && !win.maximized && !win.fullscreen && win.savedLogicalW > 0 && win.savedLogicalH > 0 {
-		w = int32(math.Round(float64(win.savedLogicalW)))
-		h = int32(math.Round(float64(win.savedLogicalH)))
-	}
+	w, h := win.pendingLogicalSize()
 	resized := false
 
 	if w > 0 && h > 0 {
