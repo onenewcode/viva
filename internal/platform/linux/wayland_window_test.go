@@ -205,6 +205,79 @@ func TestWaylandConfigureStateTransitions(t *testing.T) {
 	}
 }
 
+func TestWaylandFrameMarginErrorsStopTransitions(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		margin         uint32
+		rendererMargin uint32
+		maximized      bool
+		frameWanted    bool
+		customTitlebar bool
+		configure      func(*waylandWindow)
+	}{
+		{
+			name: "maximize", margin: 24, rendererMargin: 24, frameWanted: true,
+			configure: func(win *waylandWindow) {
+				states := []uint32{xdgToplevelStateMaximized}
+				win.handleXdgToplevelConfigure(800, 600, &wlArray{Size: 4, Data: unsafe.Pointer(&states[0])})
+			},
+		},
+		{
+			name: "unmaximize", maximized: true, frameWanted: true,
+			configure: func(win *waylandWindow) {
+				win.handleXdgToplevelConfigure(400, 300, nil)
+			},
+		},
+		{
+			name: "server decoration", margin: 24, rendererMargin: 24, frameWanted: true,
+			configure: func(win *waylandWindow) {
+				win.handleDecorationConfigure(zxdgToplevelDecorationModeServerSide)
+			},
+		},
+		{
+			name: "client decoration", customTitlebar: true,
+			configure: func(win *waylandWindow) {
+				win.handleDecorationConfigure(zxdgToplevelDecorationModeClientSide)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app := &waylandApplication{}
+			win := &waylandWindow{
+				app:         app,
+				margin:      test.margin,
+				maximized:   test.maximized,
+				frameWanted: test.frameWanted,
+			}
+			win.storeScale(1)
+			mode := platform.WindowTitled
+			if test.customTitlebar {
+				mode = platform.WindowCustomTitlebar
+			}
+			renderer := &vulkanRenderer{
+				device:      1,
+				commandPool: 1,
+				api: &vulkanAPI{
+					deviceWaitIdle: func(uintptr) int32 { return vkErrorDeviceLost },
+				},
+			}
+			renderer.frame.margin = test.rendererMargin
+			win.state = &waylandWindowState{
+				app: app, win: win, renderer: renderer,
+				config: platform.Config{WindowMode: mode},
+			}
+
+			test.configure(win)
+			if app.firstErr == nil {
+				t.Fatal("frame-margin error did not reach the application")
+			}
+			if win.geometryDirty {
+				t.Fatal("transition continued after frame-margin failure")
+			}
+		})
+	}
+}
+
 func TestWaylandHiddenRedrawWaitsForShow(t *testing.T) {
 	app := &waylandApplication{}
 	win := &waylandWindow{

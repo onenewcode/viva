@@ -315,6 +315,19 @@ func (win *waylandWindow) renderFrame() {
 	}
 }
 
+func (win *waylandWindow) applyFrameMargin(margin uint32) bool {
+	if win.state == nil || win.state.renderer == nil {
+		return true
+	}
+	if err := win.state.renderer.setFrameMargin(margin); err != nil {
+		if win.app != nil {
+			win.app.fail(err)
+		}
+		return false
+	}
+	return true
+}
+
 func (win *waylandWindow) handleXdgToplevelConfigure(width, height int32, states *wlArray) {
 	maximized := false
 	fullscreen := false
@@ -369,14 +382,14 @@ func (win *waylandWindow) handleXdgToplevelConfigure(width, height int32, states
 			if newMax {
 				// Strip margin on maximized/fullscreen
 				win.margin = 0
-				if win.state != nil && win.state.renderer != nil {
-					_ = win.state.renderer.setFrameMargin(0)
+				if !win.applyFrameMargin(0) {
+					return
 				}
 			} else if win.frameWanted {
 				// Restore margin on unmaximize
 				win.margin = frameMargin(win.displayScale())
-				if win.state != nil && win.state.renderer != nil {
-					_ = win.state.renderer.setFrameMargin(win.margin)
+				if !win.applyFrameMargin(win.margin) {
+					return
 				}
 			}
 			win.geometryDirty = true
@@ -539,8 +552,8 @@ func (win *waylandWindow) handleDecorationConfigure(mode uint32) {
 		if win.frameWanted {
 			win.margin = 0
 			win.frameWanted = false
-			if win.state != nil && win.state.renderer != nil {
-				_ = win.state.renderer.setFrameMargin(0)
+			if !win.applyFrameMargin(0) {
+				return
 			}
 			win.geometryDirty = true
 		}
@@ -548,8 +561,8 @@ func (win *waylandWindow) handleDecorationConfigure(mode uint32) {
 		if win.state != nil && win.state.config.WindowMode == platform.WindowCustomTitlebar {
 			win.frameWanted = true
 			win.margin = frameMargin(win.displayScale())
-			if win.state.renderer != nil {
-				_ = win.state.renderer.setFrameMargin(win.margin)
+			if !win.applyFrameMargin(win.margin) {
+				return
 			}
 			win.geometryDirty = true
 		}

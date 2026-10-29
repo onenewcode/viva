@@ -62,8 +62,8 @@
 
 ## Task 4：传播 frame-margin 变化错误
 
-- 状态：待开始
-- Review：未进行
+- 状态：已提交
+- Review：PASS（独立只读审查）
 - 目标：装饰、最大化和取消最大化路径不再吞掉 `setFrameMargin` 错误。
 - 主要文件：
   - `internal/platform/linux/window_wayland.go`
