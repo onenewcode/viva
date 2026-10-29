@@ -163,6 +163,47 @@ func TestWaylandConfigureStateTransitions(t *testing.T) {
 	}
 }
 
+func TestWaylandHiddenRedrawWaitsForShow(t *testing.T) {
+	app := &waylandApplication{}
+	win := &waylandWindow{
+		app:         app,
+		surface:     1,
+		hidden:      true,
+		needsRedraw: true,
+	}
+	redraws := 0
+	presents := 0
+	state := &waylandWindowState{
+		app:      app,
+		win:      win,
+		renderer: &vulkanRenderer{},
+		config: platform.Config{
+			OnRedraw: func() (platform.Frame, error) {
+				redraws++
+				return platform.Frame{}, nil
+			},
+		},
+	}
+	state.router.present = func(frame platform.Frame) error {
+		presents++
+		return nil
+	}
+	win.state = state
+
+	win.renderFrame()
+	if redraws != 0 || presents != 0 {
+		t.Fatalf("hidden redraw called OnRedraw %d times and present %d times", redraws, presents)
+	}
+	if !win.needsRedraw {
+		t.Fatal("hidden redraw discarded the pending content update")
+	}
+
+	win.Show()
+	if redraws != 1 || presents != 1 {
+		t.Fatalf("Show called OnRedraw %d times and present %d times, want one each", redraws, presents)
+	}
+}
+
 func TestWaylandFrameClockBackpressure(t *testing.T) {
 	redrawCount := 0
 	win := &waylandWindow{

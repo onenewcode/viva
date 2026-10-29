@@ -253,12 +253,7 @@ func (win *waylandWindow) renderFrame() {
 		return
 	}
 	if win.hidden {
-		win.needsRedraw = false
-		if win.state.config.OnRedraw != nil {
-			if frame, err := win.state.config.OnRedraw(); err == nil && win.state.router.present != nil {
-				_ = win.state.router.present(frame)
-			}
-		}
+		win.needsRedraw = true
 		return
 	}
 	if win.framePending {
