@@ -289,16 +289,21 @@ func (win *waylandWindow) renderFrame() {
 	win.requestFrameCallback()
 
 	if win.state.renderer != nil {
+		var err error
 		if win.state.config.OnRedraw != nil {
-			if frame, err := win.state.config.OnRedraw(); err == nil {
-				if win.state.router.present != nil {
-					_ = win.state.router.present(frame)
-				}
-			} else {
-				_ = win.state.renderer.present()
+			var frame platform.Frame
+			frame, err = win.state.config.OnRedraw()
+			if err == nil && win.state.router.present != nil {
+				err = win.state.router.present(frame)
 			}
 		} else {
-			_ = win.state.renderer.present()
+			err = win.state.renderer.present()
+		}
+		if err != nil {
+			if win.app != nil {
+				win.app.fail(err)
+			}
+			return
 		}
 	} else if win.app != nil && win.app.api != nil {
 		win.app.api.surfaceCommit(win.surface)

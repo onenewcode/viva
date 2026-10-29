@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"errors"
 	"math"
 	"testing"
 	"unsafe"
@@ -221,6 +222,65 @@ func TestWaylandHiddenRedrawWaitsForShow(t *testing.T) {
 	win.Show()
 	if redraws != 1 || presents != 1 {
 		t.Fatalf("Show called OnRedraw %d times and present %d times, want one each", redraws, presents)
+	}
+}
+
+func TestWaylandRedrawErrorsReachApplication(t *testing.T) {
+	callbackErr := errors.New("redraw callback failed")
+	routerErr := errors.New("scene upload failed")
+	tests := []struct {
+		name     string
+		renderer *vulkanRenderer
+		onRedraw func() (platform.Frame, error)
+		present  func(platform.Frame) error
+		want     error
+	}{
+		{
+			name:     "callback",
+			renderer: &vulkanRenderer{},
+			onRedraw: func() (platform.Frame, error) {
+				return platform.Frame{}, callbackErr
+			},
+			want: callbackErr,
+		},
+		{
+			name:     "router",
+			renderer: &vulkanRenderer{},
+			onRedraw: func() (platform.Frame, error) {
+				return platform.Frame{}, nil
+			},
+			present: func(platform.Frame) error { return routerErr },
+			want:    routerErr,
+		},
+		{
+			name: "renderer",
+			renderer: &vulkanRenderer{api: &vulkanAPI{
+				waitForFences: func(uintptr, uint32, *uintptr, uint32, uint64) int32 {
+					return vkErrorDeviceLost
+				},
+			}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app := &waylandApplication{}
+			win := &waylandWindow{app: app, surface: 1}
+			win.state = &waylandWindowState{
+				app:      app,
+				win:      win,
+				renderer: test.renderer,
+				config:   platform.Config{OnRedraw: test.onRedraw},
+			}
+			win.state.router.present = test.present
+
+			win.renderFrame()
+			if app.firstErr == nil {
+				t.Fatal("redraw error did not reach the application")
+			}
+			if test.want != nil && !errors.Is(app.firstErr, test.want) {
+				t.Fatalf("application error = %v, want %v", app.firstErr, test.want)
+			}
+		})
 	}
 }
 
