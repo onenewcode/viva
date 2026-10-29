@@ -63,8 +63,9 @@ type waylandApplication struct {
 	repeatKey      platform.KeyEvent
 	repeatScancode uint32
 
-	mu      sync.Mutex
-	windows []*waylandWindowState
+	mu       sync.Mutex
+	windows  []*waylandWindowState
+	firstErr error
 
 	status        *statusNotifier
 	desktop       *desktopWatch
@@ -173,6 +174,9 @@ func (app *waylandApplication) Run(start platform.ApplicationStart) error {
 	for app.hasWindows() && app.loop != nil && app.loop.step(-1) {
 	}
 
+	if app.firstErr != nil {
+		return app.firstErr
+	}
 	if app.loop != nil {
 		return app.loop.err
 	}
@@ -426,9 +430,13 @@ func (app *waylandApplication) announce(change settingsChange) {
 }
 
 func (app *waylandApplication) fail(err error) {
-	if err != nil {
-		app.closeAll()
+	if err == nil {
+		return
 	}
+	if app.firstErr == nil {
+		app.firstErr = err
+	}
+	app.closeAll()
 }
 
 func (app *waylandApplication) inputMethodBus() *ibus.Bus {
