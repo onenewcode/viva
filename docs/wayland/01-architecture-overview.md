@@ -197,11 +197,13 @@ flowchart LR
 
 为了防止代码膨胀与重复，对模块边界做清晰界定：
 
-| 模块类别 | 属于 Wayland 专属 | 属于 X11 专属 | 跨后端 100% 共享 |
+| 模块类别 | 属于 Wayland 专属 | 属于 X11 专属 | 跨后端共享实现或契约 |
 | :--- | :---: | :---: | :---: |
 | **窗口连接与消息分发** | `libwayland-client` 封装 | `libxcb` 封装 | - |
 | **几何拓扑与窗口模式** | `xdg-shell` 协议处理 | EWMH / ICCCM 属性 | `platform.Config` / `platform.Window` |
 | **GPU 渲染管线** | `VK_KHR_wayland_surface` | `VK_KHR_xcb_surface` | **Instanced Rectangles、着色器、文字、裁剪** |
 | **输入事件路由** | `wl_pointer` / `wl_keyboard` | `xcbInputEvent` 解码 | **`eventRouter`、点击计数、焦点状态** |
-| **高分屏与缩放** | `wp-fractional-scale-v1` | `libxcb-randr` 探测 | **`ui.Point` / 逻辑像素坐标系统** |
-| **系统桌面集成** | - | - | **AT-SPI 无障碍、D-Bus 托盘、Portal 外观** |
+| **高分屏与缩放** | `wp-fractional-scale-v1` / `wl_output.scale` | `libxcb-randr` 探测 | **`ui.Point` / 逻辑像素坐标系统** |
+| **系统桌面集成** | 连接生命周期与 FD dispatch | 连接生命周期与 FD dispatch | **AT-SPI、D-Bus 托盘、Portal 的协议核心** |
+
+> **边界说明**：桌面集成并非“100% 共享”。AT-SPI、D-Bus 托盘和 Portal 复用协议核心，但 X11 与 Wayland 分别实现连接建立、重连及 FD 事件分发；修改其中一套生命周期实现时，必须同时审查另一套。
