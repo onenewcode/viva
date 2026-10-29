@@ -301,6 +301,45 @@ func TestWaylandFileDropInteraction(t *testing.T) {
 	}
 }
 
+func TestWaylandNonFileDragOfferDoesNotEmitFileEvents(t *testing.T) {
+	app := &waylandApplication{
+		dataOffers: map[uintptr]*waylandDataOffer{
+			601: {proxy: 601, mimeTypes: []string{"text/plain"}},
+		},
+	}
+	win := &waylandWindow{app: app, surface: 777}
+	var phases []platform.FileDropPhase
+	presents := 0
+	state := &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			OnFileDrop: func(event platform.FileDropEvent) (platform.Frame, bool, error) {
+				phases = append(phases, event.Phase)
+				return platform.Frame{}, false, nil
+			},
+		},
+	}
+	state.router.present = func(platform.Frame) error {
+		presents++
+		return nil
+	}
+	win.state = state
+	app.windows = []*waylandWindowState{state}
+
+	initDataListeners()
+	puregoInvokeCallback7(rawDataDeviceListener[1], unsafe.Pointer(app), 300, 111, win.surface, 0, 0, 601)
+	puregoInvokeCallback5(rawDataDeviceListener[3], unsafe.Pointer(app), 300, 222, 0, 0)
+	puregoInvokeCallback2(rawDataDeviceListener[4], unsafe.Pointer(app), 300)
+
+	if len(phases) != 0 {
+		t.Fatalf("non-file offer emitted file-drop phases: %v", phases)
+	}
+	if presents != 0 {
+		t.Fatalf("non-file offer presented %d phantom hover frames", presents)
+	}
+}
+
 func TestWaylandFileDropErrorsReachApplication(t *testing.T) {
 	callbackErr := errors.New("file drop callback failed")
 	presentErr := errors.New("file drop present failed")

@@ -183,6 +183,9 @@ func initDataListeners() {
 			win := drag.win
 			app.mu.Unlock()
 
+			if drag.offer == nil || !drag.offer.hasMime("text/uri-list") {
+				return
+			}
 			app.dispatchFileDropEvent(win, platform.FileDropEvent{
 				Phase: platform.FileDropOver,
 				X:     x,
