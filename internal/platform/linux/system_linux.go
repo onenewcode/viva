@@ -47,7 +47,17 @@ type SaveFileOptions struct {
 
 func ClipboardText() (string, error) {
 	if waylandApp := activeWaylandApp.Load(); waylandApp != nil && waylandApp.hasWindows() {
-		return waylandApp.getClipboardText()
+		var value string
+		var wait func() (string, error)
+		err := waylandApp.invoke(func() error {
+			var err error
+			value, wait, err = waylandApp.requestClipboardText()
+			return err
+		})
+		if wait == nil {
+			return value, err
+		}
+		return wait()
 	}
 	if win := activeWindow.Load(); win != nil {
 		win.mu.Lock()
@@ -361,7 +371,9 @@ func SetClipboardText(value string) error {
 		return fmt.Errorf("linux: clipboard text is not valid UTF-8")
 	}
 	if waylandApp := activeWaylandApp.Load(); waylandApp != nil && waylandApp.hasWindows() {
-		return waylandApp.setClipboardText(value)
+		return waylandApp.invoke(func() error {
+			return waylandApp.setClipboardText(value)
+		})
 	}
 	win := activeWindow.Load()
 	if win == nil {
@@ -397,8 +409,10 @@ func SetCursorShape(shape uint8) error {
 		return fmt.Errorf("linux: invalid cursor %d", shape)
 	}
 	if waylandApp := activeWaylandApp.Load(); waylandApp != nil && waylandApp.hasWindows() {
-		waylandApp.setCursor(shape)
-		return nil
+		return waylandApp.invoke(func() error {
+			waylandApp.setCursor(shape)
+			return nil
+		})
 	}
 	win := activeWindow.Load()
 	if win == nil {

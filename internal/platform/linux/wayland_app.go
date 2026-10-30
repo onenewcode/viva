@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/vivaui/viva/internal/dbus"
@@ -19,6 +20,8 @@ import (
 )
 
 var activeWaylandApp atomic.Pointer[waylandApplication]
+
+var errWaylandApplicationClosed = errors.New("linux: Wayland application is not running")
 
 type waylandInputMethod interface {
 	FD() int
@@ -37,7 +40,10 @@ type waylandApplication struct {
 	display    uintptr
 	loop       *waylandLoop
 	loopMu     sync.Mutex
+	loopThread int
 	loopClosed bool
+	done       chan struct{}
+	doneOnce   sync.Once
 	globals    waylandGlobals
 
 	pointer            uintptr
@@ -120,6 +126,7 @@ func newWaylandApplication() (*waylandApplication, error) {
 		libc:    libc,
 		display: display,
 		loop:    loop,
+		done:    make(chan struct{}),
 	}
 	app.globals.onCapabilities = app.handleSeatCapabilities
 	app.globals.onOutputScale = app.handleOutputScale
@@ -147,6 +154,43 @@ func (app *waylandApplication) post(cmd waylandCommand) {
 		// Before Run starts there is no loop to dispatch to yet. Once close
 		// detaches the loop, reject work rather than run it on a caller thread.
 		cmd()
+	}
+}
+
+// invoke runs cmd on the event-loop thread and waits for its result when called
+// from another goroutine. Before Run there is no concurrent loop yet, so direct
+// execution is safe. A queued call is canceled by close rather than left waiting.
+func (app *waylandApplication) invoke(cmd func() error) error {
+	if cmd == nil {
+		return nil
+	}
+	app.loopMu.Lock()
+	thread := app.loopThread
+	closed := app.loopClosed
+	done := app.done
+	app.loopMu.Unlock()
+	if closed {
+		return errWaylandApplicationClosed
+	}
+	if thread == 0 || thread == syscall.Gettid() {
+		return cmd()
+	}
+
+	result := make(chan error, 1)
+	app.post(func() {
+		result <- cmd()
+	})
+	select {
+	case err := <-result:
+		return err
+	case <-done:
+		// Prefer a result that completed concurrently with shutdown.
+		select {
+		case err := <-result:
+			return err
+		default:
+			return errWaylandApplicationClosed
+		}
 	}
 }
 
@@ -230,6 +274,16 @@ func (app *waylandApplication) processDeadlines(now time.Time) {
 func (app *waylandApplication) Run(start platform.ApplicationStart) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	app.loopMu.Lock()
+	if app.loopClosed {
+		app.loopMu.Unlock()
+		return errWaylandApplicationClosed
+	}
+	app.loopThread = syscall.Gettid()
+	if app.done == nil {
+		app.done = make(chan struct{})
+	}
+	app.loopMu.Unlock()
 	defer app.close()
 
 	platform.SetWatchHook(func() {
@@ -610,6 +664,16 @@ func (app *waylandApplication) hasWindows() bool {
 
 // close releases all Wayland proxies, sockets, and dynamically linked libraries.
 func (app *waylandApplication) close() {
+	app.loopMu.Lock()
+	if app.loopClosed {
+		app.loopMu.Unlock()
+		return
+	}
+	app.loopClosed = true
+	app.loopMu.Unlock()
+	if app.done != nil {
+		app.doneOnce.Do(func() { close(app.done) })
+	}
 	activeWaylandApp.CompareAndSwap(app, nil)
 	if app.watchHookInstalled {
 		platform.SetWatchHook(nil)
@@ -637,7 +701,7 @@ func (app *waylandApplication) close() {
 	app.loopMu.Lock()
 	loop := app.loop
 	app.loop = nil
-	app.loopClosed = true
+	app.loopThread = 0
 	app.loopMu.Unlock()
 	if loop != nil {
 		loop.close()

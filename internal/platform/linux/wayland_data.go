@@ -504,30 +504,33 @@ func (app *waylandApplication) setClipboardText(text string) error {
 	return nil
 }
 
-func (app *waylandApplication) getClipboardText() (string, error) {
+// requestClipboardText performs only the proxy operation on the event-loop
+// thread. The returned wait function reads the offer off that thread so a slow
+// clipboard owner cannot stall input, rendering, or application shutdown.
+func (app *waylandApplication) requestClipboardText() (string, func() (string, error), error) {
 	app.mu.Lock()
 	if app.ownsClipboard {
 		text := app.clipboardText
 		app.mu.Unlock()
-		return text, nil
+		return text, nil, nil
 	}
 
 	off := app.clipboardOffer
 	if off == nil || off.proxy == 0 || app.api == nil {
 		app.mu.Unlock()
-		return "", nil
+		return "", nil, nil
 	}
 
 	chosenMime := off.findTextMime()
 	if chosenMime == "" {
 		app.mu.Unlock()
-		return "", nil
+		return "", nil, nil
 	}
 
 	r, w, err := os.Pipe()
 	if err != nil {
 		app.mu.Unlock()
-		return "", err
+		return "", nil, err
 	}
 
 	app.api.dataOfferReceive(off.proxy, chosenMime, int32(w.Fd()))
@@ -537,25 +540,39 @@ func (app *waylandApplication) getClipboardText() (string, error) {
 	}
 	app.mu.Unlock()
 
-	type readResult struct {
-		data []byte
-		err  error
-	}
-	ch := make(chan readResult, 1)
-	go func() {
-		defer r.Close()
-		d, e := io.ReadAll(r)
-		ch <- readResult{data: d, err: e}
-	}()
-
-	select {
-	case res := <-ch:
-		if res.err != nil {
-			return "", res.err
+	wait := func() (string, error) {
+		type readResult struct {
+			data []byte
+			err  error
 		}
-		return string(res.data), nil
-	case <-time.After(2 * time.Second):
-		_ = r.Close()
-		return "", errors.New("linux: Wayland clipboard read timed out")
+		ch := make(chan readResult, 1)
+		go func() {
+			defer r.Close()
+			d, e := io.ReadAll(r)
+			ch <- readResult{data: d, err: e}
+		}()
+
+		select {
+		case res := <-ch:
+			if res.err != nil {
+				return "", res.err
+			}
+			return string(res.data), nil
+		case <-app.done:
+			_ = r.Close()
+			return "", errWaylandApplicationClosed
+		case <-time.After(2 * time.Second):
+			_ = r.Close()
+			return "", errors.New("linux: Wayland clipboard read timed out")
+		}
 	}
+	return "", wait, nil
+}
+
+func (app *waylandApplication) getClipboardText() (string, error) {
+	value, wait, err := app.requestClipboardText()
+	if wait == nil {
+		return value, err
+	}
+	return wait()
 }

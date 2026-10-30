@@ -1,33 +1,20 @@
 # Linux/Wayland 当前实现复核
 
 - 日期：2026-10-30
-- 基线：`5b1cd1e`
+- 基线：`68aee2d` + Task 9 当前 diff
 - 类型：只读源码复核
 - 开发契约：[01-architecture-overview.md](01-architecture-overview.md)
 - 后续任务：[task.md](task.md)
 
 ## 1. 结论
 
-**宏观架构合理，不需要推倒重写；当前仍有三项实现问题。** 主循环的 prepare/read、surface/configure 事务、frame-callback 背压和 Vulkan 恢复边界可以保留。后续工作应收敛入口所有权和对象生命周期，而不是再次 redesign 已完成的主干。
+**宏观架构合理，不需要推倒重写；当前仍有两项实现问题。** 主循环的 prepare/read、surface/configure 事务、frame-callback 背压、系统 API 的主线程调用边界和 Vulkan 恢复边界可以保留。后续工作应继续收敛对象生命周期，而不是再次 redesign 已完成的主干。
 
 “源码确认”表示控制流中存在问题，不表示已在真实 Linux/compositor/GPU 上复现可见症状。
 
 ## 2. 当前 findings
 
-### F1（较高）：系统集成入口绕过单线程所有权
-
-目标契约要求 proxy 和窗口状态由事件循环线程独占，但：
-
-- `internal/platform/linux/system_linux.go:394` 在调用线程直接执行 `setCursor`；
-- `internal/platform/linux/wayland_cursor.go:92` 读写 application 状态并直接操作 surface、proxy 和 display；
-- `internal/platform/linux/system_linux.go:356` 的剪贴板写入同样直接进入 Wayland 实现；
-- `internal/platform/linux/wayland_app.go:612` 的关闭路径会销毁对象并卸载动态库。
-
-`cursorMgr.mu` 只保护 cursor manager，不能序列化 application、proxy 和 display 的整个生命周期。若这些 API 从后台 goroutine 调用，并与最后窗口关闭或 `Run` 返回并发，存在数据竞争和访问已销毁对象的风险。若产品约定这些 API 只能在 UI 线程调用，则当前缺少明确的公共契约与实现约束。
-
-**处理：** Task 9。优先统一投递到主循环；同步返回值需要主线程快速路径或结果通道。同步审计其他直接 proxy/event-source 入口，并补关闭并发的原生 race 测试。
-
-### F2（中等）：data device 的两个依赖迟到都不会触发初始化
+### F1（中等）：data device 的两个依赖迟到都不会触发初始化
 
 - `setupDataDevice` 只在构造时调用一次：`internal/platform/linux/wayland_app.go:131`；
 - registry 可以后绑定 seat：`internal/platform/linux/wayland_registry.go:703`；
@@ -39,7 +26,7 @@
 
 **处理：** Task 10。seat 或 manager 任一可用性变化时执行幂等初始化，并覆盖初始无 seat、初始无 manager、依赖乱序到达、重复事件和 teardown 测试。
 
-### F3（中等）：desktop watcher 的临时失败通过两条锁存路径永久禁止恢复
+### F2（中等）：desktop watcher 的临时失败通过两条锁存路径永久禁止恢复
 
 `syncDesktopWatch` 仅在 `!desktopFailed` 时连接（`internal/platform/linux/wayland_app.go:397`）。连接或接收失败会设置该标记：
 
@@ -70,7 +57,7 @@
 
 ```sh
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-  go test -c -o /tmp/viva-wayland-review.test ./internal/platform/linux
+  go test -c -o /tmp/viva-wayland-task9.test ./internal/platform/linux
 
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
   go vet ./internal/platform/... ./app
@@ -79,8 +66,8 @@ git diff --check
 go test ./internal/platform/...
 ```
 
-当前主机 platform 测试为 302 个通过。未执行 Linux 测试二进制、原生 race、headless compositor、Vulkan validation/lavapipe 或真实桌面/性能矩阵；也未查询本基线的 CI 运行结果。上述成功不能作为 F1 已排除或真实闪烁已修复的证据。
+当前主机 platform 测试为 302 个通过。Task 9 的主线程快速路径、后台调用、关闭取消、多窗口、`Run` 退出及慢外部 offer 不阻塞主循环等回归测试已加入 Linux 测试包并交叉编译，但未在原生 Linux/race 下执行。未执行 Linux 测试二进制、headless compositor、Vulkan validation/lavapipe 或真实桌面/性能矩阵；也未查询本基线的 CI 运行结果。上述成功不能作为当前 findings 已排除或真实闪烁已修复的证据。
 
 ## 5. 后续记录方式
 
-完成 Task 9–12 后删除对应 finding，并同步任务清单和验证证据。已实现修复不再保留为历史章节；仅记录仍未解决的问题、未执行验证和新的基线。
+完成对应任务后删除其 finding，并同步任务清单和验证证据。已实现修复不再保留为历史章节；仅记录仍未解决的问题、未执行验证和新的基线。

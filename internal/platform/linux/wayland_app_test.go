@@ -4,9 +4,13 @@ package linux
 
 import (
 	"errors"
+	"os"
+	"runtime"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/vivaui/viva/internal/dbus"
 	"github.com/vivaui/viva/internal/platform"
@@ -40,6 +44,259 @@ func (bus *fakeWaylandInputMethod) Close() {
 	bus.closeCalls++
 	bus.pending = 0
 	bus.fd = -1
+}
+
+func newWaylandInvokeTestApp(t *testing.T) (*waylandApplication, <-chan struct{}) {
+	t.Helper()
+	runtime.LockOSThread()
+	t.Cleanup(runtime.UnlockOSThread)
+	wake := make(chan struct{}, 1)
+	loop := &waylandLoop{
+		wakeFD: 1,
+		libc: &libcAPI{
+			write: func(int32, unsafe.Pointer, uintptr) int {
+				select {
+				case wake <- struct{}{}:
+				default:
+				}
+				return 8
+			},
+			close: func(int32) int32 { return 0 },
+		},
+	}
+	app := &waylandApplication{
+		loop:       loop,
+		loopThread: syscall.Gettid(),
+		done:       make(chan struct{}),
+	}
+	t.Cleanup(app.close)
+	return app, wake
+}
+
+func waitWaylandInvokeSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for command wake")
+	}
+}
+
+func TestWaylandInvokeExecutesOnEventThread(t *testing.T) {
+	app, _ := newWaylandInvokeTestApp(t)
+	called := false
+	if err := app.invoke(func() error {
+		called = true
+		return nil
+	}); err != nil {
+		t.Fatalf("invoke on event thread: %v", err)
+	}
+	if !called || len(app.loop.cmdQueue) != 0 {
+		t.Fatalf("event-thread invoke called=%v queued=%d", called, len(app.loop.cmdQueue))
+	}
+}
+
+func TestWaylandInvokeFromBackgroundUsesLoopThread(t *testing.T) {
+	app, wake := newWaylandInvokeTestApp(t)
+	expectedErr := errors.New("command result")
+	commandThread := 0
+	result := make(chan error, 1)
+	go func() {
+		result <- app.invoke(func() error {
+			commandThread = syscall.Gettid()
+			return expectedErr
+		})
+	}()
+	waitWaylandInvokeSignal(t, wake)
+	select {
+	case err := <-result:
+		t.Fatalf("background invoke bypassed the loop: %v", err)
+	default:
+	}
+	app.loop.drainCommands()
+	if commandThread != app.loopThread {
+		t.Fatalf("command thread ID = %d, want event thread %d", commandThread, app.loopThread)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, expectedErr) {
+			t.Fatalf("invoke error = %v, want %v", err, expectedErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for invoke result")
+	}
+}
+
+func TestWaylandInvokeCloseRejectsAndUnblocks(t *testing.T) {
+	app, wake := newWaylandInvokeTestApp(t)
+	executed := false
+	result := make(chan error, 1)
+	go func() {
+		result <- app.invoke(func() error {
+			executed = true
+			return nil
+		})
+	}()
+	waitWaylandInvokeSignal(t, wake)
+	app.close()
+	select {
+	case err := <-result:
+		if !errors.Is(err, errWaylandApplicationClosed) {
+			t.Fatalf("invoke close error = %v, want %v", err, errWaylandApplicationClosed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("close did not release the invoke waiter")
+	}
+	if executed {
+		t.Fatal("queued command executed while the application closed")
+	}
+	if err := app.invoke(func() error {
+		executed = true
+		return nil
+	}); !errors.Is(err, errWaylandApplicationClosed) {
+		t.Fatalf("invoke after close error = %v, want %v", err, errWaylandApplicationClosed)
+	}
+}
+
+func TestWaylandSystemAPIsUseEventLoop(t *testing.T) {
+	app, wake := newWaylandInvokeTestApp(t)
+	win1 := &waylandWindow{app: app}
+	state1 := &waylandWindowState{app: app, win: win1}
+	win1.state = state1
+	win2 := &waylandWindow{app: app}
+	state2 := &waylandWindowState{app: app, win: win2}
+	win2.state = state2
+	app.windows = []*waylandWindowState{state1, state2}
+	activeWaylandApp.Store(app)
+
+	tests := []struct {
+		name    string
+		call    func() error
+		wantErr bool
+	}{
+		{name: "cursor", call: func() error { return SetCursorShape(0) }},
+		{name: "set clipboard", call: func() error { return SetClipboardText("text") }, wantErr: true},
+		{name: "get clipboard", call: func() error { _, err := ClipboardText(); return err }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := make(chan error, 1)
+			go func() { result <- test.call() }()
+			waitWaylandInvokeSignal(t, wake)
+			select {
+			case err := <-result:
+				t.Fatalf("system call bypassed the loop: %v", err)
+			default:
+			}
+			app.loop.drainCommands()
+			select {
+			case err := <-result:
+				if (err != nil) != test.wantErr {
+					t.Fatalf("system call error = %v, want error %v", err, test.wantErr)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for system call result")
+			}
+		})
+	}
+	win1.destroy()
+	if !app.hasWindows() || len(app.windows) != 1 || app.windows[0] != state2 {
+		t.Fatal("closing one window disturbed the remaining window")
+	}
+	if err := SetCursorShape(0); err != nil {
+		t.Fatalf("system call with another window open: %v", err)
+	}
+}
+
+func TestWaylandBackgroundClipboardReadDoesNotBlockLoop(t *testing.T) {
+	app, wake := newWaylandInvokeTestApp(t)
+	win := &waylandWindow{app: app}
+	state := &waylandWindowState{app: app, win: win}
+	win.state = state
+	app.windows = []*waylandWindowState{state}
+	activeWaylandApp.Store(app)
+
+	var writer *os.File
+	app.api = &waylandAPI{
+		proxyMarshalFlags: func(_ uintptr, opcode uint32, _ uintptr, _, _ uint32, args ...any) uintptr {
+			if opcode == wlDataOfferReceiveOpcode {
+				dup, err := syscall.Dup(int(args[1].(int32)))
+				if err != nil {
+					t.Errorf("duplicate clipboard writer: %v", err)
+					return 0
+				}
+				writer = os.NewFile(uintptr(dup), "wayland-clipboard-writer")
+			}
+			return 0
+		},
+	}
+	app.clipboardOffer = &waylandDataOffer{proxy: 502, mimeTypes: []string{"UTF8_STRING"}}
+	t.Cleanup(func() {
+		if writer != nil {
+			_ = writer.Close()
+		}
+	})
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := ClipboardText()
+		result <- err
+	}()
+	waitWaylandInvokeSignal(t, wake)
+	nextCommand := false
+	app.post(func() { nextCommand = true })
+	app.loop.drainCommands()
+	if !nextCommand {
+		t.Fatal("clipboard request blocked the following loop command")
+	}
+	if writer == nil {
+		t.Fatal("clipboard request was not sent")
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("clipboard read completed before its peer answered: %v", err)
+	default:
+	}
+
+	app.close()
+	select {
+	case err := <-result:
+		if !errors.Is(err, errWaylandApplicationClosed) {
+			t.Fatalf("clipboard close error = %v, want %v", err, errWaylandApplicationClosed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("close did not cancel the background clipboard read")
+	}
+}
+
+func TestWaylandSystemCallRejectedDuringRunExit(t *testing.T) {
+	app, wake := newWaylandInvokeTestApp(t)
+	win := &waylandWindow{app: app}
+	state := &waylandWindowState{app: app, win: win}
+	win.state = state
+	app.windows = []*waylandWindowState{state}
+	result := make(chan error, 1)
+
+	err := app.Run(func(platform.Application) error {
+		go func() { result <- SetCursorShape(2) }()
+		waitWaylandInvokeSignal(t, wake)
+		win.destroy()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, errWaylandApplicationClosed) {
+			t.Fatalf("system call after Run exit = %v, want %v", err, errWaylandApplicationClosed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run exit did not release the system call")
+	}
+	if app.currentCursorShape != 0 {
+		t.Fatal("queued cursor command executed during Run exit")
+	}
 }
 
 func TestWaylandAddStatusItemContract(t *testing.T) {
