@@ -1,7 +1,7 @@
 # Wayland 未完成任务
 
 - 更新日期：2026-10-30
-- 基线：`466df41` + Task 10 当前 diff
+- 基线：`4a2b96d` + Task 11 当前 diff
 - 开发契约：[01-architecture-overview.md](01-architecture-overview.md)
 - 当前 findings：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 
@@ -18,19 +18,25 @@
 
 ## P1：建立最小真实门禁
 
-### Task 11：建立合并前最小真实验证门禁
+### Task 11：建立最小真实验证入口并完成原生验收
 
-**目标：** 用最小真实环境集验证 fake/交叉编译无法证明的线程、协议和 WSI 行为。
+**目标：** 提供可重复的原生验证入口，并在有 Linux/compositor/Vulkan 环境时完成验收；不要求在本机启动 VM，也不修改 CI。
 
-- 原生 Linux 执行 `go test -race ./internal/platform/linux`，重点覆盖系统 API 关闭并发和现有几何快照测试。
-- headless compositor 覆盖初始 configure、Hide/Show、连续 resize、晚期 seat 和断开。
-- Vulkan validation/lavapipe 覆盖首次呈现、swapchain 重建后再次呈现和失败清理。
+已实现入口：
 
-**验收：**
+- 原生 Linux 可执行 `go test -race ./internal/platform/linux`，覆盖系统 API 关闭并发和几何快照。
+- `TestWaylandHeadlessIntegration` 可在 Weston 下验证初始映射、Hide/Show、maximize/restore 几何变化和 compositor 断开；依赖迟到由同包原生单元测试覆盖。
+- 设置 `VIVA_WAYLAND_INTEGRATION=1` 后启用集成测试，由运行环境选择 lavapipe 和 Vulkan validation；默认环境跳过，不影响 fake 单元测试。
 
-- 记录运行环境、命令、结果和未覆盖范围；上述最小集合全部实际执行。
-- 新增和现有回归测试都进入会被原生执行的测试包。
-- 不用交叉编译、vet 或 fake 测试代替此门禁；失败项先修复再进入后续任务。
+**当前验收状态：**
+
+- 本机仅完成 gofmt、`git diff --check`、Linux 交叉 vet 和测试包交叉编译，没有执行原生集成测试。
+- CI 配置保持不变，不把测试入口的存在记为真实验证通过。
+
+**完成条件（尚未满足）：**
+
+- 在原生 Linux 执行 race 和集成测试，记录 Weston、驱动、validation 环境、命令和结果。
+- 验证 lavapipe 首次呈现、swapchain 重建和失败清理；失败项修复并复核后才能关闭 Task 11。
 
 ## P2：恢复桌面服务生命周期
 

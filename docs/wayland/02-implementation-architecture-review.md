@@ -1,7 +1,7 @@
 # Linux/Wayland 当前实现复核
 
 - 日期：2026-10-30
-- 基线：`466df41` + Task 10 当前 diff
+- 基线：`4a2b96d` + Task 11 当前 diff
 - 类型：只读源码复核
 - 开发契约：[01-architecture-overview.md](01-architecture-overview.md)
 - 后续任务：[task.md](task.md)
@@ -45,7 +45,7 @@
 
 ```sh
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-  go test -c -o /tmp/viva-wayland-task10.test ./internal/platform/linux
+  go test -c -o /tmp/viva-wayland-task11.test ./internal/platform/linux
 
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
   go vet ./internal/platform/... ./app
@@ -54,7 +54,7 @@ git diff --check
 go test ./internal/platform/...
 ```
 
-当前主机 platform 测试为 302 个通过。Task 10 的 seat/manager 乱序到达、重复事件、offer/剪贴板状态保留和 teardown 测试已加入 Linux 测试包并交叉编译，但未在原生 Linux/race 下执行。未执行 Linux 测试二进制、headless compositor、Vulkan validation/lavapipe 或真实桌面/性能矩阵；也未查询本基线的 CI 运行结果。上述成功不能作为当前 finding 已排除或真实闪烁已修复的证据。
+当前主机 platform 测试为 302 个通过。新增 Weston/Vulkan 集成入口覆盖初始映射、Hide/Show、maximize/restore 和 compositor 断开，但仅完成交叉编译；原生 race、headless compositor 和 lavapipe/validation 均留待另一台 Linux 机器执行，Task 11 不因测试入口存在而关闭。未查询本基线的 CI 运行结果，也未修改 CI。上述成功不能作为当前 finding 已排除或真实闪烁已修复的证据。
 
 ## 5. 后续记录方式
 

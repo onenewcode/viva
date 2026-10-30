@@ -1,7 +1,7 @@
 # Viva Linux/Wayland 架构与开发契约
 
 - 更新日期：2026-10-30
-- 审查基线：`466df41` + Task 10 当前 diff
+- 审查基线：`4a2b96d` + Task 11 当前 diff
 - 用途：约束后续开发；不记录已完成的修复历史
 - 当前复核：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 - 未完成任务：[task.md](task.md)
@@ -85,7 +85,7 @@ registry 在 application 生命周期内持续存在。除 output 热插拔外�
 
 | 优先级 | 缺口 | 任务 |
 | :--- | :--- | :--- |
-| P1 | 缺少原生 race、headless compositor 和 lavapipe 最小验证门禁 | Task 11 |
+| P1 | Weston/Vulkan 集成测试已添加，原生 race/headless/lavapipe 尚未执行 | Task 11 |
 | P2 | desktop watcher 的临时失败会永久停止恢复 | Task 12 |
 | P3 | 完整 compositor、真实桌面、驱动和性能矩阵未完成 | Task 8 |
 
