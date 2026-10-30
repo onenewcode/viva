@@ -617,9 +617,10 @@ func initRegistryListeners() {
 
 // waylandGlobals tracks bound global singleton protocol objects.
 type waylandGlobals struct {
-	api     *waylandAPI
-	display uintptr
-	pinner  runtime.Pinner
+	api      *waylandAPI
+	display  uintptr
+	registry uintptr
+	pinner   runtime.Pinner
 
 	compositor           uintptr
 	compositorVer        uint32
@@ -799,7 +800,7 @@ func (g *waylandGlobals) bindGlobals(api *waylandAPI, display uintptr) error {
 		g.pinner.Unpin()
 		return errors.New("linux: failed to get wayland display registry")
 	}
-	defer api.proxyDestroy(registry)
+	g.registry = registry
 
 	api.proxyAddListener(registry, uintptr(unsafe.Pointer(&rawRegistryListener[0])), unsafe.Pointer(g))
 	if api.displayRoundtrip(display) < 0 {
@@ -836,6 +837,7 @@ func (g *waylandGlobals) destroy(api *waylandAPI) {
 	api.destroyProxy(&g.seat)
 	api.destroyProxy(&g.shm)
 	api.destroyProxy(&g.compositor)
+	api.destroyProxy(&g.registry)
 	g.pinner.Unpin()
 }
 

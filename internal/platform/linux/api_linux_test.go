@@ -875,6 +875,85 @@ func TestWaylandRegistryDiscovery(t *testing.T) {
 	}
 }
 
+func TestWaylandRegistryRetainedUntilDestroy(t *testing.T) {
+	destroyed := make(map[uintptr]int)
+	var globals waylandGlobals
+	api := &waylandAPI{
+		proxyMarshalFlags: func(_ uintptr, opcode uint32, _ uintptr, _, _ uint32, args ...any) uintptr {
+			switch opcode {
+			case wlDisplayGetRegistryOpcode:
+				return 100
+			case wlRegistryBindOpcode:
+				switch args[0].(uint32) {
+				case 1:
+					return 200
+				case 2:
+					return 201
+				case 7:
+					return 700
+				}
+			}
+			return 0
+		},
+		proxyAddListener: func(uintptr, uintptr, unsafe.Pointer) int32 { return 0 },
+		proxyDestroy:     func(proxy uintptr) { destroyed[proxy]++ },
+		displayRoundtrip: func(uintptr) int32 {
+			globals.handleGlobal(100, 1, "wl_compositor", 4)
+			globals.handleGlobal(100, 2, "xdg_wm_base", 1)
+			return 0
+		},
+	}
+
+	if err := globals.bindGlobals(api, 1); err != nil {
+		t.Fatalf("bindGlobals: %v", err)
+	}
+	if globals.registry != 100 {
+		t.Fatalf("retained registry = %d, want 100", globals.registry)
+	}
+	if destroyed[100] != 0 {
+		t.Fatal("registry was destroyed after initial discovery")
+	}
+
+	globals.handleGlobal(globals.registry, 7, "wl_output", 2)
+	if globals.outputs[700] == nil {
+		t.Fatal("late output global was not bound")
+	}
+	globals.handleGlobalRemove(7)
+	if destroyed[700] != 1 || len(globals.outputs) != 0 {
+		t.Fatalf("late output removal destroyed=%d remaining=%d", destroyed[700], len(globals.outputs))
+	}
+
+	globals.destroy(api)
+	if destroyed[100] != 1 || globals.registry != 0 {
+		t.Fatalf("registry teardown destroyed=%d retained=%d", destroyed[100], globals.registry)
+	}
+	if destroyed[200] != 1 || destroyed[201] != 1 {
+		t.Fatalf("global proxy destruction counts = %v", destroyed)
+	}
+}
+
+func TestWaylandRegistryDiscoveryFailureReleasesRegistry(t *testing.T) {
+	destroyed := make(map[uintptr]int)
+	var globals waylandGlobals
+	api := &waylandAPI{
+		proxyMarshalFlags: func(_ uintptr, opcode uint32, _ uintptr, _, _ uint32, _ ...any) uintptr {
+			if opcode == wlDisplayGetRegistryOpcode {
+				return 100
+			}
+			return 0
+		},
+		proxyAddListener: func(uintptr, uintptr, unsafe.Pointer) int32 { return 0 },
+		proxyDestroy:     func(proxy uintptr) { destroyed[proxy]++ },
+		displayRoundtrip: func(uintptr) int32 { return -1 },
+	}
+	if err := globals.bindGlobals(api, 1); err == nil {
+		t.Fatal("expected registry discovery failure")
+	}
+	if destroyed[100] != 1 || globals.registry != 0 {
+		t.Fatalf("failed discovery destroyed=%d retained=%d", destroyed[100], globals.registry)
+	}
+}
+
 func TestWaylandLoopWaker(t *testing.T) {
 	var executed atomic.Bool
 	wakeCh := make(chan struct{}, 1)

@@ -82,6 +82,55 @@ func TestWaylandOutputScaleFallback(t *testing.T) {
 	}
 }
 
+func TestWaylandLateOutputAddRemoveUpdatesWindows(t *testing.T) {
+	destroyed := make(map[uintptr]int)
+	api := &waylandAPI{
+		proxyMarshalFlags: func(_ uintptr, opcode uint32, _ uintptr, _, _ uint32, args ...any) uintptr {
+			if opcode == wlRegistryBindOpcode {
+				return uintptr(args[0].(uint32))
+			}
+			return 0
+		},
+		proxyAddListener: func(uintptr, uintptr, unsafe.Pointer) int32 { return 0 },
+		proxyDestroy:     func(proxy uintptr) { destroyed[proxy]++ },
+	}
+	app := &waylandApplication{api: api}
+	app.globals.api = api
+	app.globals.registry = 100
+	app.globals.onOutputScale = app.handleOutputScale
+	app.globals.onOutputRemove = app.handleOutputRemove
+	app.globals.handleGlobal(app.globals.registry, 7, "wl_output", 2)
+	app.globals.handleGlobal(app.globals.registry, 8, "wl_output", 2)
+
+	win := &waylandWindow{app: app, surface: 1, width: 400, height: 300, framePending: true}
+	win.storeScale(1)
+	state := &waylandWindowState{app: app, win: win}
+	win.state = state
+	app.windows = []*waylandWindowState{state}
+	win.handleSurfaceEnter(7)
+	win.handleSurfaceEnter(8)
+	app.globals.outputs[7].setScale(2)
+	if got := win.displayScale(); got != 2 {
+		t.Fatalf("late output scale = %g, want 2", got)
+	}
+
+	app.globals.handleGlobalRemove(7)
+	if got := win.displayScale(); got != 1 {
+		t.Fatalf("scale after removing the 2x output = %g, want 1", got)
+	}
+	if len(win.activeOutputs) != 1 || win.activeOutputs[0] != 8 {
+		t.Fatalf("active outputs after removal = %v, want [8]", win.activeOutputs)
+	}
+	if destroyed[7] != 1 || app.globals.outputs[7] != nil {
+		t.Fatalf("removed output destroyed=%d retained=%v", destroyed[7], app.globals.outputs[7])
+	}
+
+	app.globals.handleGlobalRemove(8)
+	if len(win.activeOutputs) != 0 || destroyed[8] != 1 {
+		t.Fatalf("final output removal active=%v destroyed=%d", win.activeOutputs, destroyed[8])
+	}
+}
+
 func TestWaylandOutputScaleDoesNotOverridePreferredScale(t *testing.T) {
 	tests := []struct {
 		name       string

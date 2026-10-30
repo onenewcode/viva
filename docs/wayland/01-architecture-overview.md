@@ -393,7 +393,7 @@ Vulkan fake 至少跟踪：
 | Vulkan oldSwapchain 唯一销毁 | 已修复 | 保持成功/失败路径销毁次数测试 |
 | Vulkan SUBOPTIMAL 恢复 | 已修复 | 保持新交换链再次呈现与有界恢复测试，补真实驱动验收 |
 | fractional/整数缩放 | 已具备主要路径 | 保持协议优先级并做实机验收 |
-| 动态 output 热插拔 | 初次 discovery 与既有 output 跟踪已具备 | 保留 application 级 registry，覆盖后续 global/global_remove |
+| 动态 output 热插拔 | Task 3 当前 diff 已保留 application 级 registry 并覆盖晚期增删 | 保持销毁计数与 scale 回退测试，补真实热插拔验收 |
 | 桌面协议核心共享 | 部分共享 | 抽取可共享重连和 event-source 生命周期 |
 | 托盘/后台常驻 | 未完整支持 | 先明确 keep-alive 产品契约 |
 | Linux 平台测试持续执行 | 已具备 Ubuntu 原生测试任务 | 新增平台回归测试持续纳入原生执行，真实环境另行验收 |
@@ -402,12 +402,11 @@ Vulkan fake 至少跟踪：
 
 后续工作按以下顺序推进，不重复已经落地的呈现、输入调度、缩放往返、swapchain 和 CI 修复：
 
-1. **补齐动态 output 生命周期**：保留 application 级 registry，覆盖新增、移除和 teardown。
-2. **收敛后端探测与错误链**：保留自动后备诊断，区分显示连接、配置和图形设备错误，清理探测副作用。
-3. **收敛事件循环**：统一 event source，补齐 prepare/read/cancel，保持现有 ERR/HUP、POLLOUT、eventfd 和 deadline 行为。
-4. **完善显式窗口状态机**：减少布尔组合，集中 configure 事务、ACK、frame callback 和 surface 映射状态。
-5. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉，并明确 keep-alive 产品契约。
-6. **补验证体系**：在现有 Linux 原生单元测试之上，增加原生 race、headless compositor、Vulkan validation/lavapipe、真实桌面和性能验收。
+1. **收敛后端探测与错误链**：保留自动后备诊断，区分显示连接、配置和图形设备错误，清理探测副作用。
+2. **收敛事件循环**：统一 event source，补齐 prepare/read/cancel，保持现有 ERR/HUP、POLLOUT、eventfd 和 deadline 行为。
+3. **完善显式窗口状态机**：减少布尔组合，集中 configure 事务、ACK、frame callback 和 surface 映射状态。
+4. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉，并明确 keep-alive 产品契约。
+5. **补验证体系**：在现有 Linux 原生单元测试之上，增加原生 race、headless compositor、Vulkan validation/lavapipe、真实桌面和性能验收。
 
 该顺序保留现有后端调度、PureGo、共享渲染和协议核心，不要求推倒重写。
 

@@ -1,7 +1,7 @@
 # Linux/Wayland 当前实现与架构复核
 
 - 修订日期：2026-10-30
-- 审查基准：`f109a06` + Task 2 当前 diff
+- 审查基准：`6bc62a4` + Task 3 当前 diff
 - 适用分支：`docs/linux-render-refresh-flicker`
 - 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
 - 待实施任务：[task.md](task.md)
@@ -12,33 +12,15 @@
 
 ## 1. 结论
 
-**宏观架构合理，不需要推倒重写；当前主路径实现与目标设计基本一致，但仍有一个具体实现问题，以及若干明确的目标架构和验证差距。**
+**宏观架构合理，不需要推倒重写；当前主路径实现与目标设计基本一致。Tasks 1–3 的当前 diff 已处理本轮三个具体实现问题，剩余为明确的目标架构和验证差距。**
 
-当前应优先处理：registry 在初次 discovery 后即销毁，动态 output 增删无法进入现有跟踪路径。
+Task 3 将 registry 保留为 application/globals 级对象，使 discovery 后的 output 增删能够进入现有跟踪路径；真实热插拔仍需后续实机验收。
 
 这些问题不需要改变 Wayland-first、PureGo、共享 Vulkan、eventfd 命令队列或 frame-callback 背压等主干设计。应优先修正状态所有权和公开契约，再继续 prepare/read、完整状态机和桌面服务抽象等结构性迁移。
 
 ## 2. 当前 findings
 
-### 2.3 F3：registry 生命周期使动态 output 增删失效
-
-**严重度：中；proxy 生命周期控制流确认，未做热插拔实机验收。**
-
-`bindGlobals` 创建 registry 并注册 listener，但函数返回时会执行：
-
-- `internal/platform/linux/wayland_registry.go:797-804`
-
-```go
-defer api.proxyDestroy(registry)
-```
-
-因此，初次 discovery 后不能再通过该 proxy 接收后续的 `global` 和 `global_remove`。已有的 `handleGlobal`、`handleGlobalRemove` 和 output map 能处理直接调用及 fake 事件，但真实运行期间的动态增删没有持续的事件来源：
-
-- `internal/platform/linux/wayland_registry.go:679-784`
-
-初始已连接 output 之间的 surface enter/leave 和 scale 回退不受此结论影响。缺口发生在运行中新增或移除 output：新 output 未绑定，旧 output 的移除通知也无法进入现有清理路径。
-
-**架构结论：** registry 是 application 级长生命周期对象，不应只作为一次性 discovery helper。其销毁应与 globals/display teardown 统一，并明确 output 代际和窗口 activeOutputs 清理顺序。
+本轮没有保留的实现 findings。F1–F3 对应的实现修改均在 Tasks 1–3 当前 diff 中，验证证据和未执行项目见第 5 节；后续 review 若发现回归，应以当前源码重新建立 finding，而不是恢复历史文本。
 
 ## 3. 架构合理性判断
 
@@ -62,7 +44,7 @@ scene update 与 present/commit 分离、clean/forced present、frame callback �
 
 ### 3.5 缩放与多输出：主路径合理，动态生命周期未闭合
 
-fractional-scale + viewport、整数 preferred scale 和 output scale 的优先级合理。Task 1 diff 覆盖 configure/scale 几何交错，F3 仍涉及 output 生命周期；二者需要不同的回归场景，不能仅靠缩放舍入测试覆盖。
+fractional-scale + viewport、整数 preferred scale 和 output scale 的优先级合理。Tasks 1–2 的当前 diff 覆盖几何交错与跨线程快照，Task 3 又将 registry 生命周期延长至 globals teardown，使晚期 output 增删能够驱动 scale 回退；真实热插拔结果仍列入后续验收。
 
 ## 4. 尚未完成的目标架构能力
 
@@ -87,18 +69,18 @@ fractional-scale + viewport、整数 preferred scale 和 output scale 的优先�
 
 ```sh
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-  go test -c -o /tmp/viva-linux-platform-task2.test ./internal/platform/linux
+  go test -c -o /tmp/viva-linux-platform-task3.test ./internal/platform/linux
 
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
   go vet ./internal/platform/... ./app
 ```
 
-这些结果只证明相关 Linux 测试可交叉编译、静态检查通过。Task 2 新增的并发 resize/scale 快照测试包含在上述测试包中，但没有原生执行，也没有在 Linux/race detector 下验证。本次没有执行 Linux 测试二进制、race detector、compositor、Vulkan WSI/validation 或真实桌面/性能验收；原生 race 验证已列入 Task 8。
+这些结果只证明相关 Linux 测试可交叉编译、静态检查通过。Task 3 新增的 registry 延迟销毁、晚期 output 新增/移除、窗口 scale 回退和销毁计数测试均包含在上述测试包中，但没有原生执行，也没有真实热插拔验收。本次没有执行 Linux 测试二进制、race detector、compositor、Vulkan WSI/validation 或真实桌面/性能验收；原生 race 验证已列入 Task 8。
 
 ## 6. 建议优先级
 
-1. **P1：补齐 output 生命周期与文档现状**：完成 F3，同步目标文档的状态表。
+1. **P1：完成阶段文档一致性检查**：同步 Tasks 1–3 的实现状态与剩余验证证据。
 2. **P2：继续结构性收敛**：后端探测与错误链、prepare/read、统一 event-source、显式 surface/configure 状态机。
 3. **P3：补真实验证层次**：原生 Linux race、headless compositor、validation/lavapipe、真实 GNOME/KDE/Sway 和性能矩阵。
 
-最终判断：**保留现有架构主干；当前实现可称为主路径已落地，但不能称为所有协议交错、公开并发契约和动态多输出场景已经闭环。**
+最终判断：**保留现有架构主干；Tasks 1–3 的实现候选已覆盖本轮具体源码问题，但不能称为已完成原生 race、真实 compositor、热插拔或 Vulkan/桌面矩阵验收。**
