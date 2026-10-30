@@ -641,9 +641,10 @@ type waylandGlobals struct {
 	outputs              map[uintptr]*waylandOutput
 	outputNames          map[uint32]uintptr
 
-	onCapabilities func(caps uint32)
-	onOutputScale  func(output uintptr, scale int32)
-	onOutputRemove func(output uintptr)
+	onCapabilities     func(caps uint32)
+	onOutputScale      func(output uintptr, scale int32)
+	onOutputRemove     func(output uintptr)
+	onDataDeviceChange func()
 }
 
 func (api *waylandAPI) getInterface(name string, fallback *wlInterface) uintptr {
@@ -709,6 +710,9 @@ func (g *waylandGlobals) handleGlobal(registry uintptr, name uint32, iface strin
 			if g.seat != 0 {
 				initRegistryListeners()
 				g.api.proxyAddListener(g.seat, uintptr(unsafe.Pointer(&rawSeatListener[0])), unsafe.Pointer(g))
+				if g.onDataDeviceChange != nil {
+					g.onDataDeviceChange()
+				}
 			}
 		}
 	case "wl_output":
@@ -764,6 +768,9 @@ func (g *waylandGlobals) handleGlobal(registry uintptr, name uint32, iface strin
 			ifacePtr := g.api.getInterface("wl_data_device_manager_interface", &wlDataDeviceManagerInterface)
 			g.dataDeviceManager = g.api.bindRegistry(registry, name, ifacePtr, &strWlDataDeviceManager[0], ver)
 			g.dataDeviceManagerVer = ver
+			if g.dataDeviceManager != 0 && g.onDataDeviceChange != nil {
+				g.onDataDeviceChange()
+			}
 		}
 	}
 }

@@ -1,7 +1,7 @@
 # Wayland 未完成任务
 
 - 更新日期：2026-10-30
-- 基线：`68aee2d` + Task 9 当前 diff
+- 基线：`466df41` + Task 10 当前 diff
 - 开发契约：[01-architecture-overview.md](01-architecture-overview.md)
 - 当前 findings：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 
@@ -16,20 +16,7 @@
 5. 同步更新三份文档的基线、findings 和验证证据；完成项从当前清单删除，不保留修复流水账。
 6. 原生单元测试、race、headless compositor、Vulkan validation 和真实桌面结果分别记录，不能互相替代。
 
-## P1：补齐依赖初始化并建立最小真实门禁
-
-### Task 10：补齐 data-device 依赖迟到的生命周期
-
-**目标：** 初始 discovery 缺少 seat 或 data-device-manager 时，后续依赖到齐仍能使用剪贴板和拖放。
-
-- seat 或 manager 任一可用性变化时触发幂等的 `setupDataDevice`，不能只依赖新的 capabilities 事件。
-- 重复 registry/capabilities 事件不得重复创建 data device、重置 offer 或丢失现有剪贴板状态。
-- 明确 teardown 与后续重新初始化的所有权，不引入重复 listener。
-
-**验收：**
-
-- 覆盖初始无 seat、初始无 manager、两个依赖乱序到达、重复事件、剪贴板/拖放及关闭清理。
-- data device 创建恰好一次，proxy 和 listener 无泄漏或重复销毁。
+## P1：建立最小真实门禁
 
 ### Task 11：建立合并前最小真实验证门禁
 
@@ -42,7 +29,7 @@
 **验收：**
 
 - 记录运行环境、命令、结果和未覆盖范围；上述最小集合全部实际执行。
-- Task 10 的新测试和现有线程所有权回归测试都进入会被原生执行的测试包。
+- 新增和现有回归测试都进入会被原生执行的测试包。
 - 不用交叉编译、vet 或 fake 测试代替此门禁；失败项先修复再进入后续任务。
 
 ## P2：恢复桌面服务生命周期

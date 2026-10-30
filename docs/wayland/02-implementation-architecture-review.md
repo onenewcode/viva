@@ -1,32 +1,20 @@
 # Linux/Wayland 当前实现复核
 
 - 日期：2026-10-30
-- 基线：`68aee2d` + Task 9 当前 diff
+- 基线：`466df41` + Task 10 当前 diff
 - 类型：只读源码复核
 - 开发契约：[01-architecture-overview.md](01-architecture-overview.md)
 - 后续任务：[task.md](task.md)
 
 ## 1. 结论
 
-**宏观架构合理，不需要推倒重写；当前仍有两项实现问题。** 主循环的 prepare/read、surface/configure 事务、frame-callback 背压、系统 API 的主线程调用边界和 Vulkan 恢复边界可以保留。后续工作应继续收敛对象生命周期，而不是再次 redesign 已完成的主干。
+**宏观架构合理，不需要推倒重写；当前剩一项实现问题。** 主循环的 prepare/read、surface/configure 事务、frame-callback 背压、系统 API 的主线程调用边界和 Vulkan 恢复边界可以保留。后续工作应完成桌面服务恢复和真实验证，而不是再次 redesign 已完成的主干。
 
 “源码确认”表示控制流中存在问题，不表示已在真实 Linux/compositor/GPU 上复现可见症状。
 
 ## 2. 当前 findings
 
-### F1（中等）：data device 的两个依赖迟到都不会触发初始化
-
-- `setupDataDevice` 只在构造时调用一次：`internal/platform/linux/wayland_app.go:131`；
-- registry 可以后绑定 seat：`internal/platform/linux/wayland_registry.go:703`；
-- capabilities 只初始化 pointer/keyboard：`internal/platform/linux/wayland_app.go:592`；
-- data-device-manager 同样可以迟到：`internal/platform/linux/wayland_registry.go:761`；
-- data device 创建要求 manager 和 seat 同时存在：`internal/platform/linux/wayland_data.go:431`。
-
-因此初始 discovery 缺少任一依赖时，后续依赖到齐也不会创建 data device。晚期 seat 可以恢复输入，但剪贴板和拖放持续不可用；已有 seat、仅有 manager 迟到时甚至不需要新的 capabilities 事件。
-
-**处理：** Task 10。seat 或 manager 任一可用性变化时执行幂等初始化，并覆盖初始无 seat、初始无 manager、依赖乱序到达、重复事件和 teardown 测试。
-
-### F2（中等）：desktop watcher 的临时失败通过两条锁存路径永久禁止恢复
+### F1（中等）：desktop watcher 的临时失败通过两条锁存路径永久禁止恢复
 
 `syncDesktopWatch` 仅在 `!desktopFailed` 时连接（`internal/platform/linux/wayland_app.go:397`）。连接或接收失败会设置该标记：
 
@@ -57,7 +45,7 @@
 
 ```sh
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-  go test -c -o /tmp/viva-wayland-task9.test ./internal/platform/linux
+  go test -c -o /tmp/viva-wayland-task10.test ./internal/platform/linux
 
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
   go vet ./internal/platform/... ./app
@@ -66,7 +54,7 @@ git diff --check
 go test ./internal/platform/...
 ```
 
-当前主机 platform 测试为 302 个通过。Task 9 的主线程快速路径、后台调用、关闭取消、多窗口、`Run` 退出及慢外部 offer 不阻塞主循环等回归测试已加入 Linux 测试包并交叉编译，但未在原生 Linux/race 下执行。未执行 Linux 测试二进制、headless compositor、Vulkan validation/lavapipe 或真实桌面/性能矩阵；也未查询本基线的 CI 运行结果。上述成功不能作为当前 findings 已排除或真实闪烁已修复的证据。
+当前主机 platform 测试为 302 个通过。Task 10 的 seat/manager 乱序到达、重复事件、offer/剪贴板状态保留和 teardown 测试已加入 Linux 测试包并交叉编译，但未在原生 Linux/race 下执行。未执行 Linux 测试二进制、headless compositor、Vulkan validation/lavapipe 或真实桌面/性能矩阵；也未查询本基线的 CI 运行结果。上述成功不能作为当前 finding 已排除或真实闪烁已修复的证据。
 
 ## 5. 后续记录方式
 

@@ -131,6 +131,7 @@ func newWaylandApplication() (*waylandApplication, error) {
 	app.globals.onCapabilities = app.handleSeatCapabilities
 	app.globals.onOutputScale = app.handleOutputScale
 	app.globals.onOutputRemove = app.handleOutputRemove
+	app.globals.onDataDeviceChange = app.setupDataDevice
 	if err := app.globals.bindGlobals(api, display); err != nil {
 		app.close()
 		return nil, err

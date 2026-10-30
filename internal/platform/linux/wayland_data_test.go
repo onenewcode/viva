@@ -32,6 +32,86 @@ func TestWaylandDataOfferMimeMatching(t *testing.T) {
 	}
 }
 
+func TestWaylandLateDataDeviceDependencies(t *testing.T) {
+	tests := []struct {
+		name          string
+		first, second string
+	}{
+		{name: "seat then manager", first: "wl_seat", second: "wl_data_device_manager"},
+		{name: "manager then seat", first: "wl_data_device_manager", second: "wl_seat"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			createCalls := 0
+			listenerCalls := make(map[uintptr]int)
+			api := &waylandAPI{
+				proxyMarshalFlags: func(proxy uintptr, opcode uint32, _ uintptr, _, _ uint32, args ...any) uintptr {
+					switch {
+					case proxy == 1 && opcode == wlRegistryBindOpcode:
+						if args[0].(uint32) == 1 {
+							if test.first == "wl_seat" {
+								return 100
+							}
+							return 200
+						}
+						if test.second == "wl_seat" {
+							return 100
+						}
+						return 200
+					case proxy == 200 && opcode == wlDataDeviceManagerGetDataDeviceOpcode:
+						createCalls++
+						return 300
+					case proxy == 200 && opcode == wlDataDeviceManagerCreateDataSourceOpcode:
+						return 400
+					}
+					return 0
+				},
+				proxyAddListener: func(proxy uintptr, _ uintptr, _ unsafe.Pointer) int32 {
+					listenerCalls[proxy]++
+					return 0
+				},
+				proxyDestroy: func(uintptr) {},
+			}
+			app := &waylandApplication{api: api}
+			app.globals.api = api
+			app.globals.onDataDeviceChange = app.setupDataDevice
+			bind := func(iface string, name uint32) {
+				app.globals.handleGlobal(1, name, iface, 5)
+			}
+
+			bind(test.first, 1)
+			if app.dataDevice != 0 || createCalls != 0 {
+				t.Fatalf("data device created with one dependency: device=%d calls=%d", app.dataDevice, createCalls)
+			}
+			bind(test.first, 1) // Duplicate globals are ignored.
+			bind(test.second, 2)
+			if app.dataDevice != 300 || createCalls != 1 || listenerCalls[300] != 1 {
+				t.Fatalf("late initialization device=%d calls=%d listeners=%d", app.dataDevice, createCalls, listenerCalls[300])
+			}
+			if err := app.setClipboardText("ready"); err != nil {
+				t.Fatalf("clipboard after dependencies arrived: %v", err)
+			}
+			marker := &waylandDataOffer{proxy: 999}
+			app.dataOffers[marker.proxy] = marker
+
+			bind(test.first, 1)
+			bind(test.second, 2)
+			app.setupDataDevice()
+			if createCalls != 1 || listenerCalls[300] != 1 {
+				t.Fatalf("duplicate initialization calls=%d listeners=%d", createCalls, listenerCalls[300])
+			}
+			if app.dataOffers[marker.proxy] != marker || !app.ownsClipboard || app.clipboardText != "ready" {
+				t.Fatal("duplicate dependency event reset live data-device state")
+			}
+
+			app.teardownDataDevice()
+			if app.dataDevice != 0 || app.dataOffers != nil {
+				t.Fatalf("teardown left device=%d offers=%v", app.dataDevice, app.dataOffers)
+			}
+		})
+	}
+}
+
 func TestWaylandClipboardSetAndAsyncSend(t *testing.T) {
 	var (
 		mu               sync.Mutex
