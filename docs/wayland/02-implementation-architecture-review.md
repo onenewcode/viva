@@ -1,9 +1,10 @@
 # Linux/Wayland 当前实现与架构复核
 
 - 修订日期：2026-10-30
-- 审查基准：HEAD `47a01b9`
+- 审查基准：HEAD `7111746`
 - 适用分支：`docs/linux-render-refresh-flicker`
 - 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
+- 待实施任务：[task.md](task.md)
 - 范围：Wayland 后端选择、事件循环、surface/configure/呈现、输入调度、缩放、共享 Vulkan WSI、测试与验收边界
 - 类型：只读源码审查；本文只保留当前仍未解决的问题和目标差距
 
