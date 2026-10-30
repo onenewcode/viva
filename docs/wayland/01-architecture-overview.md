@@ -1,6 +1,6 @@
 # Viva Linux/Wayland 架构：目标设计与实施契约
 
-- 更新日期：2026-10-29
+- 更新日期：2026-10-30
 - 适用分支：`docs/linux-render-refresh-flicker`
 - 文档性质：架构目标、协议约束和迁移方向；不代表全部能力已经实现或验收
 
@@ -99,7 +99,7 @@ X11 的 `selectBackend` 当前只完成环境检查和对象选择，真正的 X
 - D-Bus/IBus/AT-SPI FD 的就绪分发；
 - 窗口和应用错误状态推进。
 
-后台 goroutine 不直接读取或修改窗口协议状态，只向命令队列提交不可变数据。库加载和纯计算可以位于其他线程，但不能借此绕过 proxy 和 renderer 的所有权规则。
+后台 goroutine 不直接读取或修改窗口协议状态，只向命令队列提交不可变数据。`Frame` 等允许跨 goroutine 调用的只读 API 必须读取主线程发布的不可变快照，或通过明确同步获得同一几何代际。库加载和纯计算可以位于其他线程，但不能借此绕过 proxy 和 renderer 的所有权规则。
 
 ### 4.2 统一 event source
 
@@ -131,7 +131,8 @@ Calloop 的 `EventSource`、Generic FD source 和 Timer 是这一方向的成熟
 dispatch pending commands
 while true:
     dispatch wl_display_dispatch_pending()
-    while wl_display_prepare_read() == EAGAIN:
+    while wl_display_prepare_read() != 0:
+        if errno != EAGAIN: return error
         if wl_display_dispatch_pending() failed: return error
 
     flush outgoing requests
@@ -148,7 +149,8 @@ while true:
 
 约束：
 
-- `prepare_read` 成功后，必须配对调用 `read_events` 或 `cancel_read`；
+- `prepare_read` 成功返回 0 后，必须配对调用 `read_events` 或 `cancel_read`；
+- `prepare_read` 返回 -1 时，只有 `errno == EAGAIN` 才能通过 `dispatch_pending` 排空事件后重试；其他错误必须终止本轮并进入统一错误路径；
 - 进入 `poll` 前先排空已缓冲事件，避免内存队列非空却仍挂起等待 socket；
 - `flush` 对 `EINTR` 重试，对 `EAGAIN` 启用 `POLLOUT`，其他错误终止事件循环；
 - 持续的非 EINTR `poll` 错误必须返回，不能形成忙循环；
@@ -296,7 +298,8 @@ Vulkan WSI 的 acquire/present semaphore 和 fence 是当前同步基础。除�
 - 明确尺寸舍入规则，避免 scale 往返产生一像素漂移；
 - scale 变化同时更新 renderer 文字比例、frame margin、viewport/geometry、input region 和 swapchain；
 - scale 或输出集合变化后必须强制呈现，即使场景内容未变；
-- 多输出切换期间保留可恢复的单一 scale 来源，避免 fractional 与 output fallback 相互覆盖。
+- 多输出切换期间保留可恢复的单一 scale 来源，避免 fractional 与 output fallback 相互覆盖；
+- registry 在 application 生命周期内持续接收 `global/global_remove`，动态 output 增删与窗口 activeOutputs、scale 回退和 teardown 使用同一所有权模型。
 
 ## 7. 输入、IME 与桌面集成
 
@@ -375,30 +378,37 @@ Vulkan fake 至少跟踪：
 | 能力 | 当前状态 | 目标/缺口 |
 | :--- | :--- | :--- |
 | Wayland-First 与 X11 override | 已具备 | 保持文档与实际探测时机一致 |
+| 后端探测副作用与错误链 | 目标未完整实现 | 自动后备保留下层诊断，探测不遗留全局 hook/服务，区分显示与设备错误 |
 | PureGo 动态绑定 | 已具备 | 继续用 ABI/协议测试保护 |
 | 共享 Vulkan 和 eventRouter | 已具备 | 收敛资源所有权和 present 契约 |
-| eventfd 命令队列 | 已具备基础，EINTR 已修复 | 关闭竞态、代际检查和长期错误模型仍需收敛 |
+| eventfd 命令队列 | 已具备基础，EINTR 与关闭同步已修复 | 代际检查和长期错误模型仍需收敛 |
 | flush POLLOUT 恢复 | 已具备 | 纳入统一 event-source 错误模型 |
 | prepare/read 标准流程 | 尚未完整实现 | 按 libwayland 推荐流程收敛 |
-| 键盘 repeat 主循环定时器 | 尚未实现 | 替换独立 ticker goroutine |
+| 键盘 repeat 与 IBus deadline 主循环调度 | 已实现 | 纳入统一 event-source 错误模型并保持回归测试 |
 | 显式 surface/configure 状态机 | 首次/remap 门限已修复 | 继续集中 serial、ACK 和完整状态机 |
+| configure/scale 几何所有权 | frame-pending 场景已修复 | serial 到达前的 toplevel 几何仍需与 scale 派生尺寸分离 |
+| `Frame` 跨 goroutine 几何快照 | 未完整满足 | 同步完整几何代际并增加 race 回归测试 |
 | clean/forced present 区分 | 已实现 | 保留 clean/forced 回归测试并做实机验收 |
 | frame callback 与 commit 配对 | 已实现 | 不为 clean frame 或失败提交留下孤立 pending，验证真实时序 |
 | Vulkan oldSwapchain 唯一销毁 | 已修复 | 保持成功/失败路径销毁次数测试 |
-| Vulkan SUBOPTIMAL 恢复 | 已修复 | 当前帧完成后重建，补真实驱动验收 |
+| Vulkan SUBOPTIMAL 恢复 | 已修复 | 保持新交换链再次呈现与有界恢复测试，补真实驱动验收 |
 | fractional/整数缩放 | 已具备主要路径 | 保持协议优先级并做实机验收 |
+| 动态 output 热插拔 | 初次 discovery 与既有 output 跟踪已具备 | 保留 application 级 registry，覆盖后续 global/global_remove |
 | 桌面协议核心共享 | 部分共享 | 抽取可共享重连和 event-source 生命周期 |
 | 托盘/后台常驻 | 未完整支持 | 先明确 keep-alive 产品契约 |
-| Linux 平台测试持续执行 | 当前 CI 缺少 | 增加真正运行平台测试的 CI 任务 |
+| Linux 平台测试持续执行 | 已具备 Ubuntu 原生测试任务 | 新增平台回归测试持续纳入原生执行，真实环境另行验收 |
 
 ## 10. 推荐迁移顺序
 
-本轮六项修复已完成呈现事务、newly-unmapped remap、oldSwapchain、SUBOPTIMAL、eventfd EINTR 和 frame-margin 错误传播修复，并分别通过独立 review。后续架构迁移按以下顺序继续：
+后续工作按以下顺序推进，不重复已经落地的呈现、输入调度、缩放往返、swapchain 和 CI 修复：
 
-1. **收敛事件循环**：统一 event source、ERR/HUP、prepare/read、timer 和后台命令生命周期。
-2. **完善显式窗口状态机**：继续减少布尔组合，集中 configure 事务和 surface 映射状态。
-3. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉。
-4. **补验证体系**：先让 Linux mock/unit 测试进入 CI，再进行 headless compositor 和真实环境验收。
+1. **修正几何与公开并发契约**：分离 compositor configure 与 scale 派生几何，让 `Frame` 读取一致的跨线程快照。
+2. **补齐动态 output 生命周期**：保留 application 级 registry，覆盖新增、移除和 teardown。
+3. **收敛后端探测与错误链**：保留自动后备诊断，区分显示连接、配置和图形设备错误，清理探测副作用。
+4. **收敛事件循环**：统一 event source，补齐 prepare/read/cancel，保持现有 ERR/HUP、POLLOUT、eventfd 和 deadline 行为。
+5. **完善显式窗口状态机**：减少布尔组合，集中 configure 事务、ACK、frame callback 和 surface 映射状态。
+6. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉，并明确 keep-alive 产品契约。
+7. **补验证体系**：在现有 Linux 原生单元测试之上，增加 headless compositor、Vulkan validation/lavapipe、真实桌面和性能验收。
 
 该顺序保留现有后端调度、PureGo、共享渲染和协议核心，不要求推倒重写。
 

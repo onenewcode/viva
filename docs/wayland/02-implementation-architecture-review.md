@@ -1,281 +1,165 @@
-# Linux/Wayland 实现真实性与架构合理性复核
+# Linux/Wayland 当前实现与架构复核
 
-- 日期：2026-10-29
-- 审查基准：HEAD `3293e74b02e7ffb143351f6f3380392a423d3488`
+- 修订日期：2026-10-30
+- 审查基准：HEAD `47a01b9`
 - 适用分支：`docs/linux-render-refresh-flicker`
 - 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
-- 范围：Wayland 后端选择、事件循环、surface/configure/呈现、输入/IME、缩放、共享 Vulkan WSI、测试与验收文档
-- 类型：只读源码与文档审查；本报告不修改实现代码
+- 范围：Wayland 后端选择、事件循环、surface/configure/呈现、输入调度、缩放、共享 Vulkan WSI、测试与验收边界
+- 类型：只读源码审查；本文只保留当前仍未解决的问题和目标差距
 
-> 证据口径：“已实现”只表示当前 HEAD 存在对应代码路径；“有回归测试”只表示测试源码存在。除非明确写出运行环境和结果，不表示测试已经执行，也不表示真实 compositor/GPU 验收通过。下列 findings 均由源码控制流确认，未宣称已在真实 Linux 环境复现其可见症状。
+> 证据口径：“源码确认”表示控制流中存在对应路径，不表示已在真实 Linux/compositor/GPU 上复现可见症状。Linux 测试交叉编译和 vet 不等于原生测试、race detector 或真实环境验收。已经完成的修复不再作为 findings 保留。
 
 ## 1. 结论
 
-### 1.1 是否真的实现
+**宏观架构合理，不需要推倒重写；当前主路径实现与目标设计基本一致，但仍有三个具体实现问题，以及若干明确的目标架构差距。**
 
-**不是只有设计文档。** 原生 Wayland 后端、PureGo 绑定、eventfd 命令队列、Wayland/Vulkan surface、输入与缩放主路径，以及本轮六项修复对应的代码和回归测试都真实存在。
+当前应优先处理：
 
-但不能据此认定目标架构或六项修复已经完整闭环。本次新确认：
+1. configure 与 scale 的几何所有权不唯一，特定事件顺序会覆盖 compositor 的最新尺寸；
+2. `Window.Frame` 的任意 goroutine 契约与 Wayland 几何读写方式不一致；
+3. registry 在初次 discovery 后即销毁，动态 output 增删无法进入现有跟踪路径。
 
-- **4 个高严重度正确性问题**：直接 present 绕过 remap 事务、frame pending 期间 resize/scale 丢失 redraw、服务关闭后残留 FD 忙循环、eventfd `post/close` 复用 FD 竞态；
-- **5 个中严重度问题**：SUBOPTIMAL 新交换链不强制呈现、Wayland IBus 超时缺失、repeat 无按键代际、scale 往返截断、fractional-scale 与 viewporter 组合错误；
-- **1 个低严重度资源释放问题**：正常关闭遗漏 IBus `Bus.Close`；
-- **1 处跨文档矛盾**：`docs/conformance.md` 仍声称原生 Wayland 未实现。
+这些问题不需要改变 Wayland-first、PureGo、共享 Vulkan、eventfd 命令队列或 frame-callback 背压等主干设计。应优先修正状态所有权和公开契约，再继续 prepare/read、完整状态机和桌面服务抽象等结构性迁移。
 
-因此，`01` 第 9 节中“clean/forced present 已实现”“frame callback 与 commit 配对已实现”“SUBOPTIMAL 恢复已修复”等表述过强，应改为**主路径已落地，但仍有本文列出的入口和组合场景未闭合**。
+## 2. 当前 findings
 
-### 1.2 架构是否真的合理
+### 2.1 F1：scale 可覆盖尚未 ACK 的 configure 几何
 
-**宏观方向合理，不需要推倒重写；当前内部实现仍是“主路径事务 + legacy 直接 present + 分散资源所有权”的混合架构，尚不足以支撑生产可靠性结论。**
+**严重度：中高；源码控制流确认，真实 compositor 出现频率未验收。**
 
-应保留的主干：
+`handleXdgToplevelConfigure` 将 compositor 的最新逻辑尺寸写入 `pendingWidth/pendingHeight`：
 
-1. Wayland 原生优先、X11 后备，强制后端失败时不静默降级；
-2. 统一上层平台契约，共享场景、输入路由与 Vulkan 核心；
-3. PureGo 动态绑定，保留零 CGO 和交叉编译能力；
-4. 单一主循环配合 eventfd 命令队列；
-5. 将场景 dirty 与 surface commit 分离，以 configure、frame callback 和 WSI 状态驱动呈现。
+- `internal/platform/linux/window_wayland.go:404-477`
 
-当前最关键的架构问题不是缺少更多布尔守卫，而是：
+`applyScale` 只有在 `resizeDeferred` 为 true 时才从 `pendingLogicalSize()` 保留该尺寸；否则从当前设备尺寸反推逻辑尺寸：
 
-- 并非所有呈现都经过同一个窗口事务；
-- FD、eventfd 和连接的关闭所有权不统一；
-- frame callback、resize 和 pending redraw 没有统一代际/事务语义；
-- timer、IME 超时和 repeat 尚未纳入主循环调度；
-- 多组布尔状态仍代替完整 surface/configure 状态机。
+- `internal/platform/linux/wayland_scale.go:239-249`
 
-### 1.3 是否可以宣称验收完成
+随后无论是否存在尚未收到 `xdg_surface.configure` 的 toplevel 几何，都会回写：
 
-**不能。** 当前证据支持“核心实现与针对性回归测试已落地”，不支持“Wayland 全链路已在 Linux、真实 compositor 和真实 Vulkan 驱动上验收”。本文还确认了现有单元测试未覆盖的确定性控制流缺陷。
+- `internal/platform/linux/wayland_scale.go:293-300`
 
-## 2. 高严重度 findings
+因此，当事件按以下顺序到达时：
 
-### 2.1 H1：focus-loss 和普通输入 present 可绕过 hidden/remap 门限
+```text
+当前窗口 400×300
+→ xdg_toplevel.configure(800×600)
+→ fractional/preferred/output scale 变化
+→ xdg_surface.configure(serial)
+```
 
-**证据**
+scale 路径会把 pending 几何重新写成由旧设备尺寸推导的值。后续 `handleXdgSurfaceConfigure` 使用该值决定 resize、ACK 和呈现：
 
-- `internal/platform/linux/window_wayland.go:384-399`：activation 丢失时直接调用 `state.router.present`。
-- `internal/platform/linux/wayland_keyboard.go:107-127`：keyboard leave 也直接调用同一通道。
-- `internal/platform/linux/input_linux.go:264-270`：普通 pointer/key/scroll 等输入通过 `router.present` 呈现。
-- `internal/platform/linux/window_wayland.go:1055-1060`：该通道在 `changed=true` 时直接调用 `renderer.present`，不经过 `renderFrame`、configure ACK 或 `presentWithFrameCallback`。
-- `internal/platform/linux/window_wayland.go:271-277` 的 hidden/awaitingConfigure/framePending 门限只在主 render 路径；`Show` 在 `:844-850` 设置的 remap 等待无法约束上述直接入口。
+- `internal/platform/linux/window_wayland.go:620-648`
 
-**失败场景**
+事件一旦发生上述交错，覆盖行为由源码确定；不同 compositor 是否以及多久产生该顺序，需要协议集成测试验证。
 
-已激活窗口 Hide 后 Show，remap 的 toplevel configure 不含 activated，并先于 `xdg_surface.configure` 被处理。若 `OnFocusLost` 返回 dirty frame，代码会在新 serial ACK 前进行 Vulkan/WSI 呈现，可能向 newly-unmapped surface 提前提交 buffer。Hide 后收到 focus-loss 也存在同类风险。
+**架构结论：** compositor configure 快照、scale 派生几何和已提交几何不能共用一组无代际的 pending 字段。既有的 frame-pending 延迟处理不能代替本次“toplevel configure 已到、xdg_surface configure 未到”的所有权修复。
 
-**架构结论**
+### 2.2 F2：`Frame()` 的跨 goroutine 读取与几何写入不同步
 
-remap 修复在主 render/resize 路径有效，但并非全局有效；“所有实际 commit 都与 frame callback 配对”目前不成立。真实 compositor 是报协议错误、意外 remap 还是表现出其他时序症状，仍需集成测试验证。
+**严重度：中；公开契约与源码确认，未运行 race detector。**
 
-### 2.2 H2：frame pending 期间的 resize/scale 可吞掉 redraw，且新 commit 没有新 callback
+公共接口明确允许从任意 goroutine 调用 `Frame`：
 
-**证据**
+- `internal/platform/contract.go:122-136`
+- `app/application.go:16-24`
+- `app/application.go:89-100`
 
-- `internal/platform/linux/window_wayland.go:275-277`、`:1109-1114`：旧帧 pending 时，render/Waker 只保留 `needsRedraw`。
-- `internal/platform/linux/window_wayland.go:435-443`：`applyPendingResize` 不检查 `framePending`，并无条件清除 `needsRedraw`。
-- `internal/platform/linux/window_wayland.go:495-506`、`:529-536`：`OnResize == nil` 时只呈现已有场景，不调用 `OnRedraw`；成功后 `:553` 又清除 `forcePresent`。
-- `internal/platform/linux/wayland_frame.go:33-35`：pending 时 `requestFrameCallback` 直接返回，但 `:55-58` 仍执行 present，所以新 commit 没有配对的新 callback。
-- 旧 callback 到达后，`internal/platform/linux/wayland_frame.go:78-80` 看到两个 redraw 标记均为 false，不再重绘。
+Wayland 实现无同步读取 `width`、`height` 和 `margin`：
 
-**失败场景**
+- `internal/platform/linux/window_wayland.go:909-917`
 
-旧帧 pending → Waker 请求内容更新 → compositor 发来实际尺寸变化且窗口没有 `OnResize` → resize 呈现旧场景并清除标记 → 已排队内容更新滞留，直到另一次外部唤醒。即使配置了 `OnResize`，pending 期间直接 commit 而没有新 callback 仍表明背压事务未统一。
+主事件线程会在 resize/scale 中写这些字段：
 
-现有 `internal/platform/linux/wayland_window_test.go:758-807` 覆盖 present 失败，不覆盖这一成功路径。
+- `internal/platform/linux/window_wayland.go:500-513`
+- `internal/platform/linux/wayland_scale.go:261-277`
 
-### 2.3 H3：IBus/AT-SPI 先关闭 FD 后无法移除，可能形成 POLLNVAL 忙循环
+`scaleBits` 是 atomic，但不能使另外三个字段及其组合快照具备并发一致性。后台调用与 resize/scale 重叠时，既存在 Go 数据竞争，也可能得到不属于同一几何代际的结果。
 
-**IBus 控制流**
+Wayland 无法提供普通 toplevel 的全局屏幕位置，因此当前返回 `false` 可以是合法能力降级；这并不免除读取过程的线程安全要求。
 
-1. `internal/platform/linux/wayland_app.go:457-470` 先 `Dispatch`，再用 `app.ibus.FD()` 移除 FD。
-2. 接收失败时，`internal/ibus/ibus.go:270-278` 进入 `fail`；`:226-232` 先关闭连接。
-3. `internal/dbus/conn.go:196-200` 关闭后把 FD 设为 `-1`。
-4. `internal/platform/linux/wayland_loop.go:163-166` 对负 FD 直接返回，旧 FD 留在 `pollFDs`。
-5. 额外 FD 只检查 `POLLIN`（`internal/platform/linux/wayland_loop.go:322-328`），不处理 `POLLNVAL`。
+**架构结论：** 后台 goroutine 应读取主线程发布的不可变几何快照，或通过明确同步读取；不应直接读取正在变化的窗口协议状态。
 
-daemon 断开 socket 后，下一轮 `poll(-1)` 可对已关闭 FD 立即返回 `POLLNVAL`；代码既不分发也不清理，于是持续唤醒并形成 CPU 忙循环。
+### 2.3 F3：registry 生命周期使动态 output 增删失效
 
-AT-SPI 也存在相同的“服务先关闭、移除时已经拿不到旧 FD”模式：`internal/platform/linux/atspi_bridge.go:514-522`、`:96-101` 与 `internal/platform/linux/atspi_linux.go:449-456`。
+**严重度：中；proxy 生命周期控制流确认，未做热插拔实机验收。**
 
-**架构结论**
+`bindGlobals` 创建 registry 并注册 listener，但函数返回时会执行：
 
-这不是 prepare/read 缺失导致的，而是 event-source 注册身份与连接关闭所有权不一致。仅在正常路径“先 remove 再 close”不能覆盖异常路径。
+- `internal/platform/linux/wayland_registry.go:797-804`
 
-### 2.4 H4：eventfd `post/close` 存在写入已复用 FD 的竞态
+```go
+defer api.proxyDestroy(registry)
+```
 
-**证据**
+因此，初次 discovery 后不能再通过该 proxy 接收后续的 `global` 和 `global_remove`。已有的 `handleGlobal`、`handleGlobalRemove` 和 output map 能处理直接调用及 fake 事件，但真实运行期间的动态增删没有持续的事件来源：
 
-- `internal/platform/linux/wayland_loop.go:183-196`：`post` 在 `cmdMu` 内保存 `wakeFD`，解锁后才执行写系统调用。
-- `internal/platform/linux/wayland_loop.go:372-385`：`close` 可把同一 FD 设为 `-1` 并关闭，但不等待已经解锁的 writer。
-- `internal/platform/linux/wayland_app.go:127-132`、`:549-559`：`app.loop` 的读写没有统一同步；loop 为 nil 时还会在调用 goroutine 直接执行命令。
+- `internal/platform/linux/wayland_registry.go:679-784`
 
-**失败场景**
+初始已连接 output 之间的 surface enter/leave 和 scale 回退不受此结论影响。缺口发生在运行中新增或移除 output：新 output 未绑定，旧 output 的移除通知也无法进入现有清理路径。
 
-后台命令保存 FD → 主线程结束并 close → 其他线程打开的新资源复用该整数 → 后台向新资源写入 8 字节。即使 FD 尚未复用，写错误也被忽略。该竞态与已经修复的 write EINTR 是不同问题，现有 EINTR 回归测试不能覆盖它。
+**架构结论：** registry 是 application 级长生命周期对象，不应只作为一次性 discovery helper。其销毁应与 globals/display teardown 统一，并明确 output 代际和窗口 activeOutputs 清理顺序。
 
-## 3. 中低严重度 findings
+## 3. 架构合理性判断
 
-### 3.1 M1：SUBOPTIMAL 重建后没有在新交换链上强制呈现
+### 3.1 后端与共享边界：合理
 
-- `internal/platform/linux/vulkan_linux.go:988-1002`：当前帧成功后，若 `swapchainSuboptimal`，调用 `recreateSwapchain()` 随即返回 `nil`，不会再次 acquire/submit/present。
-- `internal/platform/linux/vulkan_linux.go:1016-1049`：acquire/present 返回 SUBOPTIMAL 时完成当前帧并设置标志，这部分符合 WSI 语义。
-- `internal/platform/linux/api_linux_test.go:704-731`：测试明确断言 `submissions == 1`，把“旧交换链呈现一次、重建后不呈现”固定为预期。
-- `docs/wayland/01-architecture-overview.md:249-253` 则要求 swapchain 重建后即使 clean scene 也必须重新呈现已有场景。
+Wayland-first、强制后端不静默降级、X11 后备，以及共享场景、输入路由和 Vulkan 核心的边界可以继续保留。PureGo 动态绑定也不需要因当前问题改变。
 
-新交换链在下一次外部 redraw/resize/scale 前没有被呈现，实现与文档不能同时成立。是否出现旧尺寸帧、空白或闪烁取决于真实 WSI/compositor，本次未实机复现。
+### 3.2 事件循环：主干合理，继续收敛标准读取流程
 
-### 3.2 M2：Wayland 的 IBus 两秒超时实际不会触发
+eventfd 命令队列、主线程执行、FD 异常 readiness、flush POLLOUT 和最近 deadline 调度是合适的职责划分。后续 prepare/read 迁移应保持这些已有行为，重点补齐 `prepare_read` 与 `read_events/cancel_read` 的配对，而不是重新引入平行 ticker 或另一套 FD 所有权。
 
-- `internal/ibus/ibus.go:348-362` 为按键记录 deadline，只有 `Expire`（`:315-329`）会释放未答按键并关闭 bus。
-- Wayland 固定 `step(-1)`（`internal/platform/linux/wayland_app.go:176`），IBus 分发仅调用 `Dispatch/checkInputMethod`（`:457-461`），没有接入 `Deadline/Expire`。
-- X11 已在 `internal/platform/linux/window_linux.go:223-235`、`:417-425` 接入对应超时机制。
+### 3.3 Surface/configure/呈现：事务方向正确，几何所有权仍需集中
 
-当 daemon hang 但不断开 socket 时，已发给 IME 的按键可无限等待，不会按既有设计回退为直接输入。
+scene update 与 present/commit 分离、clean/forced present、frame callback 配对以及 frame-pending 时延迟提交，都是正确主干。F1 说明 configure 几何尚不是完整事务：serial 到达前的 toplevel 状态也必须有明确 owner，不能只保护已经进入 `resizeDeferred` 的情况。
 
-### 3.3 M3：repeat 没有按键代际，旧命令可混入同键的新按压
+完整显式状态机仍属于目标架构差距，不应把每一次协议交错都继续转换成新的布尔特判。
 
-- `internal/platform/linux/wayland_keyboard.go:343-400` 使用 timer/ticker goroutine 产生并排布 repeat。
-- 排队后的执行检查 `:403-410` 只比较 scancode 和焦点窗口，没有 press generation。
+### 3.4 Vulkan WSI：恢复边界合理
 
-若旧 repeat 已入队，同一批后续输入处理“release → 同 scancode press”，下一轮旧命令会看到相同 scancode/焦点并通过校验，产生一次不属于新按压代的 repeat。销毁保护存在，不能把该问题误写为“销毁后必然访问已释放窗口”。
+有界恢复、swapchain 重建后的再次呈现以及资源集中销毁符合目标设计。当前 findings 不要求调整 Vulkan 主干；后续重点是 validation/lavapipe 和真实驱动验收。
 
-### 3.4 M4：fractional scale 往返截断逻辑尺寸，产生一像素漂移
+### 3.5 缩放与多输出：主路径合理，动态生命周期未闭合
 
-- `internal/platform/linux/wayland_scale.go:236-248` 先由设备尺寸反算浮点逻辑尺寸，随后用 `int(logicalW/H)` 截断。
-- `:280-285` 把截断值写入 pending 尺寸，最终由 `internal/platform/linux/window_wayland.go:451-456` 固化到保存的逻辑尺寸。
+fractional-scale + viewport、整数 preferred scale 和 output scale 的优先级合理。F1 涉及几何事务，F3 涉及 output 生命周期；二者都不能仅靠增加缩放舍入测试覆盖。
 
-确定示例：401 logical px 从 1.0 到 1.25 得到 501 device px；回到 1.0 时反算为 400.8，当前代码截成 400，窗口由 401 缩为 400。现有 `internal/platform/linux/wayland_window_test.go:1769-1842` 使用恰好整除的 400 宽度，没有覆盖该情况。
+## 4. 尚未完成的目标架构能力
 
-### 3.5 M5：只有 fractional-scale manager、没有 viewporter 时表面尺寸错误
+以下是目标差距，不与第 2 节的确定性实现问题混为一谈：
 
-- `internal/platform/linux/wayland_scale.go:145-158` 独立创建 fractional-scale 和 viewport，允许 `fractionalScale != 0 && viewport == 0`。
-- 此组合下 `:246-262` 按分数 scale 分配 buffer，`:274-275` 却设置 `ceil(scale)` 的整数 buffer scale，且没有 viewport destination 恢复逻辑尺寸。
+| 能力 | 当前缺口 |
+| :--- | :--- |
+| 后端探测与错误链 | 自动后备仍丢弃 Wayland 初始化原因，选择阶段的全局 hook/服务启动与目标约束尚未收敛 |
+| libwayland prepare/read 标准流程 | 尚未形成完整 prepare/read/cancel 配对 |
+| 显式 surface/configure 状态机 | serial、ACK、几何和提交事务仍需进一步集中 |
+| 通用 event-source 抽象 | FD 与 callback 的具体实现尚未统一为带 Interest/Dispatch 契约的接口 |
+| 桌面服务公共生命周期 | 协议核心部分共享，连接和重连状态机仍有后端分叉 |
+| 托盘/后台常驻 | 完整 keep-alive 产品契约尚未实现 |
+| 真实环境验收 | headless compositor、Vulkan validation/lavapipe、真实桌面与性能矩阵未完成 |
 
-例如 scale=1.25 时，buffer 宽为 1.25W、buffer scale 为 2，实际 surface 宽成为 0.625W，而 geometry 仍按 W 计算（`internal/platform/linux/window_wayland.go:195-213`）。这是有效协议全局组合下的确定性尺寸错误。
+`01-architecture-overview.md` 已同步当前基线。后续实施任务完成后，应再次更新三份 Wayland 文档的审查基准和状态，避免已解决问题重新成为待办。
 
-### 3.6 L1：正常关闭遗漏 IBus 连接释放
+## 5. 本地验证记录
 
-`internal/platform/linux/wayland_app.go:532-537` 只移除 FD 并将 `app.ibus=nil`，未调用 `Bus.Close`；真正关闭 socket、释放 pending keys 的代码位于 `internal/ibus/ibus.go:221-239`。
-
-进程直接退出时由 OS 兜底，但在同进程重复运行/测试或需要保留其他服务连接时，会泄漏 FD，pending key 也不会走正常释放路径。
-
-## 4. 文档与实现状态复核
-
-### 4.1 当前状态矩阵
-
-| 能力 | 复核状态 | 证据边界 |
-| :--- | :--- | :--- |
-| Wayland-First、X11 override 与自动后备 | 代码路径已实现 | `internal/platform/linux/backend_select.go:18-51`；强制 Wayland 不降级，X11 选择不等于已连接 X server |
-| PureGo 动态绑定 | 已实现 | libwayland、libc、Vulkan 通过 purego 绑定；Linux/amd64 零 CGO 交叉编译通过 |
-| 共享 Vulkan 与 eventRouter | 已实现主干 | 跨后端复用存在，不代表协议时序已等价验收 |
-| eventfd 基础队列与 EINTR | **部分实现** | 先入队后唤醒、EINTR 重试已落实；`post/close` 竞态见 H4 |
-| flush POLLOUT 背压恢复 | 该路径已实现 | 额外 FD 的 ERR/HUP/NVAL 和关闭所有权未统一，见 H3 |
-| prepare/read 标准流程 | 未完整实现 | 当前是 dispatchPending + poll + displayDispatch；该差距本身不等于已证明当前协议错误 |
-| 主循环 timer/键盘 repeat | 未实现目标架构 | 独立 goroutine 仍存在，且有代际问题 M3；IBus deadline 也未接入 M2 |
-| 初始 configure 与 Hide/Show remap | **主路径实现** | 初始/remap 测试存在；直接 present 可绕过门限 H1 |
-| scene update 与 present/commit 分离 | **主路径实现** | clean/forced 和失败事务测试存在；legacy 直接 present 未统一 H1 |
-| frame callback 与 commit 配对 | **未全局实现** | 主 render 路径有配对和失败清理；直接输入及 pending resize 可绕过 H1/H2 |
-| frame-margin 错误传播 | 已实现并有回归测试 | `TestWaylandFrameMarginErrorsStopTransitions` |
-| oldSwapchain 唯一销毁 | 已实现并有回归测试 | `internal/platform/linux/vulkan_linux.go:666-677`、`:1186-1193`；成功/失败路径均有测试 |
-| OUT_OF_DATE 重建后重试 | 代码路径已实现 | `internal/platform/linux/vulkan_linux.go:988-1008`；acquire/present 行为测试仍不足 |
-| SUBOPTIMAL 恢复 | **部分实现** | 当前帧完成和重建已落实；新交换链强制呈现未落实 M1 |
-| fractional/整数缩放 | **主路径存在，仍有正确性缺口** | 往返截断 M4、缺少 viewporter 的组合 M5 |
-| 桌面协议核心共享 | 部分实现 | 协议核心可共享，FD、重连和显示连接生命周期仍有分叉 H3 |
-| 托盘/后台常驻 | 未完整实现 | `Run` 仍以 `hasWindows()` 为条件，不能宣称完整 keep-alive |
-| Linux 平台测试进入 CI | 未完成 | `.github/workflows/ci.yml:19-55` 只做 Linux vet；`:71-81` 的 Ubuntu 测试不包含 `internal/platform/linux` |
-| 真实 Wayland/Vulkan 验收 | 未完成 | mock/offscreen 测试不能替代 compositor、WSI、validation layer 和桌面矩阵 |
-
-### 4.2 六项修复应如何解读
-
-| 修复 | 提交与测试证据 | 本次复核结论 |
-| :--- | :--- | :--- |
-| eventfd 写入 EINTR | `dd07f2c`；`TestWaylandLoopPostWakeErrors` | 该修复真实存在，但不覆盖 H4 关闭竞态 |
-| oldSwapchain 唯一销毁 | `b8c4189`；成功/失败销毁计数测试 | 控制流符合唯一销毁目标 |
-| SUBOPTIMAL 当前帧后重建 | `2f978a9`；两个 SUBOPTIMAL 测试 | 重建已实现，强制呈现未闭合 M1 |
-| frame-margin 错误传播 | `de1e05f`；`TestWaylandFrameMarginErrorsStopTransitions` | 已在相关 configure/decoration 路径传播 |
-| remap configure 序列 | `8fcd62a`；初始/remap/关闭/隐藏 resize 测试 | 主路径有效，入口覆盖不完整 H1 |
-| scene/present 与回调事务 | `e5f8700`；clean/forced、resize/scale、失败事务测试 | 拆分方向正确，但 H1/H2 证明尚未形成全局事务 |
-
-因此，正确表述是：**六项均有实际代码工作和针对性测试，不等于六项都已完整满足架构契约，也不等于已在真实环境验收。**
-
-### 4.3 全仓库验收文档仍有直接矛盾
-
-`docs/conformance.md:72-80` 把 “Native Wayland” 列在 “Not done” 下，并声称 “Only XCB is spoken; a Wayland session runs through XWayland”。这与当前源码及 `docs/wayland` 直接矛盾。
-
-应改为“原生 Wayland 主路径已实现，但尚未纳入完整 conformance/实机矩阵”，并补充 Wayland 专用场景；不要用继续声称“未实现”来表达“尚未验收”。
-
-## 5. 架构合理性分项判断
-
-### 5.1 后端与共享边界：合理
-
-后端选择集中，Wayland/X11 专属协议与共享渲染、输入核心的划分符合维护需求。桌面集成采用“协议核心共享、FD 与连接生命周期由后端适配”的边界也合理，不应追求不真实的 100% 共享。
-
-### 5.2 事件循环：方向合理，所有权契约不合格
-
-eventfd + 命令队列适合跨 goroutine 唤醒，flush POLLOUT 背压也符合非阻塞 socket 模型。但 H3/H4 表明，FD 注册身份、writer 生命周期和关闭顺序必须先修复，再讨论接口美化。
-
-prepare/read 应按 libwayland 契约补齐；同时应区分“目标流程未实现”和“当前已经发生协议错误”，没有真实时序证据时不应混为一谈。
-
-### 5.3 Surface/configure/呈现：关键拆分正确，但尚未单一化
-
-将场景更新与强制提交分离是本轮最重要的架构修正。clean scene 不再自动等于无需 commit，能够覆盖 Show、resize、scale 和资源重建等非内容驱动呈现。
-
-H1/H2 说明当前仍是“主路径事务 + legacy 直接 present”的混合结构。继续增加布尔特判不能替代统一入口；所有 input/focus/redraw/resize/configure 都应进入同一个窗口呈现协调器，并明确 pending frame、queued redraw 和 configure 代际。
-
-### 5.4 Vulkan WSI：恢复策略合理，SUBOPTIMAL 契约需补齐
-
-当前帧完成后再处理 SUBOPTIMAL、OUT_OF_DATE 有限次重试、device/surface loss 进入恢复，以及 oldSwapchain 唯一销毁，都是合理边界。问题是 SUBOPTIMAL 重建后的强制呈现没有闭合，而不是整体恢复路线错误。
-
-### 5.5 验证架构：mock 有价值，但当前覆盖与执行都不足
-
-当前 fake 能覆盖许多手工难以稳定注入的错误，适合保护控制流和资源计数。本文 findings 也说明，仅记录回调次数或只覆盖主 render 路径，会把旁路入口和状态组合留在测试之外。
-
-mock 不能证明真实 compositor 的 Hide/Show、configure 合并和不可见时序，也不能证明新 swapchain 的可见结果、GNOME/KDE/Sway 的差异、多屏/IME/AT-SPI 的端到端行为或实际性能。
-
-## 6. 本地验证记录
-
-审查环境：Darwin/arm64，Go `go1.26.4`；没有可用的 Linux、Docker、Podman 或 QEMU 运行环境。
-
-以下命令成功：
+审查环境为 macOS，未提供真实 Linux/Wayland/Vulkan 运行环境。以下命令成功：
 
 ```sh
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-  go test -c -o /tmp/viva-linux-platform.test ./internal/platform/linux
+  go test -c -o /tmp/viva-linux-platform-review.test ./internal/platform/linux
 
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-  go test -c -o /tmp/viva-linux-app.test ./app
-
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-  go vet ./app ./internal/platform/...
+  go vet ./internal/platform/... ./app
 ```
 
 这些结果只证明相关 Linux 测试可交叉编译、静态检查通过。本次没有执行 Linux 测试二进制、race detector、compositor、Vulkan WSI/validation 或真实桌面/性能验收。
 
-## 7. 建议优先级
+## 6. 建议优先级
 
-### P0：先修正确性和所有权
+1. **P0：修正几何与线程契约**：完成 F1、F2，并用协议顺序和并发测试固定行为。
+2. **P1：补齐 output 生命周期与文档现状**：完成 F3，同步目标文档的状态表。
+3. **P2：继续结构性收敛**：后端探测与错误链、prepare/read、统一 event-source、显式 surface/configure 状态机。
+4. **P3：补真实验证层次**：headless compositor、validation/lavapipe、真实 GNOME/KDE/Sway 和性能矩阵。
 
-1. **统一所有 present 入口**：focus-loss、pointer/key/scroll/drop 不得绕过 hidden/remap/framePending 和 ACK/callback 事务；补 H1 时序测试。
-2. **修复 pending resize/scale**：保留 queued redraw，明确一次 commit 对应的新 callback，补 H2 成功路径测试。
-3. **统一 FD 关闭顺序**：event-source 持有稳定注册身份，异常路径也能 remove；处理 ERR/HUP/NVAL，补 IBus/AT-SPI 断开和忙循环回归测试。
-4. **同步 eventfd writer 与 close**：关闭后 post 不得写旧 FD，也不得在调用 goroutine 直接执行平台命令；补并发/race 测试。
-
-### P1：闭合现有协议和输入契约
-
-5. SUBOPTIMAL 重建后在有限恢复边界内强制再呈现，并更新“只提交一次”的测试预期。
-6. 将 IBus deadline/Expire 和 repeat 纳入主循环调度，引入 press generation；正常关闭调用 `Bus.Close`。
-7. 修复 scale 往返舍入，并在缺少 viewporter 时禁用 fractional 路径或采用协议正确的回退。
-8. 为本文每项 finding 增加行为测试，并在 Linux CI 真正执行 `go test ./internal/platform/linux`。
-
-### P2：完成架构与验收收敛
-
-9. 收敛显式 surface/configure 状态机、通用 event source 和桌面服务重连生命周期。
-10. 建立 headless compositor、lavapipe/validation、真实 GNOME/KDE/Sway 矩阵，覆盖多屏、缩放、IBus、拖放、AT-SPI 和性能。
-11. 同步 `docs/conformance.md` 与 `01` 的状态表，区分“源码存在、Linux 测试通过、真实环境验收”三个证据等级。
-
-## 8. 最终判断
-
-当前实现可以描述为：**原生 Wayland 主干和关键修复已落地，宏观架构合理，但呈现事务、FD 生命周期、输入调度和缩放仍存在明确正确性缺口。**
-
-当前实现不能描述为：**目标架构全部完成、六项修复均已闭环、所有 commit 均已与 frame callback 配对，或 Linux/Wayland/Vulkan 已完整验收。**
+最终判断：**保留现有架构主干；当前实现可称为主路径已落地，但不能称为所有协议交错、公开并发契约和动态多输出场景已经闭环。**
