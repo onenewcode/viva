@@ -88,7 +88,7 @@ type waylandApplication struct {
 
 	status             *statusNotifier
 	desktop            *desktopWatch
-	desktopFailed      bool
+	desktopRetry       desktopRetry
 	watchHookInstalled bool
 	ibus               waylandInputMethod
 	ibusFD             int32
@@ -222,7 +222,11 @@ func (app *waylandApplication) closeAll() {
 
 // OpenWindow creates and displays a new Wayland-backed window.
 func (app *waylandApplication) OpenWindow(config platform.Config) (platform.Window, error) {
-	return app.openWindow(config)
+	win, err := app.openWindow(config)
+	if err == nil {
+		app.retryDesktopWatch()
+	}
+	return win, err
 }
 
 func (app *waylandApplication) timeNow() time.Time {
@@ -245,6 +249,10 @@ func (app *waylandApplication) pollTimeout(now time.Time) int32 {
 	app.mu.Unlock()
 	if repeatActive && (next.IsZero() || repeatDeadline.Before(next)) {
 		next = repeatDeadline
+	}
+	if deadline, waiting := app.desktopRetry.deadline(platform.DesktopWatched(), app.desktop != nil); waiting &&
+		(next.IsZero() || deadline.Before(next)) {
+		next = deadline
 	}
 	if next.IsZero() {
 		return -1
@@ -269,6 +277,7 @@ func (app *waylandApplication) processDeadlines(now time.Time) {
 		app.checkInputMethod()
 	}
 	app.runKeyRepeat(now)
+	app.syncDesktopWatch()
 }
 
 // Run executes the application start callback and drives the Wayland main loop.
@@ -289,7 +298,7 @@ func (app *waylandApplication) Run(start platform.ApplicationStart) error {
 
 	platform.SetWatchHook(func() {
 		app.post(func() {
-			app.syncDesktopWatch()
+			app.retryDesktopWatch()
 		})
 	})
 	app.watchHookInstalled = true
@@ -451,23 +460,29 @@ func (app *waylandApplication) serveStatus() {
 
 func (app *waylandApplication) syncDesktopWatch() {
 	wanted := platform.DesktopWatched()
-	switch {
-	case wanted && app.desktop == nil && !app.desktopFailed:
+	if !wanted {
+		if app.desktop != nil {
+			app.stopDesktopWatch()
+		}
+		app.desktopRetry.reset()
+		return
+	}
+	if app.desktop == nil && app.desktopRetry.ready(app.timeNow()) {
 		app.startDesktopWatch()
-	case !wanted && app.desktop != nil:
-		app.stopDesktopWatch()
 	}
 }
 
+func (app *waylandApplication) retryDesktopWatch() {
+	app.desktopRetry.reset()
+	app.syncDesktopWatch()
+}
+
 func (app *waylandApplication) startDesktopWatch() {
-	desktopState.Lock()
-	gone := desktopState.portalGone
-	desktopState.Unlock()
-	if gone {
-		app.desktopFailed = true
+	if desktopPortalGone() {
+		app.desktopRetry.reset()
 		return
 	}
-	conn, err := dbus.DialSession()
+	conn, err := dialDesktop()
 	if err == nil {
 		err = addMatch(conn, settingsMatch)
 	}
@@ -475,22 +490,27 @@ func (app *waylandApplication) startDesktopWatch() {
 		if conn != nil {
 			conn.Close()
 		}
-		app.desktopFailed = true
+		app.desktopRetry.fail(app.timeNow())
 		return
 	}
-	values, missing := readPortalValues(conn)
-	if missing {
+	values, result := readPortalValues(conn)
+	if result != portalReadOK {
 		conn.Close()
-		app.desktopFailed = true
-		desktopState.Lock()
-		desktopState.portalGone = true
-		desktopState.Unlock()
+		if result == portalReadUnsupported {
+			desktopState.Lock()
+			desktopState.portalGone = true
+			desktopState.Unlock()
+			app.desktopRetry.reset()
+		} else {
+			app.desktopRetry.fail(app.timeNow())
+		}
 		return
 	}
 	change := replacePortal(values, os.Getenv)
 	desktopState.Lock()
 	desktopState.watching = true
 	desktopState.Unlock()
+	app.desktopRetry.reset()
 	app.desktop = &desktopWatch{conn: conn}
 	if app.loop != nil {
 		app.loop.addExtraFD(int32(conn.FD()), app.serveDesktop)
@@ -499,14 +519,15 @@ func (app *waylandApplication) startDesktopWatch() {
 }
 
 func (app *waylandApplication) stopDesktopWatch() {
-	if app.desktop == nil {
+	watch := app.desktop
+	if watch == nil {
 		return
 	}
-	if app.loop != nil {
-		app.loop.removeExtraFD(int32(app.desktop.conn.FD()))
-	}
-	app.desktop.conn.Close()
 	app.desktop = nil
+	if app.loop != nil {
+		app.loop.removeExtraFD(int32(watch.conn.FD()))
+	}
+	watch.conn.Close()
 	desktopState.Lock()
 	desktopState.watching = false
 	desktopState.Unlock()
@@ -520,7 +541,7 @@ func (app *waylandApplication) serveDesktop() {
 	messages, err := watch.conn.Receive()
 	if err != nil {
 		app.stopDesktopWatch()
-		app.desktopFailed = true
+		app.desktopRetry.fail(app.timeNow())
 		return
 	}
 	var change settingsChange
@@ -539,6 +560,7 @@ func (app *waylandApplication) closeDesktop() {
 	if app.desktop != nil {
 		app.stopDesktopWatch()
 	}
+	app.desktopRetry.reset()
 }
 
 func (app *waylandApplication) announce(change settingsChange) {

@@ -1,7 +1,7 @@
 # Viva Linux/Wayland 架构与开发契约
 
 - 更新日期：2026-10-30
-- 审查基线：`4a2b96d` + Task 11 当前 diff
+- 审查基线：`61a78c8` + Task 12 当前 diff
 - 用途：约束后续开发；不记录已完成的修复历史
 - 当前复核：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 - 未完成任务：[task.md](task.md)
@@ -86,8 +86,7 @@ registry 在 application 生命周期内持续存在。除 output 热插拔外�
 | 优先级 | 缺口 | 任务 |
 | :--- | :--- | :--- |
 | P1 | Weston/Vulkan 集成测试已添加，原生 race/headless/lavapipe 尚未执行 | Task 11 |
-| P2 | desktop watcher 的临时失败会永久停止恢复 | Task 12 |
-| P3 | 完整 compositor、真实桌面、驱动和性能矩阵未完成 | Task 8 |
+| P3 | 完整 compositor、真实桌面/服务重连、驱动和性能矩阵未完成 | Task 8 |
 
 Task 8 的编号沿用现有清单，不因后插入任务而重排。
 
@@ -105,4 +104,4 @@ Task 8 的编号沿用现有清单，不因后插入任务而重排。
 
 ## 5. 推荐顺序
 
-按 **Task 11 → Task 12 → Task 8** 推进。桌面服务公共抽象应在重连行为稳定后再抽取；keep-alive 先明确产品契约再实施。
+按 **Task 11 → Task 8** 推进。桌面服务公共抽象应在真实重连行为验收后实施；keep-alive 先明确产品契约再实施。

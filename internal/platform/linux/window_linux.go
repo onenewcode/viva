@@ -151,9 +151,11 @@ type linuxApplication struct {
 	ibusTried bool
 
 	// desktop is the connection that delivers the desktop's settings while someone
-	// watches them (desktop_bus_linux.go); desktopFailed says it cannot be had.
-	desktop       *desktopWatch
-	desktopFailed bool
+	// watches them. Retry state is owned by this event loop.
+	desktop               *desktopWatch
+	desktopRetry          desktopRetry
+	desktopRetryRequested atomic.Bool
+	now                   func() time.Time
 
 	// live is every window that can still be posted to, for requests that come
 	// from another goroutine (see post); the loop's own slice is not safe to read
@@ -205,7 +207,10 @@ func (application *linuxApplication) Run(start platform.ApplicationStart) error 
 	defer application.closeDesktop()
 	// Whoever starts to watch the appearance, from any goroutine, wakes the loop to open the
 	// connection that hears the desktop.
-	platform.SetWatchHook(func() { application.post(commandDesktop) })
+	platform.SetWatchHook(func() {
+		application.desktopRetryRequested.Store(true)
+		application.post(commandDesktop)
+	})
 	defer platform.SetWatchHook(nil)
 	if err := start(application); err != nil {
 		application.closeAll()
@@ -371,6 +376,7 @@ func (application *linuxApplication) OpenWindow(config platform.Config) (platfor
 	if os.Getenv("VIVA_TEST_AUTOCLOSE") != "" {
 		win.postClientMessage(win.closeAtom, 0)
 	}
+	application.retryDesktopWatch()
 	return &nativeWindow{state: state}, nil
 }
 
@@ -412,17 +418,22 @@ func (application *linuxApplication) rebuildPoll() {
 	}
 }
 
-// pollTimeout is how long the loop may sleep: forever, unless a key is waiting
-// for the input method, which is given a bounded time to answer.
+// pollTimeout is how long the loop may sleep: forever, unless the input method
+// or a desktop retry has a bounded deadline.
 func (application *linuxApplication) pollTimeout() int32 {
-	if application.ibus == nil {
-		return -1
+	timeout := int32(-1)
+	if application.ibus != nil {
+		if deadline, waiting := application.ibus.Deadline(); waiting {
+			timeout = int32(max(time.Until(deadline).Milliseconds()+1, 0))
+		}
 	}
-	deadline, waiting := application.ibus.Deadline()
-	if !waiting {
-		return -1
+	if deadline, waiting := application.desktopRetry.deadline(platform.DesktopWatched(), application.desktop != nil); waiting {
+		retryTimeout := int32(max(deadline.Sub(application.timeNow()).Milliseconds()+1, 0))
+		if timeout < 0 || retryTimeout < timeout {
+			timeout = retryTimeout
+		}
 	}
-	return int32(max(time.Until(deadline).Milliseconds()+1, 0))
+	return timeout
 }
 
 // takeHeld returns the event read ahead, once.

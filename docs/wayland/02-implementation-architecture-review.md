@@ -1,31 +1,20 @@
 # Linux/Wayland 当前实现复核
 
 - 日期：2026-10-30
-- 基线：`4a2b96d` + Task 11 当前 diff
+- 基线：`61a78c8` + Task 12 当前 diff
 - 类型：只读源码复核
 - 开发契约：[01-architecture-overview.md](01-architecture-overview.md)
 - 后续任务：[task.md](task.md)
 
 ## 1. 结论
 
-**宏观架构合理，不需要推倒重写；当前剩一项实现问题。** 主循环的 prepare/read、surface/configure 事务、frame-callback 背压、系统 API 的主线程调用边界和 Vulkan 恢复边界可以保留。后续工作应完成桌面服务恢复和真实验证，而不是再次 redesign 已完成的主干。
+**宏观架构合理，不需要推倒重写；当前 diff 没有保留的源码 finding。** 主循环的 prepare/read、surface/configure 事务、frame-callback 背压、系统 API 的主线程调用边界、Vulkan 恢复边界和桌面服务重连边界可以保留。后续工作应完成真实验证，而不是再次 redesign 已完成的主干。
 
 “源码确认”表示控制流中存在问题，不表示已在真实 Linux/compositor/GPU 上复现可见症状。
 
 ## 2. 当前 findings
 
-### F1（中等）：desktop watcher 的临时失败通过两条锁存路径永久禁止恢复
-
-`syncDesktopWatch` 仅在 `!desktopFailed` 时连接（`internal/platform/linux/wayland_app.go:397`）。连接或接收失败会设置该标记：
-
-- `internal/platform/linux/wayland_app.go:419`
-- `internal/platform/linux/wayland_app.go:465`
-
-另一条独立路径在初始 portal 读取失败时设置进程级 `desktopState.portalGone`：`internal/platform/linux/wayland_app.go:426`。该锁存会阻止后续启动（`internal/platform/linux/wayland_app.go:408`），而 `NameHasNoOwner`、`NoReply` 等当前归为 missing 的错误也可能是服务重启期间的瞬时状态（`internal/platform/linux/portal_unix.go:45`）。X11 使用同一全局锁存（`internal/platform/linux/desktop_bus_linux.go:37`）。
-
-当前两条路径都没有恢复机制。一次瞬时 D-Bus/portal 故障会使 watcher 永久退出，不符合后续配置变化或新窗口可触发恢复的目标。
-
-**处理：** Task 12。同时覆盖 `desktopFailed` 和 `portalGone`，区分永久 unsupported 与临时 disconnected，为临时故障增加退避重试。修改共享锁存时必须同步验证 Wayland 与 X11，并覆盖 portal-read 失败后的恢复。
+当前 diff 没有已知源码阻断项。真实 session bus/portal 的终止、重启和设置更新仍未执行，不能用 fake 回归测试替代 Task 8 的真实服务恢复验收。
 
 ## 3. 已核对的主干
 
@@ -45,16 +34,17 @@
 
 ```sh
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-  go test -c -o /tmp/viva-wayland-task11.test ./internal/platform/linux
+  go test -c -o /tmp/viva-wayland-task12.test ./internal/platform/linux
 
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
   go vet ./internal/platform/... ./app
 
 git diff --check
 go test ./internal/platform/...
+go test -race ./internal/platform/...
 ```
 
-当前主机 platform 测试为 302 个通过。新增 Weston/Vulkan 集成入口覆盖初始映射、Hide/Show、maximize/restore 和 compositor 断开，但仅完成交叉编译；原生 race、headless compositor 和 lavapipe/validation 均留待另一台 Linux 机器执行，Task 11 不因测试入口存在而关闭。未查询本基线的 CI 运行结果，也未修改 CI。上述成功不能作为当前 finding 已排除或真实闪烁已修复的证据。
+当前主机 platform 测试为 302 个通过，race 为 300 个通过；全仓普通/race 均只有既有 `app/TestDesktopThemeDetectionAndStyling` 失败（KDE/GNOME 样式识别为 0）。Task 12 新增 fake D-Bus 回归，覆盖 Wayland 与 X11 的 dial/portal-read/receive 临时失败恢复、显式即时重试、退避上限、永久 unavailable 和单一 FD source；这些 Linux 测试仅完成 amd64/arm64 交叉编译，未在原生 Linux/race 下执行。Weston/Vulkan 集成入口同样只完成交叉编译，原生 headless、lavapipe/validation 和真实服务重连留待另一台 Linux 机器执行。未查询本基线的 CI 运行结果，也未修改 CI。上述成功不能作为真实桌面、闪烁或服务恢复已验收的证据。
 
 ## 5. 后续记录方式
 
