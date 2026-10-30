@@ -84,11 +84,7 @@ registry 在 application 生命周期内持续存在。除 output 热插拔外�
 
 ## 3. 当前开发缺口
 
-| 优先级 | 缺口 | 任务 |
-| :--- | :--- | :--- |
-| P3 | 完整 compositor、真实桌面/服务重连、驱动和性能矩阵未完成 | Task 8 |
-
-Task 11 已在 KWin 与 Weston 两个 headless compositor 上完成原生验收，结果记录在 [02-implementation-architecture-review.md](02-implementation-architecture-review.md)。Task 8 的编号沿用现有清单，不因后插入任务而重排。
+当前任务清单已清空。Task 11 在 KWin 与 Weston 两个 headless compositor 上完成原生验收；Task 8 已在本机可执行范围内完成 scale、多输出启动、事件交错和性能测量，GNOME/Sway/IBus、真实 portal 重启、device loss 注入和运行时 output 热插拔等受限项记录在 [02-implementation-architecture-review.md](02-implementation-architecture-review.md) §4.5，不声称已验证。
 
 ## 4. 验证要求
 
@@ -100,8 +96,8 @@ Task 11 已在 KWin 与 Weston 两个 headless compositor 上完成原生验收�
 4. GNOME、KDE、Sway/wlroots 的真实桌面与驱动矩阵；
 5. 空闲唤醒、resize 延迟、frame 背压和 GPU wait 性能。
 
-交叉编译、vet 和 fake 测试不能替代对应的真实验证。当前 CI 虽配置了原生 Linux 单元测试任务，但具体提交的 CI 结果仍需单独确认。Task 11 已在 KWin 与 Weston 两个 headless compositor 上完成第 1–3 层的最小验收，其余环境仍按本节分层记录。
+交叉编译、vet 和 fake 测试不能替代对应的真实验证。当前 CI 虽配置了原生 Linux 单元测试任务，但具体提交的 CI 结果仍需单独确认。Task 11 已在 KWin 与 Weston 两个 headless compositor 上完成第 1–3 层的最小验收；Task 8 补了第 2–3 层的 scale、多输出启动、事件交错和进程内性能测量，第 4 层的真实 GNOME/Sway 和受限服务项仍按 §4.5 记录为限制。
 
 ## 5. 推荐顺序
 
-Task 11 已关闭，当前按 **Task 8** 推进。桌面服务公共抽象应在真实重连行为验收后实施；keep-alive 先明确产品契约再实施。
+Task 11 与 Task 8 已关闭。受限环境项（GNOME/Sway/IBus、真实 portal/session bus 重启、device loss 注入、运行时 output 热插拔）需要解锁的真实会话或可控测试机，验证后再另开任务。桌面服务公共抽象应在真实重连行为验收后实施；keep-alive 先明确产品契约再实施。

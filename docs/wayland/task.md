@@ -1,11 +1,11 @@
 # Wayland 未完成任务
 
 - 更新日期：2026-10-30
-- 基线：`4e77606` + Task 11 Weston 复跑与 remap 修复
+- 基线：`acf95b2` + Task 8 可用环境矩阵
 - 开发契约：[01-architecture-overview.md](01-architecture-overview.md)
 - 当前 findings：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 
-本清单只保留未完成事项。Task 8 沿用原编号；后续任务从 Task 9 递增，不重排现有任务。P1 的 Task 11 已完成并从本清单移除，原生验收证据见 [02-implementation-architecture-review.md](02-implementation-architecture-review.md)。
+本清单只保留未完成事项。P1 的 Task 11 与 P3 的 Task 8 已完成并从本清单移除；Task 8 在受限环境中无法执行的项目（GNOME/Sway/IBus、真实 portal/session bus 重启、device loss 注入、运行时 output 热插拔）作为限制记录在 [02-implementation-architecture-review.md](02-implementation-architecture-review.md) §4.5，不声称已验证。
 
 ## 执行规则
 
@@ -16,21 +16,8 @@
 5. 同步更新三份文档的基线、findings 和验证证据；完成项从当前清单删除，不保留修复流水账。
 6. 原生单元测试、race、headless compositor、Vulkan validation 和真实桌面结果分别记录，不能互相替代。
 
-## P3：完成完整验收矩阵
-
-### Task 8：补全 compositor、Vulkan、真实桌面和性能验收
-
-**目标：** 在 Task 11 最小门禁之上完成环境覆盖；保留原任务编号。本机限制：真实会话锁定、没有 GNOME/Sway、IBus 未运行；Weston 14.0.2 可通过本机的解包运行脚本复跑；已完成的驱动和会话片段见 [02-implementation-architecture-review.md](02-implementation-architecture-review.md) 第 5 节。
-
-- 扩展 headless compositor 的 scale、output 热插拔和复杂事件交错。
-- 在更多驱动上执行 Vulkan validation，覆盖 device/surface loss 和有界恢复。
-- 真实 GNOME、KDE、Sway/wlroots 验证分数/整数缩放、多屏、IBus、拖放和 AT-SPI。
-- 受控终止并恢复 session bus/portal，验证重连后的设置更新、退避行为和单一 FD source；覆盖 Task 12 的真实服务恢复路径。
-- 测量空闲唤醒、resize 延迟、frame 背压和 GPU wait。
-
-**验收：** 每项记录环境、命令、结果和限制；可见闪烁、几何漂移、并发和性能分别提供对应证据，不以单元测试替代实机结论。
-
 ## 尚未排期
 
+- 受限环境验收：GNOME、Sway/wlroots、IBus、拖放、AT-SPI、真实 session bus/portal 重启、device loss 注入和运行时 output 热插拔。需要解锁的真实会话或可控测试机，完成前不得以 fake 或 headless 结果替代。
 - 桌面服务公共连接/重连抽象：待真实服务重连验收后实施，保留各后端 FD 与显示连接适配。
 - 托盘和显式后台常驻：先明确 keep-alive 产品契约，避免普通 watcher 意外延长应用生命周期。

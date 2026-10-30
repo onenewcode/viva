@@ -3,7 +3,6 @@
 package linux
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -27,16 +26,28 @@ type waylandHeadlessSnapshot struct {
 	rendererSubmissions uint64
 	configureSerial     uint32
 	toplevelPending     bool
+	scale               float32
+	outputs             int
+	configuredWidth     int32
+	configuredHeight    int32
+	margin              int32
 }
 
 func readWaylandHeadlessSnapshot(win *waylandWindow) waylandHeadlessSnapshot {
 	snapshot := waylandHeadlessSnapshot{
-		width:           win.width,
-		height:          win.height,
-		surfaceState:    win.surfaceState,
-		maximized:       win.maximized,
-		configureSerial: win.configure.serial,
-		toplevelPending: win.configure.toplevelPending,
+		width:            win.width,
+		height:           win.height,
+		surfaceState:     win.surfaceState,
+		maximized:        win.maximized,
+		configureSerial:  win.configure.serial,
+		toplevelPending:  win.configure.toplevelPending,
+		scale:            win.displayScale(),
+		configuredWidth:  win.configure.width,
+		configuredHeight: win.configure.height,
+		margin:           int32(win.margin),
+	}
+	if win.app != nil {
+		snapshot.outputs = len(win.app.globals.outputs)
 	}
 	if win.state != nil && win.state.renderer != nil {
 		renderer := win.state.renderer
@@ -61,6 +72,10 @@ func waylandHeadlessState(app *waylandApplication, win *waylandWindow, runDone <
 }
 
 func waitWaylandHeadlessState(app *waylandApplication, win *waylandWindow, runDone <-chan struct{}, check func(waylandHeadlessSnapshot) bool) (waylandHeadlessSnapshot, error) {
+	return waitWaylandHeadlessStateEvery(app, win, runDone, 20*time.Millisecond, check)
+}
+
+func waitWaylandHeadlessStateEvery(app *waylandApplication, win *waylandWindow, runDone <-chan struct{}, interval time.Duration, check func(waylandHeadlessSnapshot) bool) (waylandHeadlessSnapshot, error) {
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		snapshot, err := waylandHeadlessState(app, win, runDone)
@@ -79,7 +94,7 @@ func waitWaylandHeadlessState(app *waylandApplication, win *waylandWindow, runDo
 		select {
 		case <-runDone:
 			return snapshot, errors.New("application stopped before the expected state")
-		case <-time.After(20 * time.Millisecond):
+		case <-time.After(interval):
 		}
 	}
 }
@@ -204,7 +219,7 @@ func driveWaylandHeadlessWindow(t *testing.T, app *waylandApplication, win *wayl
 		restored.width, restored.height, remapped.width, remapped.height,
 		maximizedRemap.width, maximizedRemap.height, maximizedRemap.rendererSubmissions)
 
-	if err := compositor.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	if err := killWaylandHeadlessCompositor(compositor); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("stop compositor: %w", err)
 	}
 	return nil
@@ -242,55 +257,7 @@ func TestWaylandHeadlessIntegration(t *testing.T) {
 	if compositorName == "" {
 		compositorName = "weston"
 	}
-	compositorPath, err := exec.LookPath(compositorName)
-	if err != nil {
-		t.Fatalf("%s is required for integration validation: %v", compositorName, err)
-	}
-	runtimeDir := t.TempDir()
-	if err := os.Chmod(runtimeDir, 0o700); err != nil {
-		t.Fatalf("runtime directory permissions: %v", err)
-	}
-	socket := fmt.Sprintf("viva-test-%d", os.Getpid())
-	command := exec.Command(compositorPath, waylandCompositorArgs(compositorPath, socket)...)
-	command.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+runtimeDir, "WAYLAND_DISPLAY="+socket, "LIBGL_ALWAYS_SOFTWARE=1", "HOME="+runtimeDir)
-	var compositorLog bytes.Buffer
-	command.Stdout = &compositorLog
-	command.Stderr = &compositorLog
-	if err := command.Start(); err != nil {
-		t.Fatalf("start %s: %v", compositorName, err)
-	}
-	t.Logf("integration compositor: %s %v", compositorPath, command.Args[1:])
-	compositorDone := make(chan struct{})
-	go func() {
-		_ = command.Wait()
-		close(compositorDone)
-	}()
-	t.Cleanup(func() {
-		_ = command.Process.Kill()
-		<-compositorDone
-		if compositorLog.Len() != 0 {
-			t.Logf("%s output:\n%s", compositorName, compositorLog.String())
-		}
-	})
-	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
-	t.Setenv("WAYLAND_DISPLAY", socket)
-	t.Setenv("LIBGL_ALWAYS_SOFTWARE", "1")
-
-	socketPath := filepath.Join(runtimeDir, socket)
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		if _, err := os.Stat(socketPath); err == nil {
-			break
-		}
-		select {
-		case <-compositorDone:
-			t.Fatalf("%s exited before creating its socket:\n%s", compositorName, compositorLog.String())
-		case <-time.After(25 * time.Millisecond):
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for the %s socket", compositorName)
-		}
-	}
+	compositor := startWaylandHeadlessCompositor(t, compositorName)
 
 	app, err := newWaylandApplication()
 	if err != nil {
@@ -310,7 +277,7 @@ func TestWaylandHeadlessIntegration(t *testing.T) {
 		renderer = opened.state.renderer
 		driverStarted = true
 		go func() {
-			if err := driveWaylandHeadlessWindow(t, app, win, runDone, command); err != nil {
+			if err := driveWaylandHeadlessWindow(t, app, win, runDone, compositor.cmd); err != nil {
 				driverResult <- err
 				app.Quit()
 				return

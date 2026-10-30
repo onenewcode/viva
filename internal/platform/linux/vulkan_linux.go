@@ -1161,10 +1161,26 @@ func (renderer *vulkanRenderer) setScaleOnce(scale float32) error {
 	if err := vkCheck(renderer.api.deviceWaitIdle(renderer.device), "wait before scale change"); err != nil {
 		return err
 	}
+	// Re-recording reuses command buffers that the previous frame left
+	// executable; the pool was created without implicit reset.
+	if err := renderer.resetCommands("reset commands before scale change"); err != nil {
+		return err
+	}
 	if err := renderer.text.upload(renderer, scale); err != nil {
 		return err
 	}
 	return renderer.recordCommands(vkExtent2D{Width: renderer.width, Height: renderer.height})
+}
+
+// resetCommands makes every buffer in the pool initial again. Callers must
+// have waited for the device (or the frame fence) before resetting; recording
+// paths that reuse buffers without this reset violate the command pool's
+// single-use begin rule.
+func (renderer *vulkanRenderer) resetCommands(operation string) error {
+	if renderer.device == 0 || renderer.commandPool == 0 {
+		return nil
+	}
+	return vkCheck(renderer.api.resetCommandPool(renderer.device, renderer.commandPool, 0), operation)
 }
 
 func (renderer *vulkanRenderer) resize(width, height uint32) error {
