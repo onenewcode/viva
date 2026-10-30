@@ -1,7 +1,7 @@
 # Wayland 待实施任务
 
 - 修订日期：2026-10-30
-- 当前基线：`1cafe6f` + Task 6 当前 diff
+- 当前基线：`2c48fee` + Task 7 当前 diff
 - 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
 - 当前审查：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 
@@ -16,29 +16,6 @@
 5. Ubuntu CI 已实际执行 `go test ./internal/platform/linux`；新增测试应进入该包或其他会被原生执行的包，不能只验证交叉编译。
 6. 静态检查、mock/unit 测试、headless compositor、Vulkan validation 和真实桌面验收分别记录，不得互相替代。
 7. 每个任务提交前必须同步 `01`、`02` 和 `task.md`：记录基线提交与当前任务 diff、实现状态和验证证据，移除已完成 findings/待办且不重排历史任务编号，保留仍未完成的差距。Task 4 是阶段一致性检查，不替代逐任务同步。
-
-## P2：继续目标架构收敛
-
-### Task 7：集中 surface/configure 状态与提交事务
-
-- 目标：用显式状态和统一事务替代继续扩张的布尔组合，明确 serial、ACK、几何、frame callback 和 present/commit 的对应关系。
-- 主要文件：
-  - `internal/platform/linux/window_wayland.go`
-  - `internal/platform/linux/wayland_frame.go`
-  - `internal/platform/linux/wayland_scale.go`
-  - 相关协议 fake 测试
-- 实施要点：
-  - 明确 Created、AwaitInitialConfigure、Mapped、Unmapped、Closed 等状态及合法迁移；
-  - configure 从 toplevel 事件开始到对应 serial ACK 为止都有唯一几何 owner；
-  - open、redraw、input、resize、scale 和 remap 复用同一提交协调边界；
-  - 初始 configure 可异步等待，不把长期架构建立在阻塞 roundtrip 上；
-  - 保持 clean scene、强制呈现、失败清理和回调背压的既有正确行为。
-- 验收条件：
-  - 所有实际 buffer commit 都能追溯到合法 surface 状态和对应 configure 事务；
-  - 不出现无 commit 的孤立 framePending，也不出现等待 remap configure 时提前 attach buffer；
-  - 连续 configure、Hide/Show、close、apply/present 失败时状态可验证且无重复 ACK/销毁；
-  - 重跑 Frame 并发 race 测试，重构后的几何快照不得重新引入数据竞争；
-  - 现有呈现与生命周期回归测试继续通过。
 
 ## P3：建立真实验证层次
 

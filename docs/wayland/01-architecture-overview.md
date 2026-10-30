@@ -1,7 +1,7 @@
 # Viva Linux/Wayland 架构：目标设计与实施契约
 
 - 更新日期：2026-10-30
-- 审查基准：`1cafe6f` + Task 6 当前 diff
+- 审查基准：`2c48fee` + Task 7 当前 diff
 - 适用分支：`docs/linux-render-refresh-flicker`
 - 文档性质：架构目标、协议约束和迁移方向；不代表全部能力已经实现或验收
 
@@ -193,11 +193,11 @@ flowchart LR
 
 ## 5. Surface、Configure 与呈现事务
 
-这是当前架构最需要优先收敛的部分。
+这是当前架构的核心协议边界。
 
 ### 5.1 显式 surface 生命周期
 
-建议使用明确状态而不是多个布尔量自由组合：
+当前实现使用明确状态而不是多个布尔量自由组合：
 
 ```mermaid
 stateDiagram-v2
@@ -220,7 +220,7 @@ stateDiagram-v2
 - 等待重新 configure 时不得提前 attach buffer，也不得制造没有对应 commit 的 `framePending`；
 - 关闭后的异步命令、frame callback 和 repeat 均不得继续访问已销毁状态。
 
-初始 configure 可以通过状态机异步等待，不应把阻塞 roundtrip 作为长期架构前提。
+初始 configure 由状态机异步等待；`OpenWindow` 不再通过阻塞 roundtrip 等待 compositor。
 
 ### 5.2 Configure 是事务，不是零散回调
 
@@ -390,7 +390,7 @@ Vulkan fake 至少跟踪：
 | 统一 auxiliary event-source | 已具备 FD/Interest/Dispatch 和明确 FD 所有权 | 保持 ERR/HUP/NVAL 一次性注销、POLLOUT 和服务清理回归测试 |
 | prepare/read 标准流程 | 已实现 prepare/read/cancel 配对和 EAGAIN 重试 | 保持 readable、timeout、EINTR 和失败路径测试，补真实 compositor 验收 |
 | 键盘 repeat 与 IBus deadline 主循环调度 | 已实现 | 纳入统一 event-source 错误模型并保持回归测试 |
-| 显式 surface/configure 状态机 | 首次/remap 门限已修复 | 继续集中 serial、ACK 和完整状态机 |
+| 显式 surface/configure 状态机 | 已具备 Created/AwaitInitialConfigure/Mapped/Unmapped/Closed 和集中 configure 事务 | 保持异步 open、连续 configure、Hide/Show、失败清理和 Frame race 验收 |
 | configure/scale 几何所有权 | 已覆盖 serial 前、ACK 前及 hidden/frame-pending 交错 | 保持几何与 OnResize/ACK 回归测试并做真实 compositor 验收 |
 | `Frame` 跨 goroutine 几何快照 | 已改为不可变原子快照 | 保持并发几何测试，原生 Linux race 验收列入 Task 8 |
 | clean/forced present 区分 | 已实现 | 保留 clean/forced 回归测试并做实机验收 |
@@ -407,9 +407,8 @@ Vulkan fake 至少跟踪：
 
 后续工作按以下顺序推进，不重复已经落地的呈现、输入调度、缩放往返、swapchain 和 CI 修复：
 
-1. **完善显式窗口状态机**：减少布尔组合，集中 configure 事务、ACK、frame callback 和 surface 映射状态。
-2. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉，并明确 keep-alive 产品契约。
-3. **补验证体系**：在现有 Linux 原生单元测试之上，增加原生 race、headless compositor、Vulkan validation/lavapipe、真实桌面和性能验收。
+1. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉，并明确 keep-alive 产品契约。
+2. **补验证体系**：在现有 Linux 原生单元测试之上，增加原生 race、headless compositor、Vulkan validation/lavapipe、真实桌面和性能验收。
 
 该顺序保留现有后端调度、PureGo、共享渲染和协议核心，不要求推倒重写。
 

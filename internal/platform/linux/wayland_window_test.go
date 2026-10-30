@@ -5,7 +5,6 @@ package linux
 import (
 	"errors"
 	"math"
-	"strings"
 	"testing"
 	"unsafe"
 
@@ -90,9 +89,9 @@ func TestWaylandFrameConcurrentGeometrySnapshots(t *testing.T) {
 			<-ready
 			for i := 0; i < 1000; i++ {
 				if i%2 == 0 {
-					win.pendingWidth, win.pendingHeight = 500, 350
+					win.configure.width, win.configure.height = 500, 350
 				} else {
-					win.pendingWidth, win.pendingHeight = 400, 300
+					win.configure.width, win.configure.height = 400, 300
 				}
 				win.applyPendingResize()
 				if i == 0 {
@@ -203,15 +202,18 @@ func TestWaylandInitialConfigureGeometryBeforeState(t *testing.T) {
 	if !win.geometryDirty {
 		t.Fatal("initial configure did not mark the corrected geometry dirty")
 	}
-	if win.pendingSerial != 99 {
+	if win.configure.serial != 99 {
 		t.Fatal("initial configure serial was consumed before the first buffer was ready")
 	}
-	if !win.initialResizePending {
-		t.Fatal("initial configure did not request an application resize")
-	}
 
+	var acked []uint32
+	var frameRequests int
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win.app = app
+	win.surfaceState = waylandSurfaceAwaitInitialConfigure
 	var reported platform.Size
 	win.state = &waylandWindowState{
+		app: app,
 		win: win,
 		config: platform.Config{
 			OnResize: func(size platform.Size) (platform.Frame, error) {
@@ -220,11 +222,15 @@ func TestWaylandInitialConfigureGeometryBeforeState(t *testing.T) {
 			},
 		},
 	}
-	if _, resized, err := win.takeInitialResizeFrame(); err != nil || !resized {
-		t.Fatalf("initial resize frame: resized=%v err=%v", resized, err)
+	win.applyPendingResize()
+	if app.firstErr != nil {
+		t.Fatalf("initial resize commit: %v", app.firstErr)
 	}
 	if reported.Width != 800 || reported.Height != 600 {
 		t.Fatalf("application initial size = %gx%g, want 800x600", reported.Width, reported.Height)
+	}
+	if len(acked) != 1 || acked[0] != 99 || win.surfaceState != waylandSurfaceMapped {
+		t.Fatalf("initial commit ACK=%v state=%v, want serial 99 and Mapped", acked, win.surfaceState)
 	}
 }
 
@@ -289,11 +295,11 @@ func TestWaylandConfigureStateTransitions(t *testing.T) {
 
 	// 2. Surface configure with serial
 	win.handleXdgSurfaceConfigure(1001)
-	if win.pendingSerial != 1001 {
-		t.Fatalf("expected pendingSerial 1001, got %d", win.pendingSerial)
+	if win.configure.serial != 1001 {
+		t.Fatalf("expected configure.serial 1001, got %d", win.configure.serial)
 	}
-	if !win.configured {
-		t.Fatal("expected configured = true")
+	if win.configure.toplevelPending {
+		t.Fatal("expected toplevel configure transaction to be complete")
 	}
 
 	// 3. Toplevel configure: Unmaximized (Normal state)
@@ -384,7 +390,7 @@ func TestWaylandFrameMarginErrorsStopTransitions(t *testing.T) {
 	}
 }
 
-func newInitialConfigureTestApplication(roundtrip int32, destroyed *[]uintptr) *waylandApplication {
+func newInitialConfigureTestApplication(destroyed *[]uintptr) *waylandApplication {
 	app := &waylandApplication{display: 1}
 	app.globals.compositor = 1
 	app.globals.xdgWmBase = 1
@@ -402,36 +408,42 @@ func newInitialConfigureTestApplication(roundtrip int32, destroyed *[]uintptr) *
 				return 0
 			}
 		},
-		displayRoundtrip: func(uintptr) int32 { return roundtrip },
-		proxyDestroy:     func(proxy uintptr) { *destroyed = append(*destroyed, proxy) },
+		proxyDestroy: func(proxy uintptr) { *destroyed = append(*destroyed, proxy) },
 	}
 	installWaylandFrameTestCallbacks(app.api)
 	return app
 }
 
-func TestWaylandOpenWindowRequiresInitialConfigure(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		roundtrip int32
-		wantError string
-	}{
-		{name: "roundtrip failure", roundtrip: -1, wantError: "initial configure failed"},
-		{name: "missing configure", roundtrip: 0, wantError: "did not configure"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			var destroyed []uintptr
-			app := newInitialConfigureTestApplication(test.roundtrip, &destroyed)
-			win, err := app.openWindow(platform.Config{Width: 400, Height: 300})
-			if err == nil || !strings.Contains(err.Error(), test.wantError) {
-				t.Fatalf("openWindow error = %v, want substring %q", err, test.wantError)
-			}
-			if win != nil {
-				t.Fatal("openWindow returned a window without initial configure")
-			}
-			if len(destroyed) != 3 || destroyed[0] != 30 || destroyed[1] != 20 || destroyed[2] != 10 {
-				t.Fatalf("destroyed proxies = %v, want [30 20 10]", destroyed)
-			}
-		})
+func TestWaylandOpenWindowWaitsAsynchronouslyForInitialConfigure(t *testing.T) {
+	originalRendererFactory := newWaylandWindowRenderer
+	t.Cleanup(func() { newWaylandWindowRenderer = originalRendererFactory })
+	presents := 0
+	newWaylandWindowRenderer = func(_ vulkanSurfaceProvider, width, height uint32, _ float32, _ platform.Color, _ []render.Rectangle, _ []platform.TextLabel, _ uint32) (*vulkanRenderer, error) {
+		renderer := newWaylandPresentTestRenderer(width, height)
+		renderer.api.queuePresent = func(uintptr, *vkPresentInfo) int32 {
+			presents++
+			return vkSuccess
+		}
+		return renderer, nil
+	}
+
+	var destroyed []uintptr
+	app := newInitialConfigureTestApplication(&destroyed)
+	roundtrips := 0
+	app.api.displayRoundtrip = func(uintptr) int32 { roundtrips++; return 0 }
+	win, err := app.openWindow(platform.Config{Width: 400, Height: 300})
+	if err != nil || win == nil {
+		t.Fatalf("openWindow = (%v, %v), want asynchronous success", win, err)
+	}
+	defer win.destroy()
+	if roundtrips != 0 {
+		t.Fatalf("openWindow used %d blocking roundtrips", roundtrips)
+	}
+	if win.surfaceState != waylandSurfaceAwaitInitialConfigure || win.configure.serial != 0 {
+		t.Fatalf("initial state=%v serial=%d, want AwaitInitialConfigure without a serial", win.surfaceState, win.configure.serial)
+	}
+	if presents != 0 || win.framePending || len(app.windows) != 1 {
+		t.Fatalf("unconfigured open presents=%d framePending=%v windows=%d", presents, win.framePending, len(app.windows))
 	}
 }
 
@@ -456,21 +468,14 @@ func TestWaylandOpenWindowCallbackFailureRetriesCleanly(t *testing.T) {
 
 	var acked []uint32
 	callbackAttempts := 0
-	newApp := func() *waylandApplication {
+	newApp := func() (*waylandApplication, func()) {
 		var destroyed []uintptr
-		app := newInitialConfigureTestApplication(0, &destroyed)
+		app := newInitialConfigureTestApplication(&destroyed)
 		var configureData unsafe.Pointer
 		app.api.proxyAddListener = func(proxy uintptr, _ uintptr, data unsafe.Pointer) int32 {
 			if proxy == 20 {
 				configureData = data
 			}
-			return 0
-		}
-		app.api.displayRoundtrip = func(uintptr) int32 {
-			if configureData == nil {
-				t.Fatal("xdg_surface listener was not installed before roundtrip")
-			}
-			puregoInvokeCallback3(rawXdgSurfaceListener[0], configureData, 20, 41)
 			return 0
 		}
 		app.api.displayFlush = func(uintptr) int32 { return 0 }
@@ -487,33 +492,42 @@ func TestWaylandOpenWindowCallbackFailureRetriesCleanly(t *testing.T) {
 			}
 			return baseMarshal(proxy, opcode, interfacePtr, version, flags, args...)
 		}
-		return app
+		return app, func() {
+			if configureData == nil {
+				t.Fatal("xdg_surface listener was not installed before initial configure")
+			}
+			puregoInvokeCallback3(rawXdgSurfaceListener[0], configureData, 20, 41)
+		}
 	}
 
-	app := newApp()
+	app, configure := newApp()
 	win, err := app.openWindow(platform.Config{Width: 400, Height: 300})
-	if !errors.Is(err, errWaylandFrameCallback) || win != nil {
-		t.Fatalf("first openWindow = (%v, %v), want callback allocation failure", win, err)
+	if err != nil || win == nil {
+		t.Fatalf("first openWindow = (%v, %v), want asynchronous success", win, err)
+	}
+	configure()
+	if !errors.Is(app.firstErr, errWaylandFrameCallback) {
+		t.Fatalf("first configure error = %v, want callback allocation failure", app.firstErr)
 	}
 	if len(acked) != 0 || presents != 0 || callbackAttempts != 1 {
 		t.Fatalf("failed open advanced: ACK=%v presents=%d attempts=%d", acked, presents, callbackAttempts)
 	}
 
-	app = newApp()
+	app, configure = newApp()
 	win, err = app.openWindow(platform.Config{Width: 400, Height: 300})
 	if err != nil {
 		t.Fatalf("retry openWindow: %v", err)
 	}
-	defer func() {
-		win.state.renderer.close()
-		win.state.text.close()
-		win.destroy()
-	}()
+	configure()
+	if app.firstErr != nil {
+		t.Fatalf("retry initial configure: %v", app.firstErr)
+	}
+	defer win.destroy()
 	if len(acked) != 1 || acked[0] != 41 || presents != 1 || callbackAttempts != 2 {
 		t.Fatalf("retry open: ACK=%v presents=%d attempts=%d", acked, presents, callbackAttempts)
 	}
-	if win.pendingSerial != 0 || !win.framePending || win.frameCallback != 99 {
-		t.Fatalf("retry transaction: serial=%d pending=%v callback=%d", win.pendingSerial, win.framePending, win.frameCallback)
+	if win.configure.serial != 0 || !win.framePending || win.frameCallback != 99 || win.surfaceState != waylandSurfaceMapped {
+		t.Fatalf("retry transaction: serial=%d pending=%v callback=%d state=%v", win.configure.serial, win.framePending, win.frameCallback, win.surfaceState)
 	}
 }
 
@@ -544,7 +558,7 @@ func TestWaylandHiddenRedrawWaitsForRemapConfigure(t *testing.T) {
 	win := &waylandWindow{
 		app: app, surface: 1, xdgSurface: 2,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
-		configured: true, firstConfigureDone: true, needsRedraw: true,
+		surfaceState: waylandSurfaceMapped, needsRedraw: true,
 	}
 	win.storeScale(1)
 	redraws := 0
@@ -577,7 +591,7 @@ func TestWaylandHiddenRedrawWaitsForRemapConfigure(t *testing.T) {
 	if commits != 2 || nilAttachments != 1 {
 		t.Fatalf("Hide/Show commits = %d, nil attachments = %d; want 2 and 1", commits, nilAttachments)
 	}
-	if !win.awaitingConfigure {
+	if win.surfaceState != waylandSurfaceAwaitInitialConfigure {
 		t.Fatal("Show did not enter the remap configure wait")
 	}
 	win.renderFrame() // A Waker must not bypass the new configure.
@@ -592,8 +606,8 @@ func TestWaylandHiddenRedrawWaitsForRemapConfigure(t *testing.T) {
 	if len(acked) != 1 || acked[0] != 77 {
 		t.Fatalf("acknowledged serials = %v, want [77]", acked)
 	}
-	if win.awaitingConfigure {
-		t.Fatal("configure did not release the remap wait")
+	if win.surfaceState != waylandSurfaceMapped {
+		t.Fatal("configure did not complete the remap")
 	}
 	win.Show()
 	if commits != 2 {
@@ -610,12 +624,12 @@ func TestWaylandCloseWhileAwaitingRemapConfigure(t *testing.T) {
 	app := &waylandApplication{api: api}
 	win := &waylandWindow{
 		app: app, surface: 1, xdgSurface: 2, xdgToplevel: 3,
-		hidden: true, configured: true, firstConfigureDone: true,
+		surfaceState: waylandSurfaceUnmapped,
 	}
 	win.state = &waylandWindowState{app: app, win: win, renderer: &vulkanRenderer{}}
 
 	win.Show()
-	if !win.awaitingConfigure {
+	if win.surfaceState != waylandSurfaceAwaitInitialConfigure {
 		t.Fatal("Show did not enter the remap configure wait")
 	}
 	win.Close()
@@ -647,8 +661,8 @@ func TestWaylandHiddenRemapResizeWaitsForShow(t *testing.T) {
 	win := &waylandWindow{
 		app: app, surface: 1, xdgSurface: 2,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
-		pendingWidth: 400, pendingHeight: 300,
-		configured: true, firstConfigureDone: true,
+		configure:    waylandConfigureTransaction{width: 400, height: 300},
+		surfaceState: waylandSurfaceMapped,
 	}
 	win.storeScale(1)
 	resizeCallbacks := 0
@@ -671,13 +685,13 @@ func TestWaylandHiddenRemapResizeWaitsForShow(t *testing.T) {
 	win.Hide()
 	win.Show()
 	win.Hide() // The next configure must not remap this hidden surface.
-	win.pendingWidth, win.pendingHeight = 800, 600
+	win.configure.width, win.configure.height = 800, 600
 	win.handleXdgSurfaceConfigure(88)
 	if resizeCallbacks != 0 || presents != 0 || len(acked) != 0 || commits != 3 {
 		t.Fatalf("hidden configure advanced: resize=%d present=%d ack=%v commits=%d", resizeCallbacks, presents, acked, commits)
 	}
-	if win.pendingSerial != 88 {
-		t.Fatalf("hidden configure serial = %d, want retained serial 88", win.pendingSerial)
+	if win.configure.serial != 88 {
+		t.Fatalf("hidden configure serial = %d, want retained serial 88", win.configure.serial)
 	}
 
 	win.Show()
@@ -766,7 +780,7 @@ func TestWaylandInputPresentUsesFrameTransaction(t *testing.T) {
 	var acked []uint32
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
-	win := &waylandWindow{app: app, surface: 1, xdgSurface: 2, configured: true}
+	win := &waylandWindow{app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped}
 	renderer := newWaylandPresentTestRenderer(400, 300)
 	changed := true
 	win.state = &waylandWindowState{
@@ -796,22 +810,20 @@ func TestWaylandInputPresentUsesFrameTransaction(t *testing.T) {
 
 func TestWaylandInputPresentWaitsForWindowLifecycle(t *testing.T) {
 	for _, test := range []struct {
-		name              string
-		hidden            bool
-		awaitingConfigure bool
-		framePending      bool
+		name         string
+		state        waylandSurfaceState
+		framePending bool
 	}{
-		{name: "hidden", hidden: true},
-		{name: "awaiting remap configure", awaitingConfigure: true},
-		{name: "previous frame pending", framePending: true},
+		{name: "hidden", state: waylandSurfaceUnmapped},
+		{name: "awaiting remap configure", state: waylandSurfaceAwaitInitialConfigure},
+		{name: "previous frame pending", state: waylandSurfaceMapped, framePending: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var acked []uint32
 			frameRequests := 0
 			app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 			win := &waylandWindow{
-				app: app, surface: 1, xdgSurface: 2, configured: true,
-				hidden: test.hidden, awaitingConfigure: test.awaitingConfigure,
+				app: app, surface: 1, xdgSurface: 2, surfaceState: test.state,
 				framePending: test.framePending,
 			}
 			renderer := newWaylandPresentTestRenderer(400, 300)
@@ -838,8 +850,8 @@ func TestWaylandFocusLossDoesNotPresentWhileAwaitingRemap(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
-		activated: true, awaitingConfigure: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceAwaitInitialConfigure,
+		activated: true,
 	}
 	renderer := newWaylandPresentTestRenderer(400, 300)
 	win.state = &waylandWindowState{
@@ -865,8 +877,8 @@ func TestWaylandInputPresentHonorsPendingConfigure(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
-		pendingSerial: 41, forcePresent: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
+		configure: waylandConfigureTransaction{serial: 41}, forcePresent: true,
 	}
 	renderer := newWaylandPresentTestRenderer(400, 300)
 	applyCalls := 0
@@ -887,8 +899,8 @@ func TestWaylandInputPresentHonorsPendingConfigure(t *testing.T) {
 	if applyCalls != 2 || renderer.submissions != 1 || frameRequests != 1 {
 		t.Fatalf("configure input apply=%d submissions=%d frameRequests=%d", applyCalls, renderer.submissions, frameRequests)
 	}
-	if len(acked) != 1 || acked[0] != 41 || win.pendingSerial != 0 {
-		t.Fatalf("configure ACK = %v, pending serial = %d", acked, win.pendingSerial)
+	if len(acked) != 1 || acked[0] != 41 || win.configure.serial != 0 {
+		t.Fatalf("configure ACK = %v, pending serial = %d", acked, win.configure.serial)
 	}
 	if win.forcePresent || win.needsRedraw {
 		t.Fatal("successful configure input retained pending flags")
@@ -899,7 +911,7 @@ func TestWaylandCleanRedrawDoesNotRequestFrame(t *testing.T) {
 	var acked []uint32
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
-	win := &waylandWindow{app: app, surface: 1, xdgSurface: 2, configured: true}
+	win := &waylandWindow{app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped}
 	renderer := newWaylandPresentTestRenderer(400, 300)
 	win.state = &waylandWindowState{
 		app: app, win: win, renderer: renderer,
@@ -920,7 +932,7 @@ func TestWaylandCleanGeometryChangePresents(t *testing.T) {
 	var acked []uint32
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
-	win := &waylandWindow{app: app, surface: 1, xdgSurface: 2, configured: true, geometryDirty: true}
+	win := &waylandWindow{app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped, geometryDirty: true}
 	renderer := newWaylandPresentTestRenderer(400, 300)
 	win.state = &waylandWindowState{
 		app: app, win: win, renderer: renderer,
@@ -942,8 +954,8 @@ func TestWaylandForcedCleanConfigurePresents(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
-		pendingSerial: 41, forcePresent: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
+		configure: waylandConfigureTransaction{serial: 41}, forcePresent: true,
 	}
 	renderer := newWaylandPresentTestRenderer(400, 300)
 	win.state = &waylandWindowState{
@@ -956,8 +968,8 @@ func TestWaylandForcedCleanConfigurePresents(t *testing.T) {
 	if renderer.submissions != 1 || frameRequests != 1 {
 		t.Fatalf("forced clean configure submissions=%d frameRequests=%d, want one each", renderer.submissions, frameRequests)
 	}
-	if len(acked) != 1 || acked[0] != 41 || win.pendingSerial != 0 {
-		t.Fatalf("configure ACK = %v, pending serial = %d", acked, win.pendingSerial)
+	if len(acked) != 1 || acked[0] != 41 || win.configure.serial != 0 {
+		t.Fatalf("configure ACK = %v, pending serial = %d", acked, win.configure.serial)
 	}
 	if win.forcePresent {
 		t.Fatal("successful present retained the force flag")
@@ -975,9 +987,9 @@ func TestWaylandCleanResizePresentsOnce(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
-		pendingWidth: 800, pendingHeight: 600, pendingSerial: 42, forcePresent: true,
+		configure: waylandConfigureTransaction{width: 800, height: 600, serial: 42}, forcePresent: true,
 	}
 	win.storeScale(1)
 	renderer := newWaylandPresentTestRenderer(800, 600)
@@ -1005,7 +1017,7 @@ func TestWaylandCleanScalePresentsOnceWithoutRedraw(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
 	}
 	win.storeScale(1)
@@ -1041,9 +1053,9 @@ func TestWaylandPendingResizePresentsLatestRedraw(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
-		pendingWidth: 800, pendingHeight: 600, pendingSerial: 42,
+		configure:    waylandConfigureTransaction{width: 800, height: 600, serial: 42},
 		framePending: true, frameCallback: 99, needsRedraw: true, forcePresent: true,
 	}
 	win.storeScale(1)
@@ -1062,7 +1074,7 @@ func TestWaylandPendingResizePresentsLatestRedraw(t *testing.T) {
 	if !win.resizeDeferred || renderer.submissions != 0 || frameRequests != 0 || len(acked) != 0 {
 		t.Fatalf("pending resize committed early: deferred=%v submissions=%d frameRequests=%d ack=%v", win.resizeDeferred, renderer.submissions, frameRequests, acked)
 	}
-	if win.pendingSerial != 42 || !win.forcePresent || !win.needsRedraw {
+	if win.configure.serial != 42 || !win.forcePresent || !win.needsRedraw {
 		t.Fatal("pending resize discarded its configure or redraw state")
 	}
 
@@ -1088,7 +1100,7 @@ func TestWaylandContinuousDeferredResizeUsesLatestRedraw(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
 		framePending: true, frameCallback: 77, needsRedraw: true,
 	}
@@ -1145,9 +1157,9 @@ func TestWaylandDeferredResizeDoesNotDuplicateResizeRedraw(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
-		pendingWidth: 800, pendingHeight: 600, pendingSerial: 42,
+		configure:    waylandConfigureTransaction{width: 800, height: 600, serial: 42},
 		framePending: true, frameCallback: 77, needsRedraw: true,
 	}
 	win.storeScale(1)
@@ -1188,9 +1200,9 @@ func TestWaylandDeferredResizeRedrawApplyFailureClosesWindow(t *testing.T) {
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	expectedErr := errors.New("deferred redraw apply failed")
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
-		pendingWidth: 800, pendingHeight: 600, pendingSerial: 42, forcePresent: true,
+		configure: waylandConfigureTransaction{width: 800, height: 600, serial: 42}, forcePresent: true,
 		framePending: true, frameCallback: 77, needsRedraw: true,
 	}
 	win.storeScale(1)
@@ -1227,9 +1239,9 @@ func TestWaylandDeferredResizeRedrawPresentFailureClosesWindow(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
-		pendingWidth: 800, pendingHeight: 600, pendingSerial: 42, forcePresent: true,
+		configure: waylandConfigureTransaction{width: 800, height: 600, serial: 42}, forcePresent: true,
 		framePending: true, frameCallback: 77, needsRedraw: true,
 	}
 	win.storeScale(1)
@@ -1274,7 +1286,7 @@ func TestWaylandPendingScaleUsesResizeFrameOnce(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
 		framePending: true, frameCallback: 99, needsRedraw: true,
 	}
@@ -1321,7 +1333,7 @@ func TestWaylandDeferredScaleCompletesAfterRemap(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
 		framePending: true, frameCallback: 99, needsRedraw: true,
 	}
@@ -1347,11 +1359,11 @@ func TestWaylandDeferredScaleCompletesAfterRemap(t *testing.T) {
 	win.applyScale(2)
 	win.Hide()
 	win.Show()
-	if !win.resizeDeferred || !win.awaitingConfigure {
+	if !win.resizeDeferred || win.surfaceState != waylandSurfaceAwaitInitialConfigure {
 		t.Fatal("remap did not retain the deferred scale transaction")
 	}
-	win.pendingWidth = 400
-	win.pendingHeight = 300
+	win.configure.width = 400
+	win.configure.height = 300
 	win.handleXdgSurfaceConfigure(43)
 	if win.resizeDeferred || resizeCallbacks != 1 || redraws != 0 || renderer.submissions != 1 || frameRequests != 1 {
 		t.Fatalf("remap resize deferred=%v resize=%d redraw=%d submissions=%d requests=%d", win.resizeDeferred, resizeCallbacks, redraws, renderer.submissions, frameRequests)
@@ -1371,7 +1383,7 @@ func TestWaylandDeferredConfigureKeepsGeometryAcrossScale(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
 		framePending: true, frameCallback: 99,
 	}
@@ -1395,8 +1407,8 @@ func TestWaylandDeferredConfigureKeepsGeometryAcrossScale(t *testing.T) {
 		t.Fatal("pending configure did not defer its presentation")
 	}
 	win.applyScale(2)
-	if win.pendingWidth != 800 || win.pendingHeight != 600 {
-		t.Fatalf("scale replaced deferred geometry with %dx%d", win.pendingWidth, win.pendingHeight)
+	if win.configure.width != 800 || win.configure.height != 600 {
+		t.Fatalf("scale replaced deferred geometry with %dx%d", win.configure.width, win.configure.height)
 	}
 
 	win.onFrameDone(99, 0)
@@ -1406,8 +1418,8 @@ func TestWaylandDeferredConfigureKeepsGeometryAcrossScale(t *testing.T) {
 	if resizeCallbacks != 1 || renderer.submissions != 1 || frameRequests != 1 {
 		t.Fatalf("completed scale configure resize=%d submissions=%d requests=%d", resizeCallbacks, renderer.submissions, frameRequests)
 	}
-	if len(acked) != 1 || acked[0] != 42 || win.pendingSerial != 0 {
-		t.Fatalf("scale configure ACK = %v, pending serial = %d", acked, win.pendingSerial)
+	if len(acked) != 1 || acked[0] != 42 || win.configure.serial != 0 {
+		t.Fatalf("scale configure ACK = %v, pending serial = %d", acked, win.configure.serial)
 	}
 }
 
@@ -1426,7 +1438,7 @@ func TestWaylandScaleBeforeConfigureSerialKeepsToplevelGeometry(t *testing.T) {
 			frameRequests := 0
 			app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 			win := &waylandWindow{
-				app: app, surface: 1, xdgSurface: 2, configured: true,
+				app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 				width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
 				framePending: test.framePending, frameCallback: 99,
 			}
@@ -1461,8 +1473,8 @@ func TestWaylandScaleBeforeConfigureSerialKeepsToplevelGeometry(t *testing.T) {
 					t.Fatalf("present input before configure serial: %v", err)
 				}
 			}
-			if win.pendingWidth != 800 || win.pendingHeight != 600 {
-				t.Fatalf("scale replaced toplevel geometry with %dx%d", win.pendingWidth, win.pendingHeight)
+			if win.configure.width != 800 || win.configure.height != 600 {
+				t.Fatalf("scale replaced toplevel geometry with %dx%d", win.configure.width, win.configure.height)
 			}
 			if !win.resizeDeferred || resizeCallbacks != 0 || renderer.submissions != 0 || frameRequests != 0 || len(acked) != 0 {
 				t.Fatalf("scale completed before its configure serial: deferred=%v resize=%d submissions=%d requests=%d ack=%v", win.resizeDeferred, resizeCallbacks, renderer.submissions, frameRequests, acked)
@@ -1481,10 +1493,10 @@ func TestWaylandScaleBeforeConfigureSerialKeepsToplevelGeometry(t *testing.T) {
 			if resizeCallbacks != 1 || redraws != 0 || renderer.submissions != 1 || frameRequests != 1 {
 				t.Fatalf("completed configure resize=%d redraw=%d submissions=%d requests=%d", resizeCallbacks, redraws, renderer.submissions, frameRequests)
 			}
-			if len(acked) != 1 || acked[0] != 42 || win.pendingSerial != 0 {
-				t.Fatalf("configure ACK = %v, pending serial = %d", acked, win.pendingSerial)
+			if len(acked) != 1 || acked[0] != 42 || win.configure.serial != 0 {
+				t.Fatalf("configure ACK = %v, pending serial = %d", acked, win.configure.serial)
 			}
-			if win.toplevelConfigurePending || win.resizeDeferred {
+			if win.configure.toplevelPending || win.resizeDeferred {
 				t.Fatal("completed configure retained pending geometry state")
 			}
 		})
@@ -1496,9 +1508,8 @@ func TestWaylandHiddenConfigureKeepsGeometryAcrossScaleAndRemap(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceUnmapped,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
-		hidden: true,
 	}
 	win.storeScale(1)
 	renderer := newWaylandPresentTestRenderer(1600, 1200)
@@ -1524,8 +1535,8 @@ func TestWaylandHiddenConfigureKeepsGeometryAcrossScaleAndRemap(t *testing.T) {
 	win.handleXdgToplevelConfigure(800, 600, nil)
 	win.handleXdgSurfaceConfigure(42)
 	win.applyScale(2)
-	if win.pendingWidth != 800 || win.pendingHeight != 600 || !win.resizeDeferred {
-		t.Fatalf("hidden scale lost configure geometry: %dx%d deferred=%v", win.pendingWidth, win.pendingHeight, win.resizeDeferred)
+	if win.configure.width != 800 || win.configure.height != 600 || !win.resizeDeferred {
+		t.Fatalf("hidden scale lost configure geometry: %dx%d deferred=%v", win.configure.width, win.configure.height, win.resizeDeferred)
 	}
 	if resizeCallbacks != 0 || renderer.submissions != 0 || frameRequests != 0 || len(acked) != 0 {
 		t.Fatal("hidden configure presented or acknowledged early")
@@ -1539,8 +1550,8 @@ func TestWaylandHiddenConfigureKeepsGeometryAcrossScaleAndRemap(t *testing.T) {
 	if resizeCallbacks != 1 || redraws != 0 || renderer.submissions != 1 || frameRequests != 1 {
 		t.Fatalf("remap resize=%d redraw=%d submissions=%d requests=%d", resizeCallbacks, redraws, renderer.submissions, frameRequests)
 	}
-	if len(acked) != 1 || acked[0] != 43 || win.pendingSerial != 0 {
-		t.Fatalf("remap ACK = %v, pending serial = %d", acked, win.pendingSerial)
+	if len(acked) != 1 || acked[0] != 43 || win.configure.serial != 0 {
+		t.Fatalf("remap ACK = %v, pending serial = %d", acked, win.configure.serial)
 	}
 }
 
@@ -1549,7 +1560,7 @@ func TestWaylandDeferredRestoreKeepsGeometryAcrossScale(t *testing.T) {
 	frameRequests := 0
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 		width: 1920, height: 1080, savedLogicalW: 500, savedLogicalH: 400,
 		maximized: true, frameWanted: true, framePending: true, frameCallback: 99,
 	}
@@ -1581,8 +1592,8 @@ func TestWaylandDeferredRestoreKeepsGeometryAcrossScale(t *testing.T) {
 	if resizeCallbacks != 1 || renderer.submissions != 1 || frameRequests != 1 {
 		t.Fatalf("restored scale resize=%d submissions=%d requests=%d", resizeCallbacks, renderer.submissions, frameRequests)
 	}
-	if len(acked) != 1 || acked[0] != 43 || win.pendingSerial != 0 {
-		t.Fatalf("restore ACK = %v, pending serial = %d", acked, win.pendingSerial)
+	if len(acked) != 1 || acked[0] != 43 || win.configure.serial != 0 {
+		t.Fatalf("restore ACK = %v, pending serial = %d", acked, win.configure.serial)
 	}
 }
 
@@ -1592,8 +1603,8 @@ func TestWaylandApplyFailureDoesNotAckOrRequestFrame(t *testing.T) {
 	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
 	expectedErr := errors.New("apply failed")
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
-		pendingSerial: 43, forcePresent: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
+		configure: waylandConfigureTransaction{serial: 43}, forcePresent: true,
 	}
 	renderer := newWaylandPresentTestRenderer(400, 300)
 	win.state = &waylandWindowState{
@@ -1609,8 +1620,8 @@ func TestWaylandApplyFailureDoesNotAckOrRequestFrame(t *testing.T) {
 	if len(acked) != 0 || frameRequests != 0 || renderer.submissions != 0 || win.framePending {
 		t.Fatalf("failed apply advanced: ack=%v frameRequests=%d submissions=%d pending=%v", acked, frameRequests, renderer.submissions, win.framePending)
 	}
-	if win.pendingSerial != 43 {
-		t.Fatalf("failed apply consumed serial %d, want 43", win.pendingSerial)
+	if win.configure.serial != 43 {
+		t.Fatalf("failed apply consumed serial %d, want 43", win.configure.serial)
 	}
 }
 
@@ -1637,9 +1648,9 @@ func TestWaylandFrameCallbackFailurePreservesTransaction(t *testing.T) {
 				return baseMarshal(proxy, opcode, interfacePtr, version, flags, args...)
 			}
 			win := &waylandWindow{
-				app: app, surface: 1, xdgSurface: 2, configured: true,
+				app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 				width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
-				pendingWidth: 800, pendingHeight: 600, pendingSerial: 41,
+				configure:    waylandConfigureTransaction{width: 800, height: 600, serial: 41},
 				forcePresent: true, geometryDirty: true, needsRedraw: true,
 			}
 			win.storeScale(1)
@@ -1660,7 +1671,7 @@ func TestWaylandFrameCallbackFailurePreservesTransaction(t *testing.T) {
 			if len(acked) != 0 || renderer.submissions != 0 || frameRequests != 0 || callbackAttempts != 1 {
 				t.Fatalf("callback failure advanced: ack=%v submissions=%d requests=%d attempts=%d", acked, renderer.submissions, frameRequests, callbackAttempts)
 			}
-			if win.pendingSerial != 41 || !win.forcePresent || !win.geometryDirty || !win.needsRedraw || win.framePending {
+			if win.configure.serial != 41 || !win.forcePresent || !win.geometryDirty || !win.needsRedraw || win.framePending {
 				t.Fatal("callback failure consumed or corrupted the pending transaction")
 			}
 
@@ -1669,8 +1680,8 @@ func TestWaylandFrameCallbackFailurePreservesTransaction(t *testing.T) {
 			if app.firstErr != nil || renderer.submissions != 1 || frameRequests != 1 {
 				t.Fatalf("callback retry err=%v submissions=%d requests=%d", app.firstErr, renderer.submissions, frameRequests)
 			}
-			if len(acked) != 1 || acked[0] != 41 || win.pendingSerial != 0 {
-				t.Fatalf("callback retry ACK = %v, pending serial = %d", acked, win.pendingSerial)
+			if len(acked) != 1 || acked[0] != 41 || win.configure.serial != 0 {
+				t.Fatalf("callback retry ACK = %v, pending serial = %d", acked, win.configure.serial)
 			}
 			if win.forcePresent || win.geometryDirty || win.needsRedraw || !win.framePending {
 				t.Fatal("callback retry did not complete the transaction")
@@ -1693,7 +1704,7 @@ func TestWaylandFrameCallbackListenerFailureRetriesCleanly(t *testing.T) {
 		},
 		proxyDestroy: func(proxy uintptr) { destroyed = append(destroyed, proxy) },
 	}
-	win := &waylandWindow{app: &waylandApplication{api: api}, surface: 1}
+	win := &waylandWindow{app: &waylandApplication{api: api}, surface: 1, surfaceState: waylandSurfaceMapped}
 	acks := 0
 	presents := 0
 	present := func() error {
@@ -1721,6 +1732,156 @@ func TestWaylandFrameCallbackListenerFailureRetriesCleanly(t *testing.T) {
 	}
 }
 
+func TestWaylandSurfaceStateMachineCommitBoundaries(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{app: app, surface: 1, xdgSurface: 2, xdgToplevel: 3}
+	presents := 0
+	present := func() error { presents++; return nil }
+
+	for _, state := range []waylandSurfaceState{
+		waylandSurfaceCreated,
+		waylandSurfaceAwaitInitialConfigure,
+		waylandSurfaceUnmapped,
+	} {
+		win.surfaceState = state
+		if err := win.presentWithFrameCallback(present, win.ackConfigure); !errors.Is(err, errWaylandSurfaceNotReady) {
+			t.Fatalf("state %v commit error = %v, want surface-not-ready", state, err)
+		}
+	}
+	if presents != 0 || frameRequests != 0 || len(acked) != 0 {
+		t.Fatalf("blocked states advanced: presents=%d requests=%d ACK=%v", presents, frameRequests, acked)
+	}
+
+	win.surfaceState = waylandSurfaceAwaitInitialConfigure
+	win.configure.serial = 41
+	if err := win.presentWithFrameCallback(present, win.ackConfigure); err != nil {
+		t.Fatalf("initial configure commit: %v", err)
+	}
+	if win.surfaceState != waylandSurfaceMapped || len(acked) != 1 || acked[0] != 41 {
+		t.Fatalf("initial commit state=%v ACK=%v", win.surfaceState, acked)
+	}
+	win.onFrameDone(99, 0)
+
+	win.Hide()
+	if win.surfaceState != waylandSurfaceUnmapped {
+		t.Fatalf("Hide state=%v, want Unmapped", win.surfaceState)
+	}
+	if err := win.presentWithFrameCallback(present, win.ackConfigure); !errors.Is(err, errWaylandSurfaceNotReady) {
+		t.Fatalf("hidden commit error = %v", err)
+	}
+	win.Show()
+	if win.surfaceState != waylandSurfaceAwaitInitialConfigure || win.configure.serial != 0 {
+		t.Fatalf("Show state=%v serial=%d, want fresh remap transaction", win.surfaceState, win.configure.serial)
+	}
+	win.handleXdgSurfaceConfigure(42)
+	if err := win.presentWithFrameCallback(present, win.ackConfigure); err != nil {
+		t.Fatalf("remap commit: %v", err)
+	}
+	if win.surfaceState != waylandSurfaceMapped || len(acked) != 2 || acked[1] != 42 || presents != 2 {
+		t.Fatalf("remap state=%v ACK=%v presents=%d", win.surfaceState, acked, presents)
+	}
+
+	win.destroy()
+	if win.surfaceState != waylandSurfaceClosed {
+		t.Fatalf("destroy state=%v, want Closed", win.surfaceState)
+	}
+	if err := win.presentWithFrameCallback(present, win.ackConfigure); err != nil {
+		t.Fatalf("closed commit was not a normal cancellation: %v", err)
+	}
+	if presents != 2 || frameRequests != 2 {
+		t.Fatalf("closed state advanced: presents=%d requests=%d", presents, frameRequests)
+	}
+}
+
+func TestWaylandCommitCloseCancellation(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		resize bool
+	}{
+		{name: "redraw callback"},
+		{name: "resize callback", resize: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var acked []uint32
+			frameRequests := 0
+			app := &waylandApplication{
+				api:  newWaylandPresentTestAPI(&acked, &frameRequests),
+				loop: &waylandLoop{wakeFD: -1},
+			}
+			renderer := newWaylandPresentTestRenderer(400, 300)
+			win := &waylandWindow{
+				app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
+				width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+			}
+			win.storeScale(1)
+			win.state = &waylandWindowState{
+				app: app, win: win, renderer: renderer,
+				config: platform.Config{
+					OnRedraw: func() (platform.Frame, error) { win.Close(); return platform.Frame{}, nil },
+					OnResize: func(platform.Size) (platform.Frame, error) { win.Close(); return platform.Frame{}, nil },
+				},
+				applyFrame: func(platform.Frame) (bool, error) { return true, nil },
+			}
+			if test.resize {
+				win.configure = waylandConfigureTransaction{width: 800, height: 600, serial: 41}
+				win.applyPendingResize()
+			} else {
+				win.renderFrame()
+			}
+			if app.firstErr != nil {
+				t.Fatalf("Close during commit became an application error: %v", app.firstErr)
+			}
+			if !win.closed.Load() || renderer.submissions != 0 || frameRequests != 0 || len(acked) != 0 {
+				t.Fatalf("closed commit advanced: closed=%v submissions=%d requests=%d ACK=%v", win.closed.Load(), renderer.submissions, frameRequests, acked)
+			}
+			win.destroy()
+		})
+	}
+
+	t.Run("close request before commit", func(t *testing.T) {
+		var acked []uint32
+		frameRequests := 0
+		app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+		win := &waylandWindow{app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped}
+		win.closed.Store(true)
+		presents := 0
+		if err := win.presentWithFrameCallback(func() error { presents++; return nil }, win.ackConfigure); err != nil {
+			t.Fatalf("Close request before commit became an error: %v", err)
+		}
+		if presents != 0 || frameRequests != 0 || len(acked) != 0 {
+			t.Fatalf("Close request advanced commit: presents=%d requests=%d ACK=%v", presents, frameRequests, acked)
+		}
+	})
+}
+
+func TestWaylandQueuedHideShowAfterDestroyStayClosed(t *testing.T) {
+	api := &waylandAPI{
+		proxyMarshalFlags: func(uintptr, uint32, uintptr, uint32, uint32, ...any) uintptr { return 0 },
+		proxyDestroy:      func(uintptr) {},
+		displayFlush:      func(uintptr) int32 { return 0 },
+	}
+	loop := &waylandLoop{
+		wakeFD: 11,
+		libc: &libcAPI{write: func(_ int32, _ unsafe.Pointer, size uintptr) int {
+			return int(size)
+		}},
+	}
+	app := &waylandApplication{api: api, loop: loop}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, xdgToplevel: 3,
+		surfaceState: waylandSurfaceMapped,
+	}
+	win.Hide()
+	win.Show()
+	win.destroy()
+	loop.drainCommands()
+	if win.surfaceState != waylandSurfaceClosed {
+		t.Fatalf("queued Hide/Show resurrected destroyed window: state=%v", win.surfaceState)
+	}
+}
+
 func TestWaylandLegacyCommitCallbackFailureRetriesCleanly(t *testing.T) {
 	var acked []uint32
 	frameRequests := 0
@@ -1739,8 +1900,8 @@ func TestWaylandLegacyCommitCallbackFailureRetriesCleanly(t *testing.T) {
 		return baseMarshal(proxy, opcode, interfacePtr, version, flags, args...)
 	}
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
-		pendingSerial: 41, forcePresent: true, needsRedraw: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
+		configure: waylandConfigureTransaction{serial: 41}, forcePresent: true, needsRedraw: true,
 	}
 	win.state = &waylandWindowState{app: app, win: win}
 
@@ -1751,7 +1912,7 @@ func TestWaylandLegacyCommitCallbackFailureRetriesCleanly(t *testing.T) {
 	if len(acked) != 0 || commits != 0 || frameRequests != 0 || callbackAttempts != 1 {
 		t.Fatalf("legacy failure advanced: ACK=%v commits=%d requests=%d attempts=%d", acked, commits, frameRequests, callbackAttempts)
 	}
-	if win.pendingSerial != 41 || !win.forcePresent || !win.needsRedraw || win.framePending {
+	if win.configure.serial != 41 || !win.forcePresent || !win.needsRedraw || win.framePending {
 		t.Fatal("legacy failure consumed the pending transaction")
 	}
 
@@ -1760,7 +1921,7 @@ func TestWaylandLegacyCommitCallbackFailureRetriesCleanly(t *testing.T) {
 	if app.firstErr != nil || len(acked) != 1 || acked[0] != 41 || commits != 1 || frameRequests != 1 {
 		t.Fatalf("legacy retry: err=%v ACK=%v commits=%d requests=%d", app.firstErr, acked, commits, frameRequests)
 	}
-	if win.pendingSerial != 0 || win.forcePresent || win.needsRedraw || !win.framePending {
+	if win.configure.serial != 0 || win.forcePresent || win.needsRedraw || !win.framePending {
 		t.Fatal("legacy retry did not complete the transaction")
 	}
 }
@@ -1772,8 +1933,8 @@ func TestWaylandPresentFailureCleansNewCallback(t *testing.T) {
 	var destroyed []uintptr
 	app.api.proxyDestroy = func(proxy uintptr) { destroyed = append(destroyed, proxy) }
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
-		pendingSerial: 41, forcePresent: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
+		configure: waylandConfigureTransaction{serial: 41}, forcePresent: true,
 	}
 	renderer := newWaylandPresentTestRenderer(400, 300)
 	presentCalls := 0
@@ -1817,9 +1978,9 @@ func TestWaylandDeferredResizePresentFailureLifecycle(t *testing.T) {
 	var destroyed []uintptr
 	app.api.proxyDestroy = func(proxy uintptr) { destroyed = append(destroyed, proxy) }
 	win := &waylandWindow{
-		app: app, surface: 1, xdgSurface: 2, configured: true,
+		app: app, surface: 1, xdgSurface: 2, surfaceState: waylandSurfaceMapped,
 		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
-		pendingWidth: 800, pendingHeight: 600, pendingSerial: 42,
+		configure:    waylandConfigureTransaction{width: 800, height: 600, serial: 42},
 		forcePresent: true, framePending: true, frameCallback: 77,
 	}
 	win.storeScale(1)
@@ -1891,9 +2052,9 @@ func TestWaylandResizeScaleApplyFailurePreservesTransaction(t *testing.T) {
 			}
 			expectedErr := errors.New("resize apply failed")
 			win := &waylandWindow{
-				app: app, surface: 1, xdgSurface: 2, viewport: 7, configured: true,
+				app: app, surface: 1, xdgSurface: 2, viewport: 7, surfaceState: waylandSurfaceMapped,
 				width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
-				pendingWidth: 800, pendingHeight: 600, pendingSerial: 44, forcePresent: true,
+				configure: waylandConfigureTransaction{width: 800, height: 600, serial: 44}, forcePresent: true,
 			}
 			win.storeScale(1)
 			renderer := newWaylandPresentTestRenderer(800, 600)
@@ -1915,8 +2076,8 @@ func TestWaylandResizeScaleApplyFailurePreservesTransaction(t *testing.T) {
 			if !win.geometryDirty {
 				t.Fatal("failed apply consumed geometryDirty")
 			}
-			if win.pendingSerial != 44 {
-				t.Fatalf("failed apply consumed serial %d, want 44", win.pendingSerial)
+			if win.configure.serial != 44 {
+				t.Fatalf("failed apply consumed serial %d, want 44", win.configure.serial)
 			}
 		})
 	}
@@ -1962,7 +2123,7 @@ func TestWaylandRedrawErrorsReachApplication(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			app := &waylandApplication{api: &waylandAPI{}}
 			installWaylandFrameTestCallbacks(app.api)
-			win := &waylandWindow{app: app, surface: 1}
+			win := &waylandWindow{app: app, surface: 1, surfaceState: waylandSurfaceMapped}
 			win.state = &waylandWindowState{
 				app:      app,
 				win:      win,
@@ -1985,9 +2146,9 @@ func TestWaylandRedrawErrorsReachApplication(t *testing.T) {
 func TestWaylandFrameClockBackpressure(t *testing.T) {
 	redrawCount := 0
 	win := &waylandWindow{
-		surface:    1,
-		xdgSurface: 2,
-		configured: true,
+		surface:      1,
+		xdgSurface:   2,
+		surfaceState: waylandSurfaceMapped,
 	}
 	win.state = &waylandWindowState{
 		win: win,
@@ -2121,12 +2282,13 @@ func TestWaylandConfigureAckOnStateChange(t *testing.T) {
 	app := &waylandApplication{api: api}
 	installWaylandFrameTestCallbacks(api)
 	win := &waylandWindow{
-		app:         app,
-		surface:     10,
-		xdgSurface:  20,
-		xdgToplevel: 30,
-		width:       400,
-		height:      300,
+		app:          app,
+		surface:      10,
+		xdgSurface:   20,
+		xdgToplevel:  30,
+		surfaceState: waylandSurfaceMapped,
+		width:        400,
+		height:       300,
 	}
 	state := &waylandWindowState{app: app, win: win}
 	win.state = state
@@ -2149,8 +2311,8 @@ func TestWaylandConfigureAckOnStateChange(t *testing.T) {
 	if len(committedSurfaces) != 1 || committedSurfaces[0] != 10 {
 		t.Fatalf("expected surface commit on state change configure, got %v", committedSurfaces)
 	}
-	if win.pendingSerial != 0 {
-		t.Fatalf("expected pendingSerial to be cleared after ack, got %d", win.pendingSerial)
+	if win.configure.serial != 0 {
+		t.Fatalf("expected configure.serial to be cleared after ack, got %d", win.configure.serial)
 	}
 }
 
@@ -2291,8 +2453,8 @@ func TestWaylandViewportDestinationSync(t *testing.T) {
 	}
 
 	// 3. Configure event with new dimensions
-	win.pendingWidth = 1200 // new logical width
-	win.pendingHeight = 900 // new logical height
+	win.configure.width = 1200 // new logical width
+	win.configure.height = 900 // new logical height
 	win.handleXdgSurfaceConfigure(42)
 
 	expectedLogicalW := int32(math.Round(float64(float32(win.width) / 1.25)))
@@ -2336,15 +2498,14 @@ func TestWaylandResizeErrorsStopConfigureCompletion(t *testing.T) {
 			app := &waylandApplication{api: api}
 			installWaylandFrameTestCallbacks(api)
 			win := &waylandWindow{
-				app:           app,
-				surface:       1,
-				xdgSurface:    2,
-				width:         800,
-				height:        600,
-				pendingWidth:  780,
-				pendingHeight: 570,
-				pendingSerial: 99,
-				framePending:  true,
+				app:          app,
+				surface:      1,
+				xdgSurface:   2,
+				surfaceState: waylandSurfaceMapped,
+				width:        800,
+				height:       600,
+				configure:    waylandConfigureTransaction{width: 780, height: 570, serial: 99},
+				framePending: true,
 			}
 			win.storeScale(1)
 			renderer := &vulkanRenderer{
@@ -2444,13 +2605,14 @@ func TestWaylandAtomicConfigureResizeSequence(t *testing.T) {
 	app := &waylandApplication{api: api, display: 0x111}
 	installWaylandFrameTestCallbacks(api)
 	win := &waylandWindow{
-		app:        app,
-		surface:    0x222,
-		xdgSurface: 0x333,
-		viewport:   0x444,
-		width:      800,
-		height:     600,
-		margin:     0,
+		app:          app,
+		surface:      0x222,
+		xdgSurface:   0x333,
+		viewport:     0x444,
+		surfaceState: waylandSurfaceMapped,
+		width:        800,
+		height:       600,
+		margin:       0,
 	}
 	state := &waylandWindowState{
 		app: app,
@@ -2465,8 +2627,8 @@ func TestWaylandAtomicConfigureResizeSequence(t *testing.T) {
 	win.state = state
 
 	// Simulate compositor configuring a top-left resize from 800x600 down to 780x570
-	win.pendingWidth = 780
-	win.pendingHeight = 570
+	win.configure.width = 780
+	win.configure.height = 570
 	win.handleXdgSurfaceConfigure(9999)
 
 	// Verify order:
@@ -2577,13 +2739,14 @@ func TestWaylandDeferredAtomicResizeAndConfigureAck(t *testing.T) {
 	app := &waylandApplication{api: api, display: 0x111}
 	installWaylandFrameTestCallbacks(api)
 	win := &waylandWindow{
-		app:        app,
-		surface:    mockSurface,
-		xdgSurface: mockXdgSurface,
-		viewport:   0x444,
-		width:      800,
-		height:     600,
-		margin:     0,
+		app:          app,
+		surface:      mockSurface,
+		xdgSurface:   mockXdgSurface,
+		viewport:     0x444,
+		surfaceState: waylandSurfaceMapped,
+		width:        800,
+		height:       600,
+		margin:       0,
 	}
 	state := &waylandWindowState{
 		app: app,
@@ -2598,8 +2761,8 @@ func TestWaylandDeferredAtomicResizeAndConfigureAck(t *testing.T) {
 	win.state = state
 
 	// 1. Initial resize configure (500x400, serial 101)
-	win.pendingWidth = 500
-	win.pendingHeight = 400
+	win.configure.width = 500
+	win.configure.height = 400
 	win.handleXdgSurfaceConfigure(101)
 
 	// Since framePending was false, this first configure triggers applyPendingResize immediately
@@ -2622,21 +2785,21 @@ func TestWaylandDeferredAtomicResizeAndConfigureAck(t *testing.T) {
 	}
 
 	// The second configure supersedes the pending geometry without committing.
-	win.pendingWidth = 520
-	win.pendingHeight = 410
+	win.configure.width = 520
+	win.configure.height = 410
 	win.handleXdgSurfaceConfigure(102)
 
 	if win.width != 500 || win.height != 400 {
 		t.Fatalf("second configure committed before its callback: got (%d, %d)", win.width, win.height)
 	}
-	if win.pendingSerial != 102 {
-		t.Fatalf("latest serial = %d, want 102", win.pendingSerial)
+	if win.configure.serial != 102 {
+		t.Fatalf("latest serial = %d, want 102", win.configure.serial)
 	}
 
 	// The third configure arrives before the same callback; only the latest
 	// geometry is acknowledged and presented after that callback completes.
-	win.pendingWidth = 540
-	win.pendingHeight = 420
+	win.configure.width = 540
+	win.configure.height = 420
 	win.handleXdgSurfaceConfigure(103)
 
 	if win.width != 500 || win.height != 400 {

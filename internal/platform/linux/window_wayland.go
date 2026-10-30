@@ -87,6 +87,25 @@ type waylandFrameGeometry struct {
 	scale         float32
 }
 
+// waylandSurfaceState is the protocol lifecycle owned by the event-loop thread.
+type waylandSurfaceState uint8
+
+const (
+	waylandSurfaceCreated waylandSurfaceState = iota
+	waylandSurfaceAwaitInitialConfigure
+	waylandSurfaceMapped
+	waylandSurfaceUnmapped
+	waylandSurfaceClosed
+)
+
+// waylandConfigureTransaction owns one configure sequence from its toplevel
+// geometry event through the serial ACK paired with a buffer commit.
+type waylandConfigureTransaction struct {
+	serial          uint32
+	width, height   int32
+	toplevelPending bool
+}
+
 // waylandWindow coordinates an XDG-Shell toplevel window, surface state, and frame rendering.
 type waylandWindow struct {
 	mu sync.Mutex
@@ -113,25 +132,18 @@ type waylandWindow struct {
 	geometryDirty bool
 	lastFrame     ui.Rect
 
-	pendingSerial            uint32
-	pendingWidth             int32
-	pendingHeight            int32
-	toplevelConfigurePending bool
-	configured               bool
-	awaitingConfigure        bool
-	firstConfigureDone       bool
-	initialResizePending     bool
-	resizeDeferred           bool
-	framePending             bool
-	frameCallback            uintptr
-	needsRedraw              bool
-	forcePresent             bool
-	maximized                bool
-	fullscreen               bool
-	resizing                 bool
-	activated                bool
-	hidden                   bool
-	closed                   atomic.Bool
+	surfaceState   waylandSurfaceState
+	configure      waylandConfigureTransaction
+	resizeDeferred bool
+	framePending   bool
+	frameCallback  uintptr
+	needsRedraw    bool
+	forcePresent   bool
+	maximized      bool
+	fullscreen     bool
+	resizing       bool
+	activated      bool
+	closed         atomic.Bool
 
 	pointerX, pointerY float32
 	lastClickTime      uint32
@@ -189,7 +201,7 @@ func (win *waylandWindow) logicalSize() platform.Size {
 // pendingLogicalSize returns the effective geometry of the latest configure.
 // A zero-size floating configure restores the saved logical window size.
 func (win *waylandWindow) pendingLogicalSize() (int32, int32) {
-	w, h := win.pendingWidth, win.pendingHeight
+	w, h := win.configure.width, win.configure.height
 	if (w <= 0 || h <= 0) && !win.maximized && !win.fullscreen && win.savedLogicalW > 0 && win.savedLogicalH > 0 {
 		w = int32(math.Round(float64(win.savedLogicalW)))
 		h = int32(math.Round(float64(win.savedLogicalH)))
@@ -197,14 +209,40 @@ func (win *waylandWindow) pendingLogicalSize() (int32, int32) {
 	return w, h
 }
 
-func (win *waylandWindow) takeInitialResizeFrame() (platform.Frame, bool, error) {
-	pending := win.initialResizePending
-	win.initialResizePending = false
-	if !pending || win.state == nil || win.state.config.OnResize == nil {
-		return platform.Frame{}, false, nil
+func (win *waylandWindow) canPresent() bool {
+	if win.closed.Load() || win.surface == 0 {
+		return false
 	}
-	frame, err := win.state.config.OnResize(win.logicalSize())
-	return frame, true, err
+	switch win.surfaceState {
+	case waylandSurfaceMapped:
+		return true
+	case waylandSurfaceAwaitInitialConfigure:
+		return win.configure.serial != 0
+	default:
+		return false
+	}
+}
+
+// beginRemap performs the empty commit that requests a fresh configure. The
+// latest hidden geometry remains pending, but its old serial cannot be reused.
+func (win *waylandWindow) beginRemap() {
+	win.surfaceState = waylandSurfaceAwaitInitialConfigure
+	win.configure.serial = 0
+	win.configure.toplevelPending = false
+	win.needsRedraw = true
+	if win.surface != 0 && win.app != nil && win.app.api != nil {
+		win.app.api.surfaceCommit(win.surface)
+		if win.app.api.displayFlush != nil && win.app.display != 0 {
+			win.app.api.displayFlush(win.app.display)
+		}
+	}
+}
+
+func (win *waylandWindow) ackConfigure() {
+	if win.app != nil && win.app.api != nil && win.xdgSurface != 0 && win.configure.serial != 0 {
+		win.app.api.xdgSurfaceAckConfigure(win.xdgSurface, win.configure.serial)
+		win.configure.serial = 0
+	}
 }
 
 func (win *waylandWindow) reportFrame() {
@@ -304,14 +342,14 @@ func (win *waylandWindow) presentInputFrame(frame platform.Frame) error {
 		return err
 	}
 	win.needsRedraw = true
-	if win.toplevelConfigurePending {
+	if win.configure.toplevelPending {
 		win.resizeDeferred = true
 		return nil
 	}
-	if win.hidden || win.awaitingConfigure || win.framePending {
+	if !win.canPresent() || win.framePending {
 		return nil
 	}
-	if win.pendingSerial != 0 || win.forcePresent || win.geometryDirty {
+	if win.configure.serial != 0 || win.forcePresent || win.geometryDirty {
 		win.renderFrame()
 		return nil
 	}
@@ -322,9 +360,6 @@ func (win *waylandWindow) presentInputFrame(frame platform.Frame) error {
 		return err
 	}
 	win.needsRedraw = false
-	if win.app != nil && win.app.api != nil && win.app.api.displayFlush != nil && win.app.display != 0 {
-		win.app.api.displayFlush(win.app.display)
-	}
 	return nil
 }
 
@@ -334,12 +369,12 @@ func (win *waylandWindow) renderFrame() {
 	if win.closed.Load() || win.surface == 0 || win.state == nil {
 		return
 	}
-	if win.toplevelConfigurePending {
+	if win.configure.toplevelPending {
 		win.resizeDeferred = true
 		win.needsRedraw = true
 		return
 	}
-	if win.awaitingConfigure || win.hidden {
+	if !win.canPresent() {
 		win.needsRedraw = true
 		return
 	}
@@ -350,12 +385,7 @@ func (win *waylandWindow) renderFrame() {
 	redrawRequested := win.needsRedraw
 	win.needsRedraw = false
 
-	ackConfigure := func() {
-		if win.app != nil && win.app.api != nil && win.xdgSurface != 0 && win.pendingSerial != 0 {
-			win.app.api.xdgSurfaceAckConfigure(win.xdgSurface, win.pendingSerial)
-			win.pendingSerial = 0
-		}
-	}
+	ackConfigure := win.ackConfigure
 	var err error
 	if win.state.renderer != nil && win.state.config.OnRedraw != nil && win.state.applyFrame != nil {
 		var frame platform.Frame
@@ -411,9 +441,6 @@ func (win *waylandWindow) renderFrame() {
 	}
 	win.geometryDirty = false
 	win.forcePresent = false
-	if win.app != nil && win.app.api != nil && win.app.api.displayFlush != nil && win.app.display != 0 {
-		win.app.api.displayFlush(win.app.display)
-	}
 }
 
 func (win *waylandWindow) applyFrameMargin(margin uint32) bool {
@@ -430,6 +457,9 @@ func (win *waylandWindow) applyFrameMargin(margin uint32) bool {
 }
 
 func (win *waylandWindow) handleXdgToplevelConfigure(width, height int32, states *wlArray) {
+	if win.closed.Load() || win.surfaceState == waylandSurfaceClosed {
+		return
+	}
 	maximized := false
 	fullscreen := false
 	resizing := false
@@ -501,22 +531,22 @@ func (win *waylandWindow) handleXdgToplevelConfigure(width, height int32, states
 		}
 	}
 
-	win.pendingWidth = width
-	win.pendingHeight = height
-	win.toplevelConfigurePending = true
+	win.configure.width = width
+	win.configure.height = height
+	win.configure.toplevelPending = true
 }
 
 func (win *waylandWindow) applyPendingResize() {
 	if win.closed.Load() || win.surface == 0 {
 		return
 	}
-	if win.toplevelConfigurePending {
+	if win.configure.toplevelPending {
 		// A toplevel configure is incomplete until xdg_surface.configure supplies
 		// its serial. Scale changes must not present the new geometry before then.
 		win.resizeDeferred = true
 		return
 	}
-	if win.hidden || win.awaitingConfigure {
+	if win.state != nil && !win.canPresent() {
 		win.resizeDeferred = true
 		win.needsRedraw = true
 		return
@@ -541,9 +571,6 @@ func (win *waylandWindow) applyPendingResize() {
 			newHeight += 2 * win.margin
 		}
 		if newWidth != win.width || newHeight != win.height {
-			if win.state == nil {
-				win.initialResizePending = true
-			}
 			win.width = newWidth
 			win.height = newHeight
 			win.publishFrameGeometry()
@@ -551,18 +578,13 @@ func (win *waylandWindow) applyPendingResize() {
 		}
 	}
 
-	// Before the renderer exists, retain the compositor's geometry for openWindow.
-	// Its initial present acknowledges the serial together with the first buffer.
+	// Before a renderer exists, retain the compositor's geometry. A later
+	// buffer transaction acknowledges the serial with the first present.
 	if win.state == nil {
 		return
 	}
 
-	ackConfigure := func() {
-		if win.app != nil && win.app.api != nil && win.xdgSurface != 0 && win.pendingSerial != 0 {
-			win.app.api.xdgSurfaceAckConfigure(win.xdgSurface, win.pendingSerial)
-			win.pendingSerial = 0
-		}
-	}
+	ackConfigure := win.ackConfigure
 	var err error
 	if win.state.renderer != nil {
 		err = win.state.renderer.resize(win.width, win.height)
@@ -650,16 +672,14 @@ func (win *waylandWindow) applyPendingResize() {
 	if win.state.renderer != nil {
 		win.reportFrame()
 	}
-	if win.app != nil && win.app.api != nil && win.app.api.displayFlush != nil && win.app.display != 0 {
-		win.app.api.displayFlush(win.app.display)
-	}
 }
 
 func (win *waylandWindow) handleXdgSurfaceConfigure(serial uint32) {
-	win.toplevelConfigurePending = false
-	win.pendingSerial = serial
-	win.configured = true
-	win.awaitingConfigure = false
+	if win.closed.Load() || win.surfaceState == waylandSurfaceClosed || serial == 0 {
+		return
+	}
+	win.configure.toplevelPending = false
+	win.configure.serial = serial
 	if win.state != nil {
 		win.forcePresent = true
 	}
@@ -815,6 +835,9 @@ func (win *waylandWindow) destroy() {
 		return
 	}
 	win.closed.Store(true)
+	win.surfaceState = waylandSurfaceClosed
+	win.configure.serial = 0
+	win.configure.toplevelPending = false
 	var api *waylandAPI
 	if win.app != nil {
 		api = win.app.api
@@ -908,10 +931,13 @@ func (win *waylandWindow) Hide() {
 		return
 	}
 	win.app.post(func() {
-		if win.hidden {
+		if win.closed.Load() || win.surfaceState == waylandSurfaceClosed {
 			return
 		}
-		win.hidden = true
+		if win.surfaceState == waylandSurfaceUnmapped {
+			return
+		}
+		win.surfaceState = waylandSurfaceUnmapped
 		if win.frameCallback != 0 && win.app != nil && win.app.api != nil {
 			win.app.api.proxyDestroy(win.frameCallback)
 			win.frameCallback = 0
@@ -933,17 +959,13 @@ func (win *waylandWindow) Show() {
 		return
 	}
 	win.app.post(func() {
-		if !win.hidden {
+		if win.closed.Load() || win.surfaceState == waylandSurfaceClosed {
 			return
 		}
-		win.hidden = false
-		win.configured = false
-		win.awaitingConfigure = true
-		win.needsRedraw = true
-		if win.surface != 0 && win.app != nil && win.app.api != nil {
-			win.app.api.surfaceCommit(win.surface)
-			win.app.api.displayFlush(win.app.display)
+		if win.surfaceState != waylandSurfaceUnmapped {
+			return
 		}
+		win.beginRemap()
 	})
 }
 
@@ -1080,21 +1102,6 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 
 	win.setMinimumSize(config.MinWidth, config.MinHeight)
 
-	// Trigger initial surface commit to receive configure sequence.
-	app.api.surfaceCommit(surface)
-	if app.api.displayRoundtrip(app.display) < 0 {
-		err := fmt.Errorf("linux: Wayland initial configure failed")
-		if app.loop != nil {
-			err = app.loop.displayError("initial configure")
-		}
-		win.destroy()
-		return nil, err
-	}
-	if !win.configured {
-		win.destroy()
-		return nil, fmt.Errorf("linux: Wayland compositor did not configure the initial surface")
-	}
-
 	textInput, err := newLinuxTextInput(&config)
 	if err != nil {
 		win.destroy()
@@ -1165,46 +1172,6 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 		}
 	}
 
-	if frame, resized, resizeErr := win.takeInitialResizeFrame(); resized {
-		if resizeErr != nil {
-			renderer.close()
-			textInput.close()
-			win.destroy()
-			return nil, resizeErr
-		}
-		merged, dirty, err := textInput.prepare(frame)
-		if err == nil && dirty {
-			_, err = renderer.apply(merged)
-		}
-		if err != nil {
-			renderer.close()
-			textInput.close()
-			win.destroy()
-			return nil, err
-		}
-	}
-
-	win.updateWindowGeometry()
-	win.updateInputRegion()
-	win.updateViewportDestination()
-	win.geometryDirty = false
-
-	err = win.presentWithFrameCallback(renderer.present, func() {
-		if win.pendingSerial != 0 {
-			app.api.xdgSurfaceAckConfigure(win.xdgSurface, win.pendingSerial)
-			win.pendingSerial = 0
-		}
-	})
-	if err != nil {
-		renderer.close()
-		textInput.close()
-		win.destroy()
-		return nil, err
-	}
-	app.api.surfaceCommit(surface)
-	app.api.displayFlush(app.display)
-	win.firstConfigureDone = true
-
 	if config.Waker != nil && config.OnRedraw != nil {
 		config.Waker.Bind(func() {
 			app.post(func() {
@@ -1220,6 +1187,7 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 	app.windows = append(app.windows, state)
 	app.mu.Unlock()
 	app.atspiOpened(state)
+	win.beginRemap()
 
 	return win, nil
 }

@@ -63,7 +63,7 @@ func TestWaylandOutputScaleFallback(t *testing.T) {
 		t.Fatalf("wl_output bound version = %d, want 2", boundVersion)
 	}
 
-	win := &waylandWindow{app: app, surface: 1, width: 400, height: 300, framePending: true}
+	win := &waylandWindow{app: app, surface: 1, surfaceState: waylandSurfaceMapped, width: 400, height: 300, framePending: true}
 	win.storeScale(1)
 	state := &waylandWindowState{app: app, win: win}
 	win.state = state
@@ -79,6 +79,9 @@ func TestWaylandOutputScaleFallback(t *testing.T) {
 	}
 	if win.width != 800 || win.height != 600 {
 		t.Fatalf("2x fallback buffer size = %dx%d, want 800x600", win.width, win.height)
+	}
+	if app.firstErr != nil || !win.resizeDeferred {
+		t.Fatalf("scale backpressure error=%v resizeDeferred=%v, want nil/true", app.firstErr, win.resizeDeferred)
 	}
 }
 
@@ -102,7 +105,7 @@ func TestWaylandLateOutputAddRemoveUpdatesWindows(t *testing.T) {
 	app.globals.handleGlobal(app.globals.registry, 7, "wl_output", 2)
 	app.globals.handleGlobal(app.globals.registry, 8, "wl_output", 2)
 
-	win := &waylandWindow{app: app, surface: 1, width: 400, height: 300, framePending: true}
+	win := &waylandWindow{app: app, surface: 1, surfaceState: waylandSurfaceMapped, width: 400, height: 300, framePending: true}
 	win.storeScale(1)
 	state := &waylandWindowState{app: app, win: win}
 	win.state = state
@@ -128,6 +131,9 @@ func TestWaylandLateOutputAddRemoveUpdatesWindows(t *testing.T) {
 	app.globals.handleGlobalRemove(8)
 	if len(win.activeOutputs) != 0 || destroyed[8] != 1 {
 		t.Fatalf("final output removal active=%v destroyed=%d", win.activeOutputs, destroyed[8])
+	}
+	if app.firstErr != nil || !win.resizeDeferred {
+		t.Fatalf("late output backpressure error=%v resizeDeferred=%v, want nil/true", app.firstErr, win.resizeDeferred)
 	}
 }
 
@@ -186,14 +192,15 @@ func TestWaylandApplyScaleAndViewport(t *testing.T) {
 
 	// 800x600 logical at 1.0x with margin 24
 	win := &waylandWindow{
-		app:         app,
-		surface:     10,
-		xdgSurface:  20,
-		viewport:    30,
-		width:       848, // 800 + 2*24
-		height:      648, // 600 + 2*24
-		margin:      24,
-		frameWanted: true,
+		app:          app,
+		surface:      10,
+		xdgSurface:   20,
+		viewport:     30,
+		surfaceState: waylandSurfaceMapped,
+		width:        848, // 800 + 2*24
+		height:       648, // 600 + 2*24
+		margin:       24,
+		frameWanted:  true,
 	}
 	win.storeScale(1.0)
 
@@ -332,8 +339,8 @@ func TestWaylandScaleRoundTripWithoutViewport(t *testing.T) {
 			if win.width != size.width || win.height != size.height {
 				t.Fatalf("round-trip size = %dx%d, want %dx%d", win.width, win.height, size.width, size.height)
 			}
-			if win.savedLogicalW != float32(size.width) || win.savedLogicalH != float32(size.height) || win.pendingWidth != int32(size.width) || win.pendingHeight != int32(size.height) {
-				t.Fatalf("round-trip logical state saved=%gx%g pending=%dx%d", win.savedLogicalW, win.savedLogicalH, win.pendingWidth, win.pendingHeight)
+			if win.savedLogicalW != float32(size.width) || win.savedLogicalH != float32(size.height) || win.configure.width != int32(size.width) || win.configure.height != int32(size.height) {
+				t.Fatalf("round-trip logical state saved=%gx%g pending=%dx%d", win.savedLogicalW, win.savedLogicalH, win.configure.width, win.configure.height)
 			}
 			if len(bufferScales) != 2 || bufferScales[0] != 2 || bufferScales[1] != 1 {
 				t.Fatalf("buffer scale fallback = %v, want [2 1]", bufferScales)
@@ -367,11 +374,12 @@ func TestWaylandScaleErrorsStopTransition(t *testing.T) {
 			app := &waylandApplication{api: &waylandAPI{}}
 			installWaylandFrameTestCallbacks(app.api)
 			win := &waylandWindow{
-				app:     app,
-				surface: 1,
-				width:   800,
-				height:  600,
-				margin:  test.margin,
+				app:          app,
+				surface:      1,
+				surfaceState: waylandSurfaceMapped,
+				width:        800,
+				height:       600,
+				margin:       test.margin,
 			}
 			win.storeScale(1)
 			resizeCalls := 0

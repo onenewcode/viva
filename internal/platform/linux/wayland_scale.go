@@ -238,7 +238,7 @@ func (win *waylandWindow) applyScale(scale float32) {
 
 	logicalW := float32(contentSize(win.width, win.margin)) / oldScale
 	logicalH := float32(contentSize(win.height, win.margin)) / oldScale
-	if win.toplevelConfigurePending || win.pendingSerial != 0 || win.resizeDeferred {
+	if win.configure.toplevelPending || win.configure.serial != 0 || win.resizeDeferred {
 		// An uncommitted configure owns the latest logical geometry. The current
 		// device size still describes the previous commit and must not replace it.
 		w, h := win.pendingLogicalSize()
@@ -294,8 +294,8 @@ func (win *waylandWindow) applyScale(scale float32) {
 
 	// Scale changes use the same mandatory-present transaction as configure.
 	win.geometryDirty = true
-	win.pendingWidth = int32(logicalW)
-	win.pendingHeight = int32(logicalH)
+	win.configure.width = int32(logicalW)
+	win.configure.height = int32(logicalH)
 	if win.state != nil {
 		win.forcePresent = true
 	}

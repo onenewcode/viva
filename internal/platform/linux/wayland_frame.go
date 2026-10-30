@@ -16,8 +16,9 @@ var (
 	rawFrameListener  [1]uintptr
 	pinnerFrame       runtime.Pinner
 
-	errWaylandFrameCallback = errors.New("linux: failed to create Wayland frame callback")
-	errWaylandFramePending  = errors.New("linux: Wayland frame callback is still pending")
+	errWaylandFrameCallback   = errors.New("linux: failed to create Wayland frame callback")
+	errWaylandFramePending    = errors.New("linux: Wayland frame callback is still pending")
+	errWaylandSurfaceNotReady = errors.New("linux: Wayland surface is not ready for a buffer commit")
 )
 
 func initFrameListener() {
@@ -60,10 +61,17 @@ func (win *waylandWindow) requestFrameCallback() bool {
 }
 
 // presentWithFrameCallback installs the next frame clock before acknowledging
-// and presenting its commit. A failure destroys only that new callback.
+// and presenting its commit. A failure destroys only that new callback. Close
+// cancels a pending commit without turning normal shutdown into an error.
 func (win *waylandWindow) presentWithFrameCallback(present func() error, ackConfigure func()) error {
 	if present == nil {
 		return nil
+	}
+	if !win.canPresent() {
+		if win.closed.Load() {
+			return nil
+		}
+		return errWaylandSurfaceNotReady
 	}
 	if win.framePending {
 		return errWaylandFramePending
@@ -83,6 +91,12 @@ func (win *waylandWindow) presentWithFrameCallback(present func() error, ackConf
 		if win.frameCallback == callback {
 			win.frameCallback = 0
 			win.framePending = false
+		}
+	}
+	if err == nil {
+		win.surfaceState = waylandSurfaceMapped
+		if win.app != nil && win.app.api != nil && win.app.api.displayFlush != nil && win.app.display != 0 {
+			win.app.api.displayFlush(win.app.display)
 		}
 	}
 	return err
