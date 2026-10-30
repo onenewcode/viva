@@ -1,81 +1,86 @@
-# Linux/Wayland 当前实现与架构复核
+# Linux/Wayland 当前实现复核
 
-- 修订日期：2026-10-30
-- 审查基准：`2c48fee` + Task 7 当前 diff
-- 适用分支：`docs/linux-render-refresh-flicker`
-- 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
-- 待实施任务：[task.md](task.md)
-- 范围：Wayland 后端选择、事件循环、surface/configure/呈现、输入调度、缩放、共享 Vulkan WSI、测试与验收边界
-- 类型：只读源码审查；本文只保留当前仍未解决的问题和目标差距
-
-> 证据口径：“源码确认”表示控制流中存在对应路径，不表示已在真实 Linux/compositor/GPU 上复现可见症状。Linux 测试交叉编译和 vet 不等于原生测试、race detector 或真实环境验收。已经完成的修复不再作为 findings 保留。
+- 日期：2026-10-30
+- 基线：`5b1cd1e`
+- 类型：只读源码复核
+- 开发契约：[01-architecture-overview.md](01-architecture-overview.md)
+- 后续任务：[task.md](task.md)
 
 ## 1. 结论
 
-**宏观架构合理，不需要推倒重写；当前主路径实现与目标设计基本一致。Tasks 1–3 已处理本轮三个具体实现问题，Task 5 已收敛后端探测副作用与错误链，Task 6 已落地标准读取流程和 auxiliary event-source，Task 7 已集中 surface/configure 状态与提交事务，剩余主要为真实验证和未排期的桌面服务抽象。**
+**宏观架构合理，不需要推倒重写；当前仍有三项实现问题。** 主循环的 prepare/read、surface/configure 事务、frame-callback 背压和 Vulkan 恢复边界可以保留。后续工作应收敛入口所有权和对象生命周期，而不是再次 redesign 已完成的主干。
 
-Task 3 将 registry 保留为 application/globals 级对象，使 discovery 后的 output 增删能够进入现有跟踪路径；真实热插拔仍需后续实机验收。Task 5 将 Wayland 的全局运行时状态和 desktop watcher 延后到 `Run`，自动后备记录 Wayland 初始化原因，无 X11 时保留下层错误链。Task 6 为 prepare 成功后的每条路径配对 read/cancel，并将服务 FD 与 callback 合并为带 Interest/Dispatch 契约的 source。Task 7 用显式 surface 状态和 configure 事务取代分散字段，初始 configure 改为异步等待，open/redraw/input/resize/scale/remap 共用提交边界。
-
-这些问题不需要改变 Wayland-first、PureGo、共享 Vulkan、eventfd 命令队列或 frame-callback 背压等主干设计。后续结构性工作主要是桌面服务公共生命周期抽象，不再重复已完成的 configure 状态机迁移。
+“源码确认”表示控制流中存在问题，不表示已在真实 Linux/compositor/GPU 上复现可见症状。
 
 ## 2. 当前 findings
 
-本轮没有保留的实现 findings。F1–F3 对应的实现修改均已在 Tasks 1–3 中落地，验证证据和未执行项目见第 5 节；后续 review 若发现回归，应以当前源码重新建立 finding，而不是恢复历史文本。
+### F1（较高）：系统集成入口绕过单线程所有权
 
-## 3. 架构合理性判断
+目标契约要求 proxy 和窗口状态由事件循环线程独占，但：
 
-### 3.1 后端与共享边界：合理
+- `internal/platform/linux/system_linux.go:394` 在调用线程直接执行 `setCursor`；
+- `internal/platform/linux/wayland_cursor.go:92` 读写 application 状态并直接操作 surface、proxy 和 display；
+- `internal/platform/linux/system_linux.go:356` 的剪贴板写入同样直接进入 Wayland 实现；
+- `internal/platform/linux/wayland_app.go:612` 的关闭路径会销毁对象并卸载动态库。
 
-Wayland-first、强制后端不静默降级、X11 后备，以及共享场景、输入路由和 Vulkan 核心的边界可以继续保留。PureGo 动态绑定也不需要因当前问题改变。Task 5 已保留自动后备诊断和无 X11 时的下层错误链，并将全局 hook、活动应用指针及 desktop watcher 收敛到 `Run`/`close` 生命周期。
+`cursorMgr.mu` 只保护 cursor manager，不能序列化 application、proxy 和 display 的整个生命周期。若这些 API 从后台 goroutine 调用，并与最后窗口关闭或 `Run` 返回并发，存在数据竞争和访问已销毁对象的风险。若产品约定这些 API 只能在 UI 线程调用，则当前缺少明确的公共契约与实现约束。
 
-### 3.2 事件循环：标准读取流程已落地，真实时序待验收
+**处理：** Task 9。优先统一投递到主循环；同步返回值需要主线程快速路径或结果通道。同步审计其他直接 proxy/event-source 入口，并补关闭并发的原生 race 测试。
 
-eventfd 命令队列、主线程执行、FD 异常 readiness、flush POLLOUT 和最近 deadline 调度保持原有职责划分。Task 6 已在 poll 前排空 pending，按 EAGAIN 语义重试 prepare，并为成功 prepare 严格配对 read/cancel；服务 FD 不再通过平行切片关联 callback。Task 2 的 `Frame` 仍只读主线程发布的不可变几何快照。真实 compositor 下的协议时序仍需后续验收。
+### F2（中等）：data device 的两个依赖迟到都不会触发初始化
 
-### 3.3 Surface/configure/呈现：显式状态与集中事务已落地
+- `setupDataDevice` 只在构造时调用一次：`internal/platform/linux/wayland_app.go:131`；
+- registry 可以后绑定 seat：`internal/platform/linux/wayland_registry.go:703`；
+- capabilities 只初始化 pointer/keyboard：`internal/platform/linux/wayland_app.go:592`；
+- data-device-manager 同样可以迟到：`internal/platform/linux/wayland_registry.go:761`；
+- data device 创建要求 manager 和 seat 同时存在：`internal/platform/linux/wayland_data.go:431`。
 
-scene update 与 present/commit 分离、clean/forced present、frame callback 配对以及 frame-pending 时延迟提交，都是正确主干。Task 1 区分了 toplevel 待闭合、serial 待 ACK 和 hidden/frame-pending 延迟的几何所有权，Task 7 又将这些协议字段集中到显式 surface 状态和 configure 事务中，并让首次 configure 异步进入同一提交边界。真实 compositor 下的连续 configure 和 remap 时序仍需验收。
+因此初始 discovery 缺少任一依赖时，后续依赖到齐也不会创建 data device。晚期 seat 可以恢复输入，但剪贴板和拖放持续不可用；已有 seat、仅有 manager 迟到时甚至不需要新的 capabilities 事件。
 
-### 3.4 Vulkan WSI：恢复边界合理
+**处理：** Task 10。seat 或 manager 任一可用性变化时执行幂等初始化，并覆盖初始无 seat、初始无 manager、依赖乱序到达、重复事件和 teardown 测试。
 
-有界恢复、swapchain 重建后的再次呈现以及资源集中销毁符合目标设计。当前 findings 不要求调整 Vulkan 主干；后续重点是 validation/lavapipe 和真实驱动验收。
+### F3（中等）：desktop watcher 的临时失败通过两条锁存路径永久禁止恢复
 
-### 3.5 缩放与多输出：主路径合理，真实热插拔待验收
+`syncDesktopWatch` 仅在 `!desktopFailed` 时连接（`internal/platform/linux/wayland_app.go:397`）。连接或接收失败会设置该标记：
 
-fractional-scale + viewport、整数 preferred scale 和 output scale 的优先级合理。Tasks 1–2 覆盖了几何交错与跨线程快照，Task 3 又将 registry 生命周期延长至 globals teardown，使晚期 output 增删能够驱动 scale 回退；真实热插拔结果仍列入后续验收。
+- `internal/platform/linux/wayland_app.go:419`
+- `internal/platform/linux/wayland_app.go:465`
 
-## 4. 尚未完成的目标架构能力
+另一条独立路径在初始 portal 读取失败时设置进程级 `desktopState.portalGone`：`internal/platform/linux/wayland_app.go:426`。该锁存会阻止后续启动（`internal/platform/linux/wayland_app.go:408`），而 `NameHasNoOwner`、`NoReply` 等当前归为 missing 的错误也可能是服务重启期间的瞬时状态（`internal/platform/linux/portal_unix.go:45`）。X11 使用同一全局锁存（`internal/platform/linux/desktop_bus_linux.go:37`）。
 
-以下是目标差距，不与第 2 节的确定性实现问题混为一谈：
+当前两条路径都没有恢复机制。一次瞬时 D-Bus/portal 故障会使 watcher 永久退出，不符合后续配置变化或新窗口可触发恢复的目标。
 
-| 能力 | 当前缺口 |
-| :--- | :--- |
-| 桌面服务公共生命周期 | 协议核心部分共享，连接和重连状态机仍有后端分叉 |
-| 托盘/后台常驻 | 完整 keep-alive 产品契约尚未实现 |
-| 原生 Linux race 验证 | Task 2 并发快照测试已交叉编译，尚未在 Linux/race detector 下执行 |
-| 真实环境验收 | headless compositor、Vulkan validation/lavapipe、真实桌面与性能矩阵未完成 |
+**处理：** Task 12。同时覆盖 `desktopFailed` 和 `portalGone`，区分永久 unsupported 与临时 disconnected，为临时故障增加退避重试。修改共享锁存时必须同步验证 Wayland 与 X11，并覆盖 portal-read 失败后的恢复。
 
-`01-architecture-overview.md` 已同步当前基线。后续实施任务完成后，应再次更新三份 Wayland 文档的审查基准和状态，避免已解决问题重新成为待办。
+## 3. 已核对的主干
 
-## 5. 本地验证记录
+本次未发现需要改变以下设计的新证据：
 
-审查环境为 macOS，未提供真实 Linux/Wayland/Vulkan 运行环境。以下命令成功：
+- `internal/platform/linux/wayland_loop.go` 的 prepare/read/cancel、flush 背压和命令唤醒；
+- `internal/platform/linux/window_wayland.go` 的异步初始 configure、集中 ACK/present 和 Hide/Show 状态迁移；
+- `internal/platform/linux/wayland_frame.go` 的 callback 与实际呈现配对；
+- `internal/platform/linux/vulkan_linux.go` 的有界恢复、重建后再次呈现和 old-swapchain 销毁；
+- `internal/platform/linux/wayland_scale.go` 的缩放优先级与几何更新。
+
+这些结论仅表示保留主干，不表示真实环境验收已经完成。
+
+## 4. 本次验证
+
+审查环境为 macOS。以下命令成功：
 
 ```sh
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-  go test -c -o /tmp/viva-linux-platform-task7.test ./internal/platform/linux
+  go test -c -o /tmp/viva-wayland-review.test ./internal/platform/linux
 
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
   go vet ./internal/platform/... ./app
+
+git diff --check
+go test ./internal/platform/...
 ```
 
-当前 macOS 平台的 `go test ./internal/platform/...` 有 302 个测试通过，`go test -race ./internal/platform/...` 有 300 个测试通过，但均不覆盖 Linux 后端。全仓 `go test ./...` 为 5537 个测试通过、23 个跳过，唯一失败仍为既有 `app/TestDesktopThemeDetectionAndStyling`（KDE/GNOME 样式识别得到 0），未将该命令记为全部通过。
+当前主机 platform 测试为 302 个通过。未执行 Linux 测试二进制、原生 race、headless compositor、Vulkan validation/lavapipe 或真实桌面/性能矩阵；也未查询本基线的 CI 运行结果。上述成功不能作为 F1 已排除或真实闪烁已修复的证据。
 
-这些结果只证明相关 Linux 测试可交叉编译、静态检查通过。Task 7 的显式状态迁移、异步初始 configure、configure 事务、Hide/Show、关闭和失败清理测试均包含在上述 Linux 测试包中，但没有原生执行；Task 2 的 Frame 并发快照测试也未在 Linux/race detector 下重跑。本次没有执行 Linux 测试二进制、Linux race detector、compositor、Vulkan WSI/validation 或真实桌面/性能验收；原生 Linux race 验证已列入 Task 8。
+## 5. 后续记录方式
 
-## 6. 建议优先级
-
-1. **P3：补真实验证层次**：原生 Linux race、headless compositor、validation/lavapipe、真实 GNOME/KDE/Sway 和性能矩阵。
-2. **未排期：桌面服务公共生命周期**：减少 X11/Wayland 重连分叉，并先明确 keep-alive 产品契约。
-
-最终判断：**保留现有架构主干；Tasks 1–3、Tasks 5–7 的实现及 Task 4 文档同步已反映在当前基线，但不能称为已完成原生 Linux race、真实 compositor、热插拔或 Vulkan/桌面矩阵验收。**
+完成 Task 9–12 后删除对应 finding，并同步任务清单和验证证据。已实现修复不再保留为历史章节；仅记录仍未解决的问题、未执行验证和新的基线。
