@@ -1,7 +1,7 @@
 # Linux/Wayland 当前实现与架构复核
 
 - 修订日期：2026-10-30
-- 审查基准：`b6e6087` + Task 1 当前 diff
+- 审查基准：`f109a06` + Task 2 当前 diff
 - 适用分支：`docs/linux-render-refresh-flicker`
 - 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
 - 待实施任务：[task.md](task.md)
@@ -12,41 +12,13 @@
 
 ## 1. 结论
 
-**宏观架构合理，不需要推倒重写；当前主路径实现与目标设计基本一致，但仍有两个具体实现问题，以及若干明确的目标架构差距。**
+**宏观架构合理，不需要推倒重写；当前主路径实现与目标设计基本一致，但仍有一个具体实现问题，以及若干明确的目标架构和验证差距。**
 
-当前应优先处理：
-
-1. `Window.Frame` 的任意 goroutine 契约与 Wayland 几何读写方式不一致；
-2. registry 在初次 discovery 后即销毁，动态 output 增删无法进入现有跟踪路径。
+当前应优先处理：registry 在初次 discovery 后即销毁，动态 output 增删无法进入现有跟踪路径。
 
 这些问题不需要改变 Wayland-first、PureGo、共享 Vulkan、eventfd 命令队列或 frame-callback 背压等主干设计。应优先修正状态所有权和公开契约，再继续 prepare/read、完整状态机和桌面服务抽象等结构性迁移。
 
 ## 2. 当前 findings
-
-### 2.2 F2：`Frame()` 的跨 goroutine 读取与几何写入不同步
-
-**严重度：中；公开契约与源码确认，未运行 race detector。**
-
-公共接口明确允许从任意 goroutine 调用 `Frame`：
-
-- `internal/platform/contract.go:122-136`
-- `app/application.go:16-24`
-- `app/application.go:89-100`
-
-Wayland 实现无同步读取 `width`、`height` 和 `margin`：
-
-- `internal/platform/linux/window_wayland.go:909-917`
-
-主事件线程会在 resize/scale 中写这些字段：
-
-- `internal/platform/linux/window_wayland.go:500-513`
-- `internal/platform/linux/wayland_scale.go:261-277`
-
-`scaleBits` 是 atomic，但不能使另外三个字段及其组合快照具备并发一致性。后台调用与 resize/scale 重叠时，既存在 Go 数据竞争，也可能得到不属于同一几何代际的结果。
-
-Wayland 无法提供普通 toplevel 的全局屏幕位置，因此当前返回 `false` 可以是合法能力降级；这并不免除读取过程的线程安全要求。
-
-**架构结论：** 后台 goroutine 应读取主线程发布的不可变几何快照，或通过明确同步读取；不应直接读取正在变化的窗口协议状态。
 
 ### 2.3 F3：registry 生命周期使动态 output 增删失效
 
@@ -76,7 +48,7 @@ Wayland-first、强制后端不静默降级、X11 后备，以及共享场景、
 
 ### 3.2 事件循环：主干合理，继续收敛标准读取流程
 
-eventfd 命令队列、主线程执行、FD 异常 readiness、flush POLLOUT 和最近 deadline 调度是合适的职责划分。后续 prepare/read 迁移应保持这些已有行为，重点补齐 `prepare_read` 与 `read_events/cancel_read` 的配对，而不是重新引入平行 ticker 或另一套 FD 所有权。
+eventfd 命令队列、主线程执行、FD 异常 readiness、flush POLLOUT 和最近 deadline 调度是合适的职责划分。后续 prepare/read 迁移应保持这些已有行为，重点补齐 `prepare_read` 与 `read_events/cancel_read` 的配对，而不是重新引入平行 ticker 或另一套 FD 所有权。Task 2 diff 也将 `Frame` 改为只读主线程发布的不可变几何快照，避免后台直接读取窗口字段。
 
 ### 3.3 Surface/configure/呈现：事务方向正确，几何所有权仍需集中
 
@@ -104,6 +76,7 @@ fractional-scale + viewport、整数 preferred scale 和 output scale 的优先�
 | 通用 event-source 抽象 | FD 与 callback 的具体实现尚未统一为带 Interest/Dispatch 契约的接口 |
 | 桌面服务公共生命周期 | 协议核心部分共享，连接和重连状态机仍有后端分叉 |
 | 托盘/后台常驻 | 完整 keep-alive 产品契约尚未实现 |
+| 原生 Linux race 验证 | Task 2 并发快照测试已交叉编译，尚未在 Linux/race detector 下执行 |
 | 真实环境验收 | headless compositor、Vulkan validation/lavapipe、真实桌面与性能矩阵未完成 |
 
 `01-architecture-overview.md` 已同步当前基线。后续实施任务完成后，应再次更新三份 Wayland 文档的审查基准和状态，避免已解决问题重新成为待办。
@@ -114,19 +87,18 @@ fractional-scale + viewport、整数 preferred scale 和 output scale 的优先�
 
 ```sh
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-  go test -c -o /tmp/viva-linux-platform-task1.test ./internal/platform/linux
+  go test -c -o /tmp/viva-linux-platform-task2.test ./internal/platform/linux
 
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
   go vet ./internal/platform/... ./app
 ```
 
-这些结果只证明相关 Linux 测试可交叉编译、静态检查通过。Task 1 新增的 serial 前 scale、Waker/dirty input 门限、frame-pending 和 hidden/remap 回归测试均包含在上述测试包中，但没有原生执行。本次没有执行 Linux 测试二进制、race detector、compositor、Vulkan WSI/validation 或真实桌面/性能验收。
+这些结果只证明相关 Linux 测试可交叉编译、静态检查通过。Task 2 新增的并发 resize/scale 快照测试包含在上述测试包中，但没有原生执行，也没有在 Linux/race detector 下验证。本次没有执行 Linux 测试二进制、race detector、compositor、Vulkan WSI/validation 或真实桌面/性能验收；原生 race 验证已列入 Task 8。
 
 ## 6. 建议优先级
 
-1. **P0：修正公开线程契约**：完成 F2，并用并发与 race 测试固定行为。
-2. **P1：补齐 output 生命周期与文档现状**：完成 F3，同步目标文档的状态表。
-3. **P2：继续结构性收敛**：后端探测与错误链、prepare/read、统一 event-source、显式 surface/configure 状态机。
-4. **P3：补真实验证层次**：headless compositor、validation/lavapipe、真实 GNOME/KDE/Sway 和性能矩阵。
+1. **P1：补齐 output 生命周期与文档现状**：完成 F3，同步目标文档的状态表。
+2. **P2：继续结构性收敛**：后端探测与错误链、prepare/read、统一 event-source、显式 surface/configure 状态机。
+3. **P3：补真实验证层次**：原生 Linux race、headless compositor、validation/lavapipe、真实 GNOME/KDE/Sway 和性能矩阵。
 
 最终判断：**保留现有架构主干；当前实现可称为主路径已落地，但不能称为所有协议交错、公开并发契约和动态多输出场景已经闭环。**

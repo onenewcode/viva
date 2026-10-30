@@ -1,7 +1,7 @@
 # Wayland 待实施任务
 
 - 修订日期：2026-10-30
-- 当前基线：`b6e6087` + Task 1 当前 diff
+- 当前基线：`f109a06` + Task 2 当前 diff
 - 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
 - 当前审查：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 
@@ -16,26 +16,6 @@
 5. Ubuntu CI 已实际执行 `go test ./internal/platform/linux`；新增测试应进入该包或其他会被原生执行的包，不能只验证交叉编译。
 6. 静态检查、mock/unit 测试、headless compositor、Vulkan validation 和真实桌面验收分别记录，不得互相替代。
 7. 每个任务提交前必须同步 `01`、`02` 和 `task.md`：记录基线提交与当前任务 diff、实现状态和验证证据，移除已完成 findings/待办且不重排历史任务编号，保留仍未完成的差距。Task 4 是阶段一致性检查，不替代逐任务同步。
-
-## P0：修正当前正确性与公开契约
-
-### Task 2：让 Wayland `Frame()` 满足任意 goroutine 契约
-
-- 对应 finding：F2
-- 目标：`Frame()` 与 resize/scale/close 并发时无 Go 数据竞争，也不读取混搭的几何代际。
-- 主要文件：
-  - `internal/platform/linux/window_wayland.go`
-  - `internal/platform/linux/wayland_scale.go`
-  - 相关并发测试
-- 实施要点：
-  - 主线程发布不可变几何快照，或用明确同步保护完整读取和写入；
-  - 快照必须包含一致的 width、height、margin 和 scale，不能只将其中一个字段改为 atomic；
-  - 后台 `Frame()` 不直接执行 Wayland proxy 或 Vulkan 操作；
-  - 保留 Wayland 无法报告全局屏幕位置时返回 `false` 的能力降级。
-- 验收条件：
-  - 并发 `Frame()` 与连续 resize/scale 在 race detector 下无数据竞争；
-  - 每次读取得到同一代际的完整几何；
-  - closed 或无法报告位置的行为符合公共接口契约。
 
 ## P1：补齐动态 output 生命周期与文档现状
 
@@ -143,10 +123,11 @@
 
 - 目标：验证 mock/unit 无法证明的协议时序、WSI 可见结果和实际体验。
 - 实施层次：
-  1. headless compositor：初始 configure、事件交错、Hide/Show、resize、scale、output 热插拔和断开；
-  2. Vulkan validation/lavapipe：swapchain 重建、同步、失败清理和新交换链呈现；
-  3. 真实 GNOME/KDE/Sway：分数/整数缩放、多屏、IBus、拖放和 AT-SPI；
-  4. 性能：空闲唤醒、resize 延迟、frame 背压和 GPU wait。
+  1. 原生 Linux race：执行 `go test -race ./internal/platform/linux`，覆盖 Task 2 的并发 Frame 快照和 resize/scale 交错；
+  2. headless compositor：初始 configure、事件交错、Hide/Show、resize、scale、output 热插拔和断开；
+  3. Vulkan validation/lavapipe：swapchain 重建、同步、失败清理和新交换链呈现；
+  4. 真实 GNOME/KDE/Sway：分数/整数缩放、多屏、IBus、拖放和 AT-SPI；
+  5. 性能：空闲唤醒、resize 延迟、frame 背压和 GPU wait。
 - 验收条件：
   - 每项记录运行环境、命令、结果和未覆盖范围；
   - 将上述真实验收证据及仍然存在的限制同步到 `01` 和 `02`，并完成三份文档的最终一致性检查；

@@ -79,6 +79,110 @@ func TestWaylandWindowModesGeometryAndInputRegion(t *testing.T) {
 	}
 }
 
+func TestWaylandFrameConcurrentGeometrySnapshots(t *testing.T) {
+	t.Run("resize", func(t *testing.T) {
+		win := &waylandWindow{surface: 1, width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300}
+		win.storeScale(1)
+		ready := make(chan struct{})
+		wrote := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			<-ready
+			for i := 0; i < 1000; i++ {
+				if i%2 == 0 {
+					win.pendingWidth, win.pendingHeight = 500, 350
+				} else {
+					win.pendingWidth, win.pendingHeight = 400, 300
+				}
+				win.applyPendingResize()
+				if i == 0 {
+					close(wrote)
+				}
+			}
+			close(done)
+		}()
+		var bad ui.Rect
+		failed := false
+		reads := 0
+		check := func() {
+			frame, _ := win.Frame()
+			reads++
+			valid := (frame.Width == 400 && frame.Height == 300) || (frame.Width == 500 && frame.Height == 350)
+			if !valid && !failed {
+				bad, failed = frame, true
+			}
+		}
+		check() // Read the initial generation before releasing the writer.
+		close(ready)
+		<-wrote
+		check() // At least one read must follow a completed write.
+		for {
+			select {
+			case <-done:
+				if reads < 2 {
+					t.Fatal("test completed without a read following a write")
+				}
+				if failed {
+					t.Fatalf("Frame returned a mixed geometry generation: %+v", bad)
+				}
+				return
+			default:
+				check()
+			}
+		}
+	})
+
+	t.Run("scale", func(t *testing.T) {
+		win := &waylandWindow{surface: 1, width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300}
+		win.storeScale(1)
+		ready := make(chan struct{})
+		wrote := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			<-ready
+			for i := 0; i < 1000; i++ {
+				if i%2 == 0 {
+					win.applyScale(2)
+				} else {
+					win.applyScale(1)
+				}
+				if i == 0 {
+					close(wrote)
+				}
+			}
+			close(done)
+		}()
+		var bad ui.Rect
+		failed := false
+		reads := 0
+		check := func() {
+			frame, _ := win.Frame()
+			reads++
+			if (frame.Width != 400 || frame.Height != 300) && !failed {
+				bad, failed = frame, true
+			}
+		}
+		check() // Read the initial generation before releasing the writer.
+		close(ready)
+		<-wrote
+		check() // At least one read must follow a completed write.
+		for {
+			select {
+			case <-done:
+				if reads < 2 {
+					t.Fatal("test completed without a read following a write")
+				}
+				if failed {
+					t.Fatalf("Frame returned mixed scale and dimensions: %+v", bad)
+				}
+				return
+			default:
+				check()
+			}
+		}
+	})
+}
+
 func TestWaylandInitialConfigureGeometryBeforeState(t *testing.T) {
 	win := &waylandWindow{
 		surface:       1,

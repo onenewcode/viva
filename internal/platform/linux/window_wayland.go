@@ -80,6 +80,13 @@ func initWindowListeners() {
 	})
 }
 
+// waylandFrameGeometry is one immutable geometry generation published to Frame.
+type waylandFrameGeometry struct {
+	width, height uint32
+	margin        uint32
+	scale         float32
+}
+
 // waylandWindow coordinates an XDG-Shell toplevel window, surface state, and frame rendering.
 type waylandWindow struct {
 	mu sync.Mutex
@@ -98,6 +105,7 @@ type waylandWindow struct {
 
 	width, height uint32 // device pixels
 	scaleBits     atomic.Uint32
+	frameGeometry atomic.Pointer[waylandFrameGeometry]
 	margin        uint32
 	savedLogicalW float32
 	savedLogicalH float32
@@ -156,6 +164,16 @@ func (win *waylandWindow) displayScale() float32 {
 
 func (win *waylandWindow) storeScale(scale float32) {
 	win.scaleBits.Store(math.Float32bits(scale))
+	win.publishFrameGeometry()
+}
+
+// publishFrameGeometry releases one complete geometry generation to Frame.
+// The event-loop thread owns the fields; readers never touch them directly.
+func (win *waylandWindow) publishFrameGeometry() {
+	win.frameGeometry.Store(&waylandFrameGeometry{
+		width: win.width, height: win.height, margin: win.margin,
+		scale: win.displayScale(),
+	})
 }
 
 // logicalSize computes the content area size in logical pixels.
@@ -475,6 +493,7 @@ func (win *waylandWindow) handleXdgToplevelConfigure(width, height int32, states
 					return
 				}
 			}
+			win.publishFrameGeometry()
 			win.geometryDirty = true
 			if win.state != nil && win.state.config.OnMaximize != nil {
 				win.state.config.OnMaximize(maximized)
@@ -527,6 +546,7 @@ func (win *waylandWindow) applyPendingResize() {
 			}
 			win.width = newWidth
 			win.height = newHeight
+			win.publishFrameGeometry()
 			win.geometryDirty = true
 		}
 	}
@@ -676,6 +696,7 @@ func (win *waylandWindow) handleDecorationConfigure(mode uint32) {
 			if !win.applyFrameMargin(0) {
 				return
 			}
+			win.publishFrameGeometry()
 			win.geometryDirty = true
 		}
 	} else if mode == zxdgToplevelDecorationModeClientSide {
@@ -685,6 +706,7 @@ func (win *waylandWindow) handleDecorationConfigure(mode uint32) {
 			if !win.applyFrameMargin(win.margin) {
 				return
 			}
+			win.publishFrameGeometry()
 			win.geometryDirty = true
 		}
 	}
@@ -930,9 +952,16 @@ func (win *waylandWindow) Frame() (ui.Rect, bool) {
 	if win == nil {
 		return ui.Rect{}, false
 	}
-	scale := win.displayScale()
-	w := float32(contentSize(win.width, win.margin)) / scale
-	h := float32(contentSize(win.height, win.margin)) / scale
+	geometry := win.frameGeometry.Load()
+	if geometry == nil {
+		return ui.Rect{}, false
+	}
+	scale := geometry.scale
+	if scale <= 0 {
+		scale = 1
+	}
+	w := float32(contentSize(geometry.width, geometry.margin)) / scale
+	h := float32(contentSize(geometry.height, geometry.margin)) / scale
 	return ui.Rect{Width: w, Height: h}, false
 }
 
@@ -1090,6 +1119,7 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 			win.destroy()
 			return nil, err
 		}
+		win.publishFrameGeometry()
 	}
 
 	state := &waylandWindowState{

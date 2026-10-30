@@ -256,7 +256,8 @@ func (win *waylandWindow) applyScale(scale float32) {
 		win.savedLogicalH = logicalH
 	}
 
-	win.storeScale(scale)
+	// Keep the previous Frame snapshot until all geometry fields are ready.
+	win.scaleBits.Store(math.Float32bits(scale))
 
 	// Recompute physical dimensions
 	physContentW := deviceLength(int(logicalW), scale)
@@ -275,6 +276,7 @@ func (win *waylandWindow) applyScale(scale float32) {
 		win.width = physContentW
 		win.height = physContentH
 	}
+	win.publishFrameGeometry()
 
 	// Update Vulkan renderer scale & resize swapchain
 	if win.state != nil && win.state.renderer != nil {

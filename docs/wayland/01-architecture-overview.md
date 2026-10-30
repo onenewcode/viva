@@ -387,7 +387,7 @@ Vulkan fake 至少跟踪：
 | 键盘 repeat 与 IBus deadline 主循环调度 | 已实现 | 纳入统一 event-source 错误模型并保持回归测试 |
 | 显式 surface/configure 状态机 | 首次/remap 门限已修复 | 继续集中 serial、ACK 和完整状态机 |
 | configure/scale 几何所有权 | Task 1 当前 diff 已覆盖 serial 前、ACK 前及 hidden/frame-pending 交错 | 保持几何与 OnResize/ACK 回归测试并做真实 compositor 验收 |
-| `Frame` 跨 goroutine 几何快照 | 未完整满足 | 同步完整几何代际并增加 race 回归测试 |
+| `Frame` 跨 goroutine 几何快照 | Task 2 当前 diff 已改为不可变原子快照 | 保持并发几何测试，原生 Linux race 验收列入 Task 8 |
 | clean/forced present 区分 | 已实现 | 保留 clean/forced 回归测试并做实机验收 |
 | frame callback 与 commit 配对 | 已实现 | 不为 clean frame 或失败提交留下孤立 pending，验证真实时序 |
 | Vulkan oldSwapchain 唯一销毁 | 已修复 | 保持成功/失败路径销毁次数测试 |
@@ -402,13 +402,12 @@ Vulkan fake 至少跟踪：
 
 后续工作按以下顺序推进，不重复已经落地的呈现、输入调度、缩放往返、swapchain 和 CI 修复：
 
-1. **修正公开并发契约**：让 `Frame` 读取一致的跨线程几何快照。
-2. **补齐动态 output 生命周期**：保留 application 级 registry，覆盖新增、移除和 teardown。
-3. **收敛后端探测与错误链**：保留自动后备诊断，区分显示连接、配置和图形设备错误，清理探测副作用。
-4. **收敛事件循环**：统一 event source，补齐 prepare/read/cancel，保持现有 ERR/HUP、POLLOUT、eventfd 和 deadline 行为。
-5. **完善显式窗口状态机**：减少布尔组合，集中 configure 事务、ACK、frame callback 和 surface 映射状态。
-6. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉，并明确 keep-alive 产品契约。
-7. **补验证体系**：在现有 Linux 原生单元测试之上，增加 headless compositor、Vulkan validation/lavapipe、真实桌面和性能验收。
+1. **补齐动态 output 生命周期**：保留 application 级 registry，覆盖新增、移除和 teardown。
+2. **收敛后端探测与错误链**：保留自动后备诊断，区分显示连接、配置和图形设备错误，清理探测副作用。
+3. **收敛事件循环**：统一 event source，补齐 prepare/read/cancel，保持现有 ERR/HUP、POLLOUT、eventfd 和 deadline 行为。
+4. **完善显式窗口状态机**：减少布尔组合，集中 configure 事务、ACK、frame callback 和 surface 映射状态。
+5. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉，并明确 keep-alive 产品契约。
+6. **补验证体系**：在现有 Linux 原生单元测试之上，增加原生 race、headless compositor、Vulkan validation/lavapipe、真实桌面和性能验收。
 
 该顺序保留现有后端调度、PureGo、共享渲染和协议核心，不要求推倒重写。
 
