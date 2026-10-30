@@ -1,6 +1,7 @@
 # Viva Linux/Wayland 架构：目标设计与实施契约
 
 - 更新日期：2026-10-30
+- 审查基准：`b6762a0` + Task 4 当前 diff
 - 适用分支：`docs/linux-render-refresh-flicker`
 - 文档性质：架构目标、协议约束和迁移方向；不代表全部能力已经实现或验收
 
@@ -386,14 +387,14 @@ Vulkan fake 至少跟踪：
 | prepare/read 标准流程 | 尚未完整实现 | 按 libwayland 推荐流程收敛 |
 | 键盘 repeat 与 IBus deadline 主循环调度 | 已实现 | 纳入统一 event-source 错误模型并保持回归测试 |
 | 显式 surface/configure 状态机 | 首次/remap 门限已修复 | 继续集中 serial、ACK 和完整状态机 |
-| configure/scale 几何所有权 | Task 1 当前 diff 已覆盖 serial 前、ACK 前及 hidden/frame-pending 交错 | 保持几何与 OnResize/ACK 回归测试并做真实 compositor 验收 |
-| `Frame` 跨 goroutine 几何快照 | Task 2 当前 diff 已改为不可变原子快照 | 保持并发几何测试，原生 Linux race 验收列入 Task 8 |
+| configure/scale 几何所有权 | 已覆盖 serial 前、ACK 前及 hidden/frame-pending 交错 | 保持几何与 OnResize/ACK 回归测试并做真实 compositor 验收 |
+| `Frame` 跨 goroutine 几何快照 | 已改为不可变原子快照 | 保持并发几何测试，原生 Linux race 验收列入 Task 8 |
 | clean/forced present 区分 | 已实现 | 保留 clean/forced 回归测试并做实机验收 |
 | frame callback 与 commit 配对 | 已实现 | 不为 clean frame 或失败提交留下孤立 pending，验证真实时序 |
 | Vulkan oldSwapchain 唯一销毁 | 已修复 | 保持成功/失败路径销毁次数测试 |
 | Vulkan SUBOPTIMAL 恢复 | 已修复 | 保持新交换链再次呈现与有界恢复测试，补真实驱动验收 |
 | fractional/整数缩放 | 已具备主要路径 | 保持协议优先级并做实机验收 |
-| 动态 output 热插拔 | Task 3 当前 diff 已保留 application 级 registry 并覆盖晚期增删 | 保持销毁计数与 scale 回退测试，补真实热插拔验收 |
+| 动态 output 热插拔 | 已保留 application 级 registry 并覆盖晚期增删 | 保持销毁计数与 scale 回退测试，补真实热插拔验收 |
 | 桌面协议核心共享 | 部分共享 | 抽取可共享重连和 event-source 生命周期 |
 | 托盘/后台常驻 | 未完整支持 | 先明确 keep-alive 产品契约 |
 | Linux 平台测试持续执行 | 已具备 Ubuntu 原生测试任务 | 新增平台回归测试持续纳入原生执行，真实环境另行验收 |

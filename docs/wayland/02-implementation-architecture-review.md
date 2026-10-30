@@ -1,7 +1,7 @@
 # Linux/Wayland 当前实现与架构复核
 
 - 修订日期：2026-10-30
-- 审查基准：`6bc62a4` + Task 3 当前 diff
+- 审查基准：`b6762a0` + Task 4 当前 diff
 - 适用分支：`docs/linux-render-refresh-flicker`
 - 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
 - 待实施任务：[task.md](task.md)
@@ -12,7 +12,7 @@
 
 ## 1. 结论
 
-**宏观架构合理，不需要推倒重写；当前主路径实现与目标设计基本一致。Tasks 1–3 的当前 diff 已处理本轮三个具体实现问题，剩余为明确的目标架构和验证差距。**
+**宏观架构合理，不需要推倒重写；当前主路径实现与目标设计基本一致。Tasks 1–3 已处理本轮三个具体实现问题，剩余为明确的目标架构和验证差距。**
 
 Task 3 将 registry 保留为 application/globals 级对象，使 discovery 后的 output 增删能够进入现有跟踪路径；真实热插拔仍需后续实机验收。
 
@@ -20,7 +20,7 @@ Task 3 将 registry 保留为 application/globals 级对象，使 discovery 后�
 
 ## 2. 当前 findings
 
-本轮没有保留的实现 findings。F1–F3 对应的实现修改均在 Tasks 1–3 当前 diff 中，验证证据和未执行项目见第 5 节；后续 review 若发现回归，应以当前源码重新建立 finding，而不是恢复历史文本。
+本轮没有保留的实现 findings。F1–F3 对应的实现修改均已在 Tasks 1–3 中落地，验证证据和未执行项目见第 5 节；后续 review 若发现回归，应以当前源码重新建立 finding，而不是恢复历史文本。
 
 ## 3. 架构合理性判断
 
@@ -30,11 +30,11 @@ Wayland-first、强制后端不静默降级、X11 后备，以及共享场景、
 
 ### 3.2 事件循环：主干合理，继续收敛标准读取流程
 
-eventfd 命令队列、主线程执行、FD 异常 readiness、flush POLLOUT 和最近 deadline 调度是合适的职责划分。后续 prepare/read 迁移应保持这些已有行为，重点补齐 `prepare_read` 与 `read_events/cancel_read` 的配对，而不是重新引入平行 ticker 或另一套 FD 所有权。Task 2 diff 也将 `Frame` 改为只读主线程发布的不可变几何快照，避免后台直接读取窗口字段。
+eventfd 命令队列、主线程执行、FD 异常 readiness、flush POLLOUT 和最近 deadline 调度是合适的职责划分。后续 prepare/read 迁移应保持这些已有行为，重点补齐 `prepare_read` 与 `read_events/cancel_read` 的配对，而不是重新引入平行 ticker 或另一套 FD 所有权。Task 2 也将 `Frame` 改为只读主线程发布的不可变几何快照，避免后台直接读取窗口字段。
 
 ### 3.3 Surface/configure/呈现：事务方向正确，几何所有权仍需集中
 
-scene update 与 present/commit 分离、clean/forced present、frame callback 配对以及 frame-pending 时延迟提交，都是正确主干。当前 Task 1 diff 进一步区分了 toplevel 待闭合、serial 待 ACK 和 hidden/frame-pending 延迟的几何所有权，并阻止 serial 到达前提前呈现。
+scene update 与 present/commit 分离、clean/forced present、frame callback 配对以及 frame-pending 时延迟提交，都是正确主干。Task 1 进一步区分了 toplevel 待闭合、serial 待 ACK 和 hidden/frame-pending 延迟的几何所有权，并阻止 serial 到达前提前呈现。
 
 完整显式状态机仍属于目标架构差距，不应把每一次协议交错都继续转换成新的布尔特判。
 
@@ -42,9 +42,9 @@ scene update 与 present/commit 分离、clean/forced present、frame callback �
 
 有界恢复、swapchain 重建后的再次呈现以及资源集中销毁符合目标设计。当前 findings 不要求调整 Vulkan 主干；后续重点是 validation/lavapipe 和真实驱动验收。
 
-### 3.5 缩放与多输出：主路径合理，动态生命周期未闭合
+### 3.5 缩放与多输出：主路径合理，真实热插拔待验收
 
-fractional-scale + viewport、整数 preferred scale 和 output scale 的优先级合理。Tasks 1–2 的当前 diff 覆盖几何交错与跨线程快照，Task 3 又将 registry 生命周期延长至 globals teardown，使晚期 output 增删能够驱动 scale 回退；真实热插拔结果仍列入后续验收。
+fractional-scale + viewport、整数 preferred scale 和 output scale 的优先级合理。Tasks 1–2 覆盖了几何交错与跨线程快照，Task 3 又将 registry 生命周期延长至 globals teardown，使晚期 output 增删能够驱动 scale 回退；真实热插拔结果仍列入后续验收。
 
 ## 4. 尚未完成的目标架构能力
 
@@ -79,8 +79,7 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
 
 ## 6. 建议优先级
 
-1. **P1：完成阶段文档一致性检查**：同步 Tasks 1–3 的实现状态与剩余验证证据。
-2. **P2：继续结构性收敛**：后端探测与错误链、prepare/read、统一 event-source、显式 surface/configure 状态机。
-3. **P3：补真实验证层次**：原生 Linux race、headless compositor、validation/lavapipe、真实 GNOME/KDE/Sway 和性能矩阵。
+1. **P2：继续结构性收敛**：后端探测与错误链、prepare/read、统一 event-source、显式 surface/configure 状态机。
+2. **P3：补真实验证层次**：原生 Linux race、headless compositor、validation/lavapipe、真实 GNOME/KDE/Sway 和性能矩阵。
 
-最终判断：**保留现有架构主干；Tasks 1–3 的实现候选已覆盖本轮具体源码问题，但不能称为已完成原生 race、真实 compositor、热插拔或 Vulkan/桌面矩阵验收。**
+最终判断：**保留现有架构主干；Tasks 1–3 已实现并通过各自 review，但不能称为已完成原生 race、真实 compositor、热插拔或 Vulkan/桌面矩阵验收。**

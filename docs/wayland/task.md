@@ -1,7 +1,7 @@
 # Wayland 待实施任务
 
 - 修订日期：2026-10-30
-- 当前基线：`6bc62a4` + Task 3 当前 diff
+- 当前基线：`b6762a0` + Task 4 当前 diff
 - 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
 - 当前审查：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 
@@ -16,26 +16,6 @@
 5. Ubuntu CI 已实际执行 `go test ./internal/platform/linux`；新增测试应进入该包或其他会被原生执行的包，不能只验证交叉编译。
 6. 静态检查、mock/unit 测试、headless compositor、Vulkan validation 和真实桌面验收分别记录，不得互相替代。
 7. 每个任务提交前必须同步 `01`、`02` 和 `task.md`：记录基线提交与当前任务 diff、实现状态和验证证据，移除已完成 findings/待办且不重排历史任务编号，保留仍未完成的差距。Task 4 是阶段一致性检查，不替代逐任务同步。
-
-## P1：补齐动态 output 生命周期与文档现状
-
-### Task 4：同步目标架构文档的当前状态
-
-- 目标：使所有架构、审查和任务文档与任务完成时的 HEAD 一致。
-- 主要文件：
-  - `docs/wayland/01-architecture-overview.md`
-  - `docs/wayland/02-implementation-architecture-review.md`
-  - `docs/wayland/task.md`
-  - 必要时同步 `docs/conformance.md`
-- 实施要点：
-  - 更新审查基准和各任务实施状态；
-  - 根据 Tasks 1–3 的实际完成结果更新 configure/scale、Frame 并发和 output 生命周期状态，不预设这些问题在文档同步时仍未解决；
-  - 已解决项从当前 findings 和待办中移除，未解决项保留当前证据与缺口；
-  - 迁移顺序先处理已确认的正确性与公开契约，再进行后端探测、prepare/read 和通用抽象；
-  - 区分源码存在、单元测试执行、真实 compositor/GPU 验收三个证据等级。
-- 验收条件：
-  - 已解决问题不作为当前 findings 或待实施任务重复出现；
-  - 三份 Wayland 文档使用同一审查基准，当前状态、剩余问题和优先级一致。
 
 ## P2：继续目标架构收敛
 
