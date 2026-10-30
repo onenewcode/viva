@@ -1,11 +1,11 @@
 # Wayland 未完成任务
 
 - 更新日期：2026-10-30
-- 基线：`4e77606`
+- 基线：`4e77606` + Task 11 Weston 复跑与 remap 修复
 - 开发契约：[01-architecture-overview.md](01-architecture-overview.md)
 - 当前 findings：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 
-本清单只保留未完成事项。Task 8 沿用原编号；后续任务从 Task 9 递增，不重排现有任务。Task 11 只保留未完成的 Weston 复跑，其余原生验收证据见 [02-implementation-architecture-review.md](02-implementation-architecture-review.md)。
+本清单只保留未完成事项。Task 8 沿用原编号；后续任务从 Task 9 递增，不重排现有任务。P1 的 Task 11 已完成并从本清单移除，原生验收证据见 [02-implementation-architecture-review.md](02-implementation-architecture-review.md)。
 
 ## 执行规则
 
@@ -16,19 +16,11 @@
 5. 同步更新三份文档的基线、findings 和验证证据；完成项从当前清单删除，不保留修复流水账。
 6. 原生单元测试、race、headless compositor、Vulkan validation 和真实桌面结果分别记录，不能互相替代。
 
-## P1：建立最小真实门禁
-
-### Task 11：建立最小真实验证入口并完成原生验收
-
-**已完成：** `TestWaylandHeadlessIntegration` 入口、`VIVA_WAYLAND_COMPOSITOR` 选择、原生 race 与 KWin 虚拟后端下的集成验收（首次呈现、swapchain 重建、失败清理）、lavapipe 与 validation 运行，以及首次原生执行暴露的两个测试替身缺陷修复。环境和结果见 [02-implementation-architecture-review.md](02-implementation-architecture-review.md) 第 4 节。
-
-**未完成：** 在 Weston 下复跑同一入口。本机没有 Weston，且无网络/无 sudo 安装；该复跑完成前任务保留在清单中，不能用 KWin 结果替代 Weston 结论。
-
 ## P3：完成完整验收矩阵
 
 ### Task 8：补全 compositor、Vulkan、真实桌面和性能验收
 
-**目标：** 在 Task 11 最小门禁之上完成环境覆盖；保留原任务编号。本机限制：真实会话锁定、没有 Weston/GNOME/Sway、IBus 未运行；已完成的驱动和会话片段见 [02-implementation-architecture-review.md](02-implementation-architecture-review.md) 第 5 节。
+**目标：** 在 Task 11 最小门禁之上完成环境覆盖；保留原任务编号。本机限制：真实会话锁定、没有 GNOME/Sway、IBus 未运行；Weston 14.0.2 可通过本机的解包运行脚本复跑；已完成的驱动和会话片段见 [02-implementation-architecture-review.md](02-implementation-architecture-review.md) 第 5 节。
 
 - 扩展 headless compositor 的 scale、output 热插拔和复杂事件交错。
 - 在更多驱动上执行 Vulkan validation，覆盖 device/surface loss 和有界恢复。

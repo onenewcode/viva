@@ -5,6 +5,7 @@ package linux
 import (
 	"errors"
 	"runtime"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -172,6 +173,26 @@ var (
 	sigOptOOOptOU = []byte("?oo?ou\x00")
 )
 
+// libwayland reads wl_message.types when it prints a request under
+// WAYLAND_DEBUG, and dereferences the array itself without a NULL check. The
+// fallback interfaces below are used whenever the client library does not
+// export the interface symbol (every extension protocol), so every request
+// they send that creates an object must carry a types array. Entries stay nil
+// for interfaces this package does not model; libwayland then prints the new
+// object as unknown instead of failing.
+var (
+	// waylandEmptyTypes is shared by messages whose created interface is not
+	// modeled here. It only has to be non-nil and long enough for the
+	// signature.
+	waylandEmptyTypes = [3]*wlInterface{}
+
+	xdgWmBaseGetXdgSurfaceTypes = [2]*wlInterface{&xdgSurfaceInterface, &wlSurfaceInterface}
+	xdgSurfaceGetToplevelTypes  = [1]*wlInterface{&xdgToplevelInterface}
+	zxdgToplevelDecorationTypes = [2]*wlInterface{&zxdgToplevelDecorationV1Interface, nil}
+	wpFractionalScaleTypes      = [2]*wlInterface{&wpFractionalScaleV1Interface, nil}
+	wpViewportTypes             = [2]*wlInterface{&wpViewportInterface, nil}
+)
+
 // Core static wlInterface definitions for extension protocols (and fallback)
 var (
 	wlRegistryRequests = [1]wlMessage{
@@ -329,8 +350,8 @@ var (
 	// xdg_wm_base
 	xdgWmBaseRequests = [4]wlMessage{
 		{Name: &[]byte("destroy\x00")[0], Signature: &sigEmpty[0]},
-		{Name: &[]byte("create_positioner\x00")[0], Signature: &sigN[0]},
-		{Name: &[]byte("get_xdg_surface\x00")[0], Signature: &sigNO[0]},
+		{Name: &[]byte("create_positioner\x00")[0], Signature: &sigN[0], Types: &waylandEmptyTypes[0]},
+		{Name: &[]byte("get_xdg_surface\x00")[0], Signature: &sigNO[0], Types: &xdgWmBaseGetXdgSurfaceTypes[0]},
 		{Name: &[]byte("pong\x00")[0], Signature: &sigU[0]},
 	}
 	xdgWmBaseEvents = [1]wlMessage{
@@ -348,8 +369,8 @@ var (
 	// xdg_surface
 	xdgSurfaceRequests = [5]wlMessage{
 		{Name: &[]byte("destroy\x00")[0], Signature: &sigEmpty[0]},
-		{Name: &[]byte("get_toplevel\x00")[0], Signature: &sigN[0]},
-		{Name: &[]byte("get_popup\x00")[0], Signature: &sigNOO[0]},
+		{Name: &[]byte("get_toplevel\x00")[0], Signature: &sigN[0], Types: &xdgSurfaceGetToplevelTypes[0]},
+		{Name: &[]byte("get_popup\x00")[0], Signature: &sigNOO[0], Types: &waylandEmptyTypes[0]},
 		{Name: &[]byte("set_window_geometry\x00")[0], Signature: &sigIIII[0]},
 		{Name: &[]byte("ack_configure\x00")[0], Signature: &sigU[0]},
 	}
@@ -400,7 +421,7 @@ var (
 	// zxdg_decoration_manager_v1
 	zxdgDecorationManagerV1Requests = [2]wlMessage{
 		{Name: &[]byte("destroy\x00")[0], Signature: &sigEmpty[0]},
-		{Name: &[]byte("get_toplevel_decoration\x00")[0], Signature: &sigNO[0]},
+		{Name: &[]byte("get_toplevel_decoration\x00")[0], Signature: &sigNO[0], Types: &zxdgToplevelDecorationTypes[0]},
 	}
 	zxdgDecorationManagerV1Interface = wlInterface{
 		Name:        &strZxdgDecorationManagerV1[0],
@@ -430,7 +451,7 @@ var (
 	// wp_fractional_scale_manager_v1
 	wpFractionalScaleManagerV1Requests = [2]wlMessage{
 		{Name: &[]byte("destroy\x00")[0], Signature: &sigEmpty[0]},
-		{Name: &[]byte("get_fractional_scale\x00")[0], Signature: &sigNO[0]},
+		{Name: &[]byte("get_fractional_scale\x00")[0], Signature: &sigNO[0], Types: &wpFractionalScaleTypes[0]},
 	}
 	wpFractionalScaleManagerV1Interface = wlInterface{
 		Name:        &strWpFractionalScaleManagerV1[0],
@@ -458,7 +479,7 @@ var (
 	// wp_viewporter
 	wpViewporterRequests = [2]wlMessage{
 		{Name: &[]byte("destroy\x00")[0], Signature: &sigEmpty[0]},
-		{Name: &[]byte("get_viewport\x00")[0], Signature: &sigNO[0]},
+		{Name: &[]byte("get_viewport\x00")[0], Signature: &sigNO[0], Types: &wpViewportTypes[0]},
 	}
 	wpViewporterInterface = wlInterface{
 		Name:        &strWpViewporter[0],
@@ -622,6 +643,12 @@ type waylandGlobals struct {
 	registry uintptr
 	pinner   runtime.Pinner
 
+	// weston records that the compositor advertises a weston_* global. Weston
+	// keeps its xdg_surface configured across an unmap and sends no configure
+	// for a remap, which is the only case where a buffer may be attached
+	// without the configure xdg-shell requires.
+	weston bool
+
 	compositor           uintptr
 	compositorVer        uint32
 	shm                  uintptr
@@ -681,6 +708,9 @@ func (api *waylandAPI) destroyProxy(proxy *uintptr) {
 func (g *waylandGlobals) handleGlobal(registry uintptr, name uint32, iface string, version uint32) {
 	if g.api == nil {
 		return
+	}
+	if strings.HasPrefix(iface, "weston_") {
+		g.weston = true
 	}
 	switch iface {
 	case "wl_compositor":

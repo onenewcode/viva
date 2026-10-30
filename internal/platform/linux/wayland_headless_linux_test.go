@@ -25,14 +25,18 @@ type waylandHeadlessSnapshot struct {
 	rendererWidth       uint32
 	rendererHeight      uint32
 	rendererSubmissions uint64
+	configureSerial     uint32
+	toplevelPending     bool
 }
 
 func readWaylandHeadlessSnapshot(win *waylandWindow) waylandHeadlessSnapshot {
 	snapshot := waylandHeadlessSnapshot{
-		width:        win.width,
-		height:       win.height,
-		surfaceState: win.surfaceState,
-		maximized:    win.maximized,
+		width:           win.width,
+		height:          win.height,
+		surfaceState:    win.surfaceState,
+		maximized:       win.maximized,
+		configureSerial: win.configure.serial,
+		toplevelPending: win.configure.toplevelPending,
 	}
 	if win.state != nil && win.state.renderer != nil {
 		renderer := win.state.renderer
@@ -67,9 +71,10 @@ func waitWaylandHeadlessState(app *waylandApplication, win *waylandWindow, runDo
 			return snapshot, nil
 		}
 		if time.Now().After(deadline) {
-			return snapshot, fmt.Errorf("timed out waiting for window state (last %dx%d mapped=%v maximized=%v renderer=%dx%d submissions=%d)",
+			return snapshot, fmt.Errorf("timed out waiting for window state (last %dx%d mapped=%v maximized=%v renderer=%dx%d submissions=%d serial=%d toplevelPending=%v)",
 				snapshot.width, snapshot.height, snapshot.surfaceState == waylandSurfaceMapped, snapshot.maximized,
-				snapshot.rendererWidth, snapshot.rendererHeight, snapshot.rendererSubmissions)
+				snapshot.rendererWidth, snapshot.rendererHeight, snapshot.rendererSubmissions,
+				snapshot.configureSerial, snapshot.toplevelPending)
 		}
 		select {
 		case <-runDone:
@@ -81,7 +86,8 @@ func waitWaylandHeadlessState(app *waylandApplication, win *waylandWindow, runDo
 
 // driveWaylandHeadlessWindow checks that the window maps and presents, that
 // maximize and restore run the swapchain rebuild transaction, that Hide/Show
-// remaps, and that killing the compositor ends the application.
+// remaps, that a maximized window can be hidden and remapped, and that killing
+// the compositor ends the application.
 func driveWaylandHeadlessWindow(t *testing.T, app *waylandApplication, win *waylandWindow, runDone <-chan struct{}, compositor *exec.Cmd) error {
 	wait := func(what string, check func(waylandHeadlessSnapshot) bool) (waylandHeadlessSnapshot, error) {
 		snapshot, err := waitWaylandHeadlessState(app, win, runDone, check)
@@ -142,9 +148,61 @@ func driveWaylandHeadlessWindow(t *testing.T, app *waylandApplication, win *wayl
 	if err != nil {
 		return err
 	}
-	t.Logf("initial %dx%d, maximized %dx%d, restored %dx%d, remapped %dx%d, submissions %d",
+
+	// Weston keeps the configured toplevel state across the unmap and enforces
+	// the retained geometry when the window is remapped; other compositors
+	// answer the remap with a fresh configure. Either way a remap while
+	// maximized must present without a display error.
+	app.post(func() { win.setMaximized(true) })
+	remaximized, err := wait("maximize before hide", func(snapshot waylandHeadlessSnapshot) bool {
+		return snapshot.maximized &&
+			snapshot.width != before[0] &&
+			snapshot.rendererWidth == snapshot.width && snapshot.rendererHeight == snapshot.height &&
+			snapshot.rendererSubmissions > remapped.rendererSubmissions
+	})
+	if err != nil {
+		return err
+	}
+	win.Hide()
+	if _, err := wait("hide maximized", func(snapshot waylandHeadlessSnapshot) bool {
+		return snapshot.surfaceState == waylandSurfaceUnmapped
+	}); err != nil {
+		return err
+	}
+	win.Show()
+	maximizedRemap, err := wait("show maximized and present", func(snapshot waylandHeadlessSnapshot) bool {
+		return snapshot.surfaceState == waylandSurfaceMapped &&
+			snapshot.rendererSubmissions > remaximized.rendererSubmissions &&
+			snapshot.rendererWidth == snapshot.width && snapshot.rendererHeight == snapshot.height
+	})
+	if err != nil {
+		return err
+	}
+	if app.globals.weston && (!maximizedRemap.maximized ||
+		maximizedRemap.width != remaximized.width || maximizedRemap.height != remaximized.height) {
+		return fmt.Errorf("weston remap changed the retained toplevel state: maximized=%v %dx%d, want maximized=true %dx%d",
+			maximizedRemap.maximized, maximizedRemap.width, maximizedRemap.height, remaximized.width, remaximized.height)
+	}
+
+	// A protocol error for the remap is queued behind our own request stream, so
+	// the client-side present can complete before the compositor's error event
+	// arrives. Roundtrip so any display error surfaces before the test kills the
+	// compositor, otherwise the kill would mask it.
+	if err := app.invoke(func() error {
+		if app.api == nil || app.display == 0 || app.api.displayRoundtrip == nil {
+			return errors.New("wayland display is unavailable")
+		}
+		if app.api.displayRoundtrip(app.display) < 0 {
+			return fmt.Errorf("display roundtrip failed (error %d)", app.api.displayGetError(app.display))
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("display error after maximized remap: %w", err)
+	}
+	t.Logf("initial %dx%d, maximized %dx%d, restored %dx%d, remapped %dx%d, maximized remap %dx%d, submissions %d",
 		initial.width, initial.height, maximized.width, maximized.height,
-		restored.width, restored.height, remapped.width, remapped.height, remapped.rendererSubmissions)
+		restored.width, restored.height, remapped.width, remapped.height,
+		maximizedRemap.width, maximizedRemap.height, maximizedRemap.rendererSubmissions)
 
 	if err := compositor.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("stop compositor: %w", err)

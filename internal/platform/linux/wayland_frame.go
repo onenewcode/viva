@@ -95,6 +95,7 @@ func (win *waylandWindow) presentWithFrameCallback(present func() error, ackConf
 	}
 	if err == nil {
 		win.surfaceState = waylandSurfaceMapped
+		win.mappedOnce = true
 		if win.app != nil && win.app.api != nil && win.app.api.displayFlush != nil && win.app.display != 0 {
 			win.app.api.displayFlush(win.app.display)
 		}

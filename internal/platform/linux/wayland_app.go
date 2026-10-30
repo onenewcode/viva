@@ -236,6 +236,14 @@ func (app *waylandApplication) timeNow() time.Time {
 	return time.Now()
 }
 
+// needsRemapFallback reports whether the compositor accepts a buffer on a
+// remapped toplevel without the configure xdg-shell requires. Only Weston
+// does: its xdg_surface stays configured across an unmap, while a conformant
+// compositor raises xdg_surface.unconfigured_buffer for an early attach.
+func (app *waylandApplication) needsRemapFallback() bool {
+	return app != nil && app.globals.weston
+}
+
 func (app *waylandApplication) pollTimeout(now time.Time) int32 {
 	var next time.Time
 	if app.ibus != nil {
@@ -246,9 +254,13 @@ func (app *waylandApplication) pollTimeout(now time.Time) int32 {
 	app.mu.Lock()
 	repeatDeadline := app.repeatDeadline
 	repeatActive := app.repeatScancode != 0
+	remapDeadline := app.earliestRemapDeadline()
 	app.mu.Unlock()
 	if repeatActive && (next.IsZero() || repeatDeadline.Before(next)) {
 		next = repeatDeadline
+	}
+	if !remapDeadline.IsZero() && (next.IsZero() || remapDeadline.Before(next)) {
+		next = remapDeadline
 	}
 	if deadline, waiting := app.desktopRetry.deadline(platform.DesktopWatched(), app.desktop != nil); waiting &&
 		(next.IsZero() || deadline.Before(next)) {
@@ -271,12 +283,69 @@ func (app *waylandApplication) pollTimeout(now time.Time) int32 {
 	return int32(milliseconds)
 }
 
+// waylandRemapConfigureGrace bounds how long Show waits for a compositor to
+// answer its remap commit with a configure. It is only used for Weston, which
+// keeps the xdg_surface configured across an unmap and never sends that
+// configure; conformant compositors must get one before a buffer is attached.
+const waylandRemapConfigureGrace = 100 * time.Millisecond
+
+// earliestRemapDeadline returns the soonest remap grace deadline, or the zero
+// time when no window is waiting. The caller holds app.mu so the window list is
+// stable; remapDeadline itself is written only on the event-loop thread.
+func (app *waylandApplication) earliestRemapDeadline() time.Time {
+	var earliest time.Time
+	for _, state := range app.windows {
+		if state == nil || state.win == nil {
+			continue
+		}
+		deadline := state.win.remapDeadline
+		if deadline.IsZero() {
+			continue
+		}
+		if earliest.IsZero() || deadline.Before(earliest) {
+			earliest = deadline
+		}
+	}
+	return earliest
+}
+
+// expireRemapDeadlines completes Shows whose configure grace has passed.
+func (app *waylandApplication) expireRemapDeadlines(now time.Time) {
+	app.mu.Lock()
+	waiting := false
+	for _, state := range app.windows {
+		if state != nil && state.win != nil && !state.win.remapDeadline.IsZero() {
+			waiting = true
+			break
+		}
+	}
+	if !waiting {
+		app.mu.Unlock()
+		return
+	}
+	windows := make([]*waylandWindow, 0, len(app.windows))
+	for _, state := range app.windows {
+		if state != nil && state.win != nil {
+			windows = append(windows, state.win)
+		}
+	}
+	app.mu.Unlock()
+	for _, win := range windows {
+		deadline := win.remapDeadline
+		if deadline.IsZero() || now.Before(deadline) {
+			continue
+		}
+		win.remapWithoutConfigure()
+	}
+}
+
 func (app *waylandApplication) processDeadlines(now time.Time) {
 	if app.ibus != nil {
 		app.ibus.Expire()
 		app.checkInputMethod()
 	}
 	app.runKeyRepeat(now)
+	app.expireRemapDeadlines(now)
 	app.syncDesktopWatch()
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/vivaui/viva/internal/platform"
@@ -612,6 +613,238 @@ func TestWaylandHiddenRedrawWaitsForRemapConfigure(t *testing.T) {
 	win.Show()
 	if commits != 2 {
 		t.Fatalf("repeated Show added a commit: commits = %d, want 2", commits)
+	}
+}
+
+// A compositor may wait for a buffer before it configures a remapped surface.
+// Show must not leave the window hidden forever when no configure arrives.
+func TestWaylandShowRemapsWhenNoConfigureArrives(t *testing.T) {
+	var acked []uint32
+	api := &waylandAPI{
+		proxyMarshalFlags: func(_ uintptr, opcode uint32, _ uintptr, _, _ uint32, args ...any) uintptr {
+			if opcode == xdgSurfaceAckConfigureOpcode {
+				acked = append(acked, args[0].(uint32))
+			}
+			return 0
+		},
+		proxyDestroy: func(uintptr) {},
+		displayFlush: func(uintptr) int32 { return 0 },
+	}
+	installWaylandFrameTestCallbacks(api)
+	app := &waylandApplication{api: api}
+	app.globals.weston = true
+	clock := time.Unix(1000, 0)
+	app.now = func() time.Time { return clock }
+	resizes := 0
+	presents := 0
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		configure:    waylandConfigureTransaction{width: 400, height: 300},
+		surfaceState: waylandSurfaceMapped,
+		mappedOnce:   true,
+	}
+	win.storeScale(1)
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: newWaylandPresentTestRenderer(400, 300),
+		config: platform.Config{
+			OnResize: func(platform.Size) (platform.Frame, error) {
+				resizes++
+				return platform.Frame{}, nil
+			},
+		},
+	}
+	win.state.router.present = func(platform.Frame) error {
+		presents++
+		return nil
+	}
+	app.windows = []*waylandWindowState{win.state}
+	// processDeadlines also syncs the desktop watcher; keep it from dialing the
+	// session bus from a unit test.
+	platform.SetAppearanceObserver(nil)
+
+	win.Hide()
+	win.Show()
+	if win.surfaceState != waylandSurfaceAwaitInitialConfigure || win.remapDeadline.IsZero() {
+		t.Fatalf("Show did not start the bounded remap wait: state=%v deadline=%v", win.surfaceState, win.remapDeadline)
+	}
+	if got := app.pollTimeout(clock); got != int32(waylandRemapConfigureGrace/time.Millisecond) {
+		t.Fatalf("poll timeout = %dms, want the remap grace", got)
+	}
+
+	app.processDeadlines(clock.Add(waylandRemapConfigureGrace / 2))
+	if presents != 0 || win.surfaceState != waylandSurfaceAwaitInitialConfigure {
+		t.Fatalf("remap expired before the grace period: presents=%d state=%v", presents, win.surfaceState)
+	}
+
+	app.processDeadlines(clock.Add(waylandRemapConfigureGrace + time.Millisecond))
+	if presents != 1 || resizes != 1 || win.surfaceState != waylandSurfaceMapped {
+		t.Fatalf("no-configure remap presents=%d resizes=%d state=%v; want 1, 1, mapped", presents, resizes, win.surfaceState)
+	}
+	if len(acked) != 0 {
+		t.Fatalf("no-configure remap acknowledged a serial: %v", acked)
+	}
+	if got := app.pollTimeout(clock.Add(waylandRemapConfigureGrace + time.Millisecond)); got != -1 {
+		t.Fatalf("poll timeout after the fallback = %dms, want none", got)
+	}
+
+	// A configure that arrives after the fallback still drives the normal
+	// resize transaction and is acknowledged with its own serial.
+	win.onFrameDone(99, 0)
+	win.configure.width, win.configure.height = 800, 600
+	win.handleXdgSurfaceConfigure(99)
+	if presents != 2 || resizes != 2 || len(acked) != 1 || acked[0] != 99 {
+		t.Fatalf("late configure presents=%d resizes=%d acked=%v; want 2, 2, [99]", presents, resizes, acked)
+	}
+	if win.width != 800 || win.height != 600 {
+		t.Fatalf("late configure size = %dx%d, want 800x600", win.width, win.height)
+	}
+}
+
+// A window that has never presented must still wait for its first configure:
+// the fallback only applies to remaps of an already mapped surface.
+func TestWaylandShowWithoutPresentDoesNotArmRemapDeadline(t *testing.T) {
+	app := &waylandApplication{}
+	app.globals.weston = true
+	clock := time.Unix(1000, 0)
+	app.now = func() time.Time { return clock }
+	win := &waylandWindow{app: app, surfaceState: waylandSurfaceUnmapped}
+	win.state = &waylandWindowState{app: app, win: win}
+	app.windows = []*waylandWindowState{win.state}
+	platform.SetAppearanceObserver(nil)
+
+	win.Show()
+	if win.surfaceState != waylandSurfaceAwaitInitialConfigure {
+		t.Fatalf("Show state = %v, want awaiting the initial configure", win.surfaceState)
+	}
+	if !win.remapDeadline.IsZero() {
+		t.Fatalf("never-presented Show armed a remap deadline: %v", win.remapDeadline)
+	}
+	if got := app.pollTimeout(clock); got != -1 {
+		t.Fatalf("poll timeout = %dms, want none", got)
+	}
+	app.processDeadlines(clock.Add(time.Hour))
+	if win.surfaceState != waylandSurfaceAwaitInitialConfigure {
+		t.Fatalf("never-presented window mapped without a configure: %v", win.surfaceState)
+	}
+}
+
+// Hide and Close must neutralize a remap that is still waiting for its grace.
+func TestWaylandRemapDeadlineClearedByHideAndClose(t *testing.T) {
+	app := &waylandApplication{}
+	app.globals.weston = true
+	clock := time.Unix(1000, 0)
+	app.now = func() time.Time { return clock }
+	win := &waylandWindow{app: app, surfaceState: waylandSurfaceUnmapped, mappedOnce: true}
+	win.state = &waylandWindowState{app: app, win: win}
+	app.windows = []*waylandWindowState{win.state}
+
+	win.Show()
+	if win.remapDeadline.IsZero() {
+		t.Fatal("Show did not arm the remap deadline")
+	}
+	win.Hide()
+	if win.surfaceState != waylandSurfaceUnmapped || !win.remapDeadline.IsZero() {
+		t.Fatalf("Hide left state=%v deadline=%v", win.surfaceState, win.remapDeadline)
+	}
+	app.expireRemapDeadlines(clock.Add(time.Second))
+	if win.surfaceState != waylandSurfaceUnmapped {
+		t.Fatalf("expired deadline remapped a hidden window: %v", win.surfaceState)
+	}
+
+	win.Show()
+	win.closed.Store(true)
+	app.expireRemapDeadlines(clock.Add(time.Second))
+	if win.surfaceState != waylandSurfaceAwaitInitialConfigure {
+		t.Fatalf("expired deadline mapped a closed window: %v", win.surfaceState)
+	}
+	win.closed.Store(false)
+}
+
+// pollTimeout must wake for the earliest remap grace, and only that window may
+// fall back when its deadline passes.
+func TestWaylandRemapDeadlineUsesEarliestWindow(t *testing.T) {
+	app := &waylandApplication{}
+	app.globals.weston = true
+	clock := time.Unix(1000, 0)
+	app.now = func() time.Time { return clock }
+	later := &waylandWindow{app: app, surfaceState: waylandSurfaceAwaitInitialConfigure, mappedOnce: true, remapDeadline: clock.Add(200 * time.Millisecond)}
+	sooner := &waylandWindow{app: app, surfaceState: waylandSurfaceAwaitInitialConfigure, mappedOnce: true, remapDeadline: clock.Add(50 * time.Millisecond)}
+	app.windows = []*waylandWindowState{{app: app, win: later}, {app: app, win: sooner}}
+	platform.SetAppearanceObserver(nil)
+
+	if got := app.pollTimeout(clock); got != 50 {
+		t.Fatalf("poll timeout = %dms, want 50ms", got)
+	}
+	app.expireRemapDeadlines(clock.Add(60 * time.Millisecond))
+	if sooner.surfaceState != waylandSurfaceMapped {
+		t.Fatalf("due window state = %v, want mapped", sooner.surfaceState)
+	}
+	if later.surfaceState != waylandSurfaceAwaitInitialConfigure || later.remapDeadline.IsZero() {
+		t.Fatalf("not-yet-due window state=%v deadline=%v", later.surfaceState, later.remapDeadline)
+	}
+}
+
+// Conformant compositors (everything except Weston) must get their remap
+// configure: attaching a buffer early is xdg_surface.unconfigured_buffer.
+func TestWaylandRemapFallbackRequiresWeston(t *testing.T) {
+	app := &waylandApplication{}
+	clock := time.Unix(1000, 0)
+	app.now = func() time.Time { return clock }
+	win := &waylandWindow{app: app, surfaceState: waylandSurfaceUnmapped, mappedOnce: true}
+	win.state = &waylandWindowState{app: app, win: win}
+	app.windows = []*waylandWindowState{win.state}
+	platform.SetAppearanceObserver(nil)
+
+	win.Show()
+	if win.surfaceState != waylandSurfaceAwaitInitialConfigure {
+		t.Fatalf("Show state = %v, want awaiting the remap configure", win.surfaceState)
+	}
+	if !win.remapDeadline.IsZero() {
+		t.Fatalf("non-Weston Show armed the remap fallback: %v", win.remapDeadline)
+	}
+	if got := app.pollTimeout(clock); got != -1 {
+		t.Fatalf("poll timeout = %dms, want none", got)
+	}
+	app.processDeadlines(clock.Add(time.Hour))
+	if win.surfaceState != waylandSurfaceAwaitInitialConfigure {
+		t.Fatalf("non-Weston window mapped without a configure: %v", win.surfaceState)
+	}
+}
+
+// Weston retains the configured toplevel state across an unmap, so the
+// fallback must present at the retained configure, not re-derive a size: a
+// smaller buffer would violate the configured maximized geometry.
+func TestWaylandRemapFallbackKeepsRetainedConfigure(t *testing.T) {
+	api := &waylandAPI{
+		proxyMarshalFlags: func(uintptr, uint32, uintptr, uint32, uint32, ...any) uintptr { return 0 },
+		proxyDestroy:      func(uintptr) {},
+		displayFlush:      func(uintptr) int32 { return 0 },
+	}
+	installWaylandFrameTestCallbacks(api)
+	app := &waylandApplication{api: api}
+	app.globals.weston = true
+	clock := time.Unix(1000, 0)
+	app.now = func() time.Time { return clock }
+	win := &waylandWindow{
+		app: app, surface: 1, surfaceState: waylandSurfaceMapped, mappedOnce: true,
+		maximized: true, width: 800, height: 600,
+		savedLogicalW: 400, savedLogicalH: 300,
+		configure: waylandConfigureTransaction{width: 800, height: 600},
+	}
+	win.storeScale(1)
+	win.state = &waylandWindowState{app: app, win: win, renderer: newWaylandPresentTestRenderer(800, 600)}
+	win.state.router.present = func(platform.Frame) error { return nil }
+	app.windows = []*waylandWindowState{win.state}
+
+	win.Hide()
+	win.Show()
+	win.remapWithoutConfigure()
+	if !win.maximized || win.width != 800 || win.height != 600 {
+		t.Fatalf("fallback changed the retained state: maximized=%v size=%dx%d", win.maximized, win.width, win.height)
+	}
+	if win.surfaceState != waylandSurfaceMapped {
+		t.Fatalf("fallback state = %v, want mapped", win.surfaceState)
 	}
 }
 

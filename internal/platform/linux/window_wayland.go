@@ -137,13 +137,18 @@ type waylandWindow struct {
 	resizeDeferred bool
 	framePending   bool
 	frameCallback  uintptr
-	needsRedraw    bool
-	forcePresent   bool
-	maximized      bool
-	fullscreen     bool
-	resizing       bool
-	activated      bool
-	closed         atomic.Bool
+	// mappedOnce records that the surface has presented at least once. Weston
+	// sends no configure for a remap and accepts a buffer without a new serial;
+	// Show uses this to scope its bounded fallback to such a compositor.
+	mappedOnce    bool
+	remapDeadline time.Time
+	needsRedraw   bool
+	forcePresent  bool
+	maximized     bool
+	fullscreen    bool
+	resizing      bool
+	activated     bool
+	closed        atomic.Bool
 
 	pointerX, pointerY float32
 	lastClickTime      uint32
@@ -229,6 +234,7 @@ func (win *waylandWindow) beginRemap() {
 	win.surfaceState = waylandSurfaceAwaitInitialConfigure
 	win.configure.serial = 0
 	win.configure.toplevelPending = false
+	win.remapDeadline = time.Time{}
 	win.needsRedraw = true
 	if win.surface != 0 && win.app != nil && win.app.api != nil {
 		win.app.api.surfaceCommit(win.surface)
@@ -680,6 +686,7 @@ func (win *waylandWindow) handleXdgSurfaceConfigure(serial uint32) {
 	}
 	win.configure.toplevelPending = false
 	win.configure.serial = serial
+	win.remapDeadline = time.Time{}
 	if win.state != nil {
 		win.forcePresent = true
 	}
@@ -938,6 +945,7 @@ func (win *waylandWindow) Hide() {
 			return
 		}
 		win.surfaceState = waylandSurfaceUnmapped
+		win.remapDeadline = time.Time{}
 		if win.frameCallback != 0 && win.app != nil && win.app.api != nil {
 			win.app.api.proxyDestroy(win.frameCallback)
 			win.frameCallback = 0
@@ -952,8 +960,9 @@ func (win *waylandWindow) Hide() {
 	})
 }
 
-// Show starts remapping a hidden window. A newly-unmapped xdg_toplevel must
-// repeat the initial empty commit and wait for a new configure before presenting.
+// Show starts remapping a hidden window. A newly-unmapped xdg_toplevel repeats
+// the initial empty commit and waits for a new configure; for Weston, which
+// sends none, a previously presented window also arms a bounded fallback.
 func (win *waylandWindow) Show() {
 	if win == nil || win.closed.Load() {
 		return
@@ -966,7 +975,30 @@ func (win *waylandWindow) Show() {
 			return
 		}
 		win.beginRemap()
+		if win.mappedOnce && win.app != nil && win.app.needsRemapFallback() {
+			// Weston does not send the configure xdg-shell requires for a
+			// remap. Do not hold the window hidden forever waiting for one:
+			// fall back to the last configure after the grace period. Other
+			// compositors must get their configure first.
+			win.remapDeadline = win.app.timeNow().Add(waylandRemapConfigureGrace)
+		}
 	})
+}
+
+// remapWithoutConfigure finishes a Show on Weston, which does not answer a
+// remap with a configure. The last configure still describes the surface and
+// Weston keeps its state across the unmap, so committing a buffer maps it
+// without a new serial.
+func (win *waylandWindow) remapWithoutConfigure() {
+	if win.closed.Load() || win.app == nil || !win.app.needsRemapFallback() ||
+		win.surfaceState != waylandSurfaceAwaitInitialConfigure || !win.mappedOnce {
+		return
+	}
+	win.remapDeadline = time.Time{}
+	win.surfaceState = waylandSurfaceMapped
+	win.needsRedraw = true
+	win.forcePresent = true
+	win.applyPendingResize()
 }
 
 // Frame returns the content area rectangle in logical pixels.

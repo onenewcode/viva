@@ -1,7 +1,7 @@
 # Viva Linux/Wayland 架构与开发契约
 
 - 更新日期：2026-10-30
-- 审查基线：`4e77606`
+- 审查基线：`4e77606` + Task 11 Weston 复跑与 remap 修复
 - 用途：约束后续开发；不记录已完成的修复历史
 - 当前复核：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 - 未完成任务：[task.md](task.md)
@@ -47,7 +47,8 @@ drain commands -> dispatch pending -> prepare read
 表面生命周期保持 `Created / AwaitInitialConfigure / Mapped / Unmapped / Closed` 的显式状态。
 
 - 创建 role object 后先做无 buffer 的初始 commit，异步等待 configure；不得用阻塞 roundtrip 等待窗口映射。
-- Hide 使用 nil buffer + commit；重新 Show 必须再次 initial empty commit，等待新 configure 后才能附加用于映射的 buffer。
+- Hide 使用 nil buffer + commit；重新 Show 必须再次 initial empty commit，并等待新 configure 后才能附加用于映射的 buffer。仅当 compositor 被识别为 Weston（registry 暴露 `weston_*` 全局；其 xdg_surface 在 unmap 后仍视为已配置且不会发送 remap configure）时，已呈现过的窗口才可在有限宽限后按最近一次 configure 的几何直接映射；Weston 在 unmap 后保留 toplevel 状态（含最大化），并按保留的几何校验客户端提交，因此兜底路径不得自行改写最大化/全屏状态或推导回保存的浮动尺寸；其他 compositor 提前附加 buffer 会被 xdg-shell 以 `unconfigured_buffer` 终止。
+- 手写的 `wlMessage` 表必须为带 new-id 参数的请求提供非 nil 的 `types` 数组（长度覆盖签名）；libwayland 在 `WAYLAND_DEBUG` 下打印新建对象时不检查该指针是否为 NULL。未通过 `dlsym` 取得真实接口的扩展协议尤其如此；核心 `wl_*` 表只是降级后备，libwayland 正常都会导出其接口符号。
 - configure serial 由同一事务持有，ACK 与对应 buffer commit 配对，不能由多条路径分别猜测 ACK 时机。
 - scene dirty 只表示内容变化，不等于 surface 无需提交。initial、remap、configure、scale 和 swapchain rebuild 都必须强制呈现。
 - clean scene 只有在不存在强制原因时才能跳过 present。
@@ -85,10 +86,9 @@ registry 在 application 生命周期内持续存在。除 output 热插拔外�
 
 | 优先级 | 缺口 | 任务 |
 | :--- | :--- | :--- |
-| P1 | Weston 下的集成入口复跑未执行；KWin 虚拟后端的原生验收已完成 | Task 11 |
 | P3 | 完整 compositor、真实桌面/服务重连、驱动和性能矩阵未完成 | Task 8 |
 
-Task 11 的原生验收结果（KWin 替代环境、lavapipe、validation、失败清理和遗留的 X11 偶发拖放失败）记录在 [02-implementation-architecture-review.md](02-implementation-architecture-review.md)。Task 8 的编号沿用现有清单，不因后插入任务而重排。
+Task 11 已在 KWin 与 Weston 两个 headless compositor 上完成原生验收，结果记录在 [02-implementation-architecture-review.md](02-implementation-architecture-review.md)。Task 8 的编号沿用现有清单，不因后插入任务而重排。
 
 ## 4. 验证要求
 
@@ -100,8 +100,8 @@ Task 11 的原生验收结果（KWin 替代环境、lavapipe、validation、失�
 4. GNOME、KDE、Sway/wlroots 的真实桌面与驱动矩阵；
 5. 空闲唤醒、resize 延迟、frame 背压和 GPU wait 性能。
 
-交叉编译、vet 和 fake 测试不能替代对应的真实验证。当前 CI 虽配置了原生 Linux 单元测试任务，但具体提交的 CI 结果仍需单独确认。Task 11 已在本机完成第 1–3 层的最小验收，其余环境仍按本节分层记录。
+交叉编译、vet 和 fake 测试不能替代对应的真实验证。当前 CI 虽配置了原生 Linux 单元测试任务，但具体提交的 CI 结果仍需单独确认。Task 11 已在 KWin 与 Weston 两个 headless compositor 上完成第 1–3 层的最小验收，其余环境仍按本节分层记录。
 
 ## 5. 推荐顺序
 
-Task 11 只剩 Weston 下的复跑，其余最小门禁已在本机完成；当前按 **Task 8** 推进。桌面服务公共抽象应在真实重连行为验收后实施；keep-alive 先明确产品契约再实施。
+Task 11 已关闭，当前按 **Task 8** 推进。桌面服务公共抽象应在真实重连行为验收后实施；keep-alive 先明确产品契约再实施。
