@@ -711,7 +711,7 @@ func TestWaylandHiddenRemapResizeWaitsForShow(t *testing.T) {
 }
 
 func newWaylandPresentTestRenderer(width, height uint32) *vulkanRenderer {
-	return &vulkanRenderer{
+	renderer := &vulkanRenderer{
 		device: 1, queue: 2, swapchain: 3, width: width, height: height,
 		commands: []uintptr{4}, fence: 5,
 		api: &vulkanAPI{
@@ -729,6 +729,84 @@ func newWaylandPresentTestRenderer(width, height uint32) *vulkanRenderer {
 			destroyDevice:    func(uintptr, unsafe.Pointer) {},
 		},
 	}
+	installWaylandFakeSwapchain(renderer.api)
+	return renderer
+}
+
+// installWaylandFakeSwapchain supplies the Vulkan calls swapchain recreation
+// needs so scale and resize transactions can run without a driver.
+func installWaylandFakeSwapchain(api *vulkanAPI) {
+	api.getSurfaceCapabilities = func(_, _ uintptr, capabilities *vkSurfaceCapabilities) int32 {
+		capabilities.Current = vkExtent2D{Width: math.MaxUint32, Height: math.MaxUint32}
+		capabilities.Minimum = vkExtent2D{Width: 1, Height: 1}
+		capabilities.Maximum = vkExtent2D{Width: 16384, Height: 16384}
+		capabilities.MinImages = 2
+		capabilities.MaxImages = 8
+		capabilities.CompositeAlpha = vkCompositeOpaque
+		capabilities.Usage = vkImageUsageColorAttachment
+		return vkSuccess
+	}
+	api.getSurfaceFormats = func(_, _ uintptr, count *uint32, formats *vkSurfaceFormat) int32 {
+		*count = 1
+		if formats != nil {
+			*formats = vkSurfaceFormat{Format: vkFormatBGRA8, ColorSpace: vkColorSpaceSRGB}
+		}
+		return vkSuccess
+	}
+	api.createSwapchain = func(_ uintptr, _ *vkSwapchainCreateInfo, _ unsafe.Pointer, swapchain *uintptr) int32 {
+		*swapchain = 99
+		return vkSuccess
+	}
+	api.getSwapchainImages = func(_, _ uintptr, count *uint32, images *uintptr) int32 {
+		*count = 1
+		if images != nil {
+			*images = 101
+		}
+		return vkSuccess
+	}
+	api.createImageView = func(_ uintptr, _ *vkImageViewCreateInfo, _ unsafe.Pointer, view *uintptr) int32 {
+		*view = 201
+		return vkSuccess
+	}
+	api.createRenderPass = func(_ uintptr, _ *vkRenderPassCreateInfo, _ unsafe.Pointer, renderPass *uintptr) int32 {
+		*renderPass = 301
+		return vkSuccess
+	}
+	api.createFramebuffer = func(_ uintptr, _ *vkFramebufferCreateInfo, _ unsafe.Pointer, framebuffer *uintptr) int32 {
+		*framebuffer = 401
+		return vkSuccess
+	}
+	api.createCommandPool = func(_ uintptr, _ *vkCommandPoolCreateInfo, _ unsafe.Pointer, pool *uintptr) int32 {
+		*pool = 501
+		return vkSuccess
+	}
+	api.allocateCommandBuffers = func(_ uintptr, _ *vkCommandBufferAllocateInfo, buffers *uintptr) int32 {
+		*buffers = 601
+		return vkSuccess
+	}
+	api.createPipelineLayout = func(_ uintptr, _ *vkPipelineLayoutCreateInfo, _ unsafe.Pointer, layout *uintptr) int32 {
+		*layout = 701
+		return vkSuccess
+	}
+	api.createShaderModule = func(_ uintptr, _ *vkShaderModuleCreateInfo, _ unsafe.Pointer, module *uintptr) int32 {
+		*module = 801
+		return vkSuccess
+	}
+	api.createGraphicsPipelines = func(_, _ uintptr, _ uint32, _ *vkGraphicsPipelineCreateInfo, _ unsafe.Pointer, pipeline *uintptr) int32 {
+		*pipeline = 901
+		return vkSuccess
+	}
+	api.beginCommandBuffer = func(uintptr, *vkCommandBufferBeginInfo) int32 { return vkSuccess }
+	api.cmdBeginRenderPass = func(uintptr, *vkRenderPassBeginInfo, uint32) {}
+	api.cmdEndRenderPass = func(uintptr) {}
+	api.endCommandBuffer = func(uintptr) int32 { return vkSuccess }
+	api.destroyShaderModule = func(uintptr, uintptr, unsafe.Pointer) {}
+	api.destroyPipeline = func(uintptr, uintptr, unsafe.Pointer) {}
+	api.destroyPipelineLayout = func(uintptr, uintptr, unsafe.Pointer) {}
+	api.destroyRenderPass = func(uintptr, uintptr, unsafe.Pointer) {}
+	api.destroyFramebuffer = func(uintptr, uintptr, unsafe.Pointer) {}
+	api.destroyImageView = func(uintptr, uintptr, unsafe.Pointer) {}
+	api.destroyCommandPool = func(uintptr, uintptr, unsafe.Pointer) {}
 }
 
 func newWaylandPresentTestAPI(acked *[]uint32, frameRequests *int) *waylandAPI {
@@ -2939,6 +3017,7 @@ func TestWaylandRestoreToSavedFloatingSize(t *testing.T) {
 		xdgSurface:    0x222,
 		xdgToplevel:   0x333,
 		viewport:      0x444,
+		surfaceState:  waylandSurfaceMapped,
 		width:         548,
 		height:        448,
 		margin:        24,
@@ -3035,6 +3114,7 @@ func TestWaylandFractionalScaleTransitionsAcrossOutputs(t *testing.T) {
 		surface:       0x111,
 		xdgSurface:    0x222,
 		viewport:      0x444,
+		surfaceState:  waylandSurfaceMapped,
 		width:         448, // 400 + 2*24
 		height:        348, // 300 + 2*24
 		margin:        24,
@@ -3056,6 +3136,11 @@ func TestWaylandFractionalScaleTransitionsAcrossOutputs(t *testing.T) {
 
 	transitions := []float32{1.25, 1.75, 2.0, 1.0}
 	for _, targetScale := range transitions {
+		// Each transition starts from a delivered frame: the previous one
+		// installed a callback that stops a resize from presenting again.
+		win.framePending = false
+		win.frameCallback = 0
+		before := len(viewportDests)
 		win.applyScale(targetScale)
 
 		if got := win.displayScale(); got != targetScale {
@@ -3080,8 +3165,8 @@ func TestWaylandFractionalScaleTransitionsAcrossOutputs(t *testing.T) {
 			t.Fatalf("scale %g: logical size = %+v, want ~(400, 300)", targetScale, logical)
 		}
 
-		if len(viewportDests) == 0 {
-			t.Fatalf("scale %g: expected viewport destination update", targetScale)
+		if len(viewportDests) <= before {
+			t.Fatalf("scale %g: expected a viewport destination update", targetScale)
 		}
 		latestDest := viewportDests[len(viewportDests)-1]
 		wantTotalLogicalW := int32(math.Round(float64(float32(win.width) / targetScale)))

@@ -85,6 +85,19 @@ func (s *source) reply(kind, selectionAtom, listAtom uint32, list string) (flags
 	}
 }
 
+// nextDropEvent takes the next hover or drop report, failing the test instead
+// of blocking the whole package when the protocol goes quiet.
+func nextDropEvent(t *testing.T, events <-chan platform.FileDropEvent) platform.FileDropEvent {
+	t.Helper()
+	select {
+	case event := <-events:
+		return event
+	case <-time.After(10 * time.Second):
+		t.Fatal("the application never reported the drag")
+		return platform.FileDropEvent{}
+	}
+}
+
 // TestAFileDragFromAnotherClientIsAcceptedAndDropped runs the whole protocol
 // against a real window on a real X server: the source enters, moves, and drops
 // a list of files, and the application hears the hover and the paths.
@@ -183,7 +196,7 @@ func TestAFileDragFromAnotherClientIsAcceptedAndDropped(t *testing.T) {
 	if !ok || flags&1 == 0 {
 		t.Fatalf("XdndStatus: found %v flags %d: the point should take files", ok, flags)
 	}
-	hover := <-events
+	hover := nextDropEvent(t, events)
 	scale := target.displayScale()
 	expectedX := float32(60) / scale
 	expectedY := float32(30) / scale
@@ -196,7 +209,7 @@ func TestAFileDragFromAnotherClientIsAcceptedAndDropped(t *testing.T) {
 	if !ok || flags&1 == 0 {
 		t.Fatalf("XdndFinished: found %v flags %d", ok, flags)
 	}
-	dropped := <-events
+	dropped := nextDropEvent(t, events)
 	if dropped.Phase != platform.FileDropDrop || !reflect.DeepEqual(dropped.Paths, []string{"/tmp/a b.txt", "/tmp/dir"}) {
 		t.Fatalf("drop = %+v", dropped)
 	}
@@ -204,7 +217,7 @@ func TestAFileDragFromAnotherClientIsAcceptedAndDropped(t *testing.T) {
 	// A drag that leaves ends the hover.
 	src.message(target.id, enter, src.id, xdndVersion<<24, uriList)
 	src.message(target.id, atom("XdndLeave"), src.id)
-	if leave := <-events; leave.Phase != platform.FileDropLeave {
+	if leave := nextDropEvent(t, events); leave.Phase != platform.FileDropLeave {
 		t.Fatalf("leave = %+v", leave)
 	}
 

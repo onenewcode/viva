@@ -9,78 +9,142 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/vivaui/viva/internal/platform"
 )
 
-func waitWaylandHeadlessState(app *waylandApplication, runDone <-chan struct{}, check func() bool) error {
+// waylandHeadlessSnapshot is one consistent read of the window and renderer
+// state owned by the event-loop thread.
+type waylandHeadlessSnapshot struct {
+	width, height       uint32
+	surfaceState        waylandSurfaceState
+	maximized           bool
+	rendererWidth       uint32
+	rendererHeight      uint32
+	rendererSubmissions uint64
+}
+
+func readWaylandHeadlessSnapshot(win *waylandWindow) waylandHeadlessSnapshot {
+	snapshot := waylandHeadlessSnapshot{
+		width:        win.width,
+		height:       win.height,
+		surfaceState: win.surfaceState,
+		maximized:    win.maximized,
+	}
+	if win.state != nil && win.state.renderer != nil {
+		renderer := win.state.renderer
+		snapshot.rendererWidth = renderer.width
+		snapshot.rendererHeight = renderer.height
+		snapshot.rendererSubmissions = renderer.submissions
+	}
+	return snapshot
+}
+
+func waylandHeadlessState(app *waylandApplication, win *waylandWindow, runDone <-chan struct{}) (waylandHeadlessSnapshot, error) {
+	result := make(chan waylandHeadlessSnapshot, 1)
+	app.post(func() { result <- readWaylandHeadlessSnapshot(win) })
+	select {
+	case snapshot := <-result:
+		return snapshot, nil
+	case <-runDone:
+		return waylandHeadlessSnapshot{}, errors.New("application stopped while reading window state")
+	case <-time.After(20 * time.Second):
+		return waylandHeadlessSnapshot{}, errors.New("timed out reading window state")
+	}
+}
+
+func waitWaylandHeadlessState(app *waylandApplication, win *waylandWindow, runDone <-chan struct{}, check func(waylandHeadlessSnapshot) bool) (waylandHeadlessSnapshot, error) {
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		result := make(chan bool, 1)
-		app.post(func() { result <- check() })
-		select {
-		case ready := <-result:
-			if ready {
-				return nil
-			}
-		case <-runDone:
-			return errors.New("application stopped before the expected state")
-		case <-time.After(20 * time.Millisecond):
+		snapshot, err := waylandHeadlessState(app, win, runDone)
+		if err != nil {
+			return snapshot, err
+		}
+		if check(snapshot) {
+			return snapshot, nil
 		}
 		if time.Now().After(deadline) {
-			return errors.New("timed out waiting for window state")
+			return snapshot, fmt.Errorf("timed out waiting for window state (last %dx%d mapped=%v maximized=%v renderer=%dx%d submissions=%d)",
+				snapshot.width, snapshot.height, snapshot.surfaceState == waylandSurfaceMapped, snapshot.maximized,
+				snapshot.rendererWidth, snapshot.rendererHeight, snapshot.rendererSubmissions)
+		}
+		select {
+		case <-runDone:
+			return snapshot, errors.New("application stopped before the expected state")
+		case <-time.After(20 * time.Millisecond):
 		}
 	}
 }
 
-func waylandHeadlessSize(app *waylandApplication, win *waylandWindow, runDone <-chan struct{}) ([2]uint32, error) {
-	result := make(chan [2]uint32, 1)
-	app.post(func() { result <- [2]uint32{win.width, win.height} })
-	select {
-	case size := <-result:
-		return size, nil
-	case <-runDone:
-		return [2]uint32{}, errors.New("application stopped while reading window size")
-	case <-time.After(20 * time.Second):
-		return [2]uint32{}, errors.New("timed out reading window size")
+// driveWaylandHeadlessWindow checks that the window maps and presents, that
+// maximize and restore run the swapchain rebuild transaction, that Hide/Show
+// remaps, and that killing the compositor ends the application.
+func driveWaylandHeadlessWindow(t *testing.T, app *waylandApplication, win *waylandWindow, runDone <-chan struct{}, compositor *exec.Cmd) error {
+	wait := func(what string, check func(waylandHeadlessSnapshot) bool) (waylandHeadlessSnapshot, error) {
+		snapshot, err := waitWaylandHeadlessState(app, win, runDone, check)
+		if err != nil {
+			return snapshot, fmt.Errorf("%s: %w", what, err)
+		}
+		return snapshot, nil
 	}
-}
 
-func driveWaylandHeadlessWindow(app *waylandApplication, win *waylandWindow, runDone <-chan struct{}, compositor *exec.Cmd) error {
-	wait := func(check func() bool) error {
-		return waitWaylandHeadlessState(app, runDone, check)
+	initial, err := wait("initial map and present", func(snapshot waylandHeadlessSnapshot) bool {
+		return snapshot.surfaceState == waylandSurfaceMapped &&
+			snapshot.rendererSubmissions > 0 &&
+			snapshot.rendererWidth == snapshot.width && snapshot.rendererHeight == snapshot.height
+	})
+	if err != nil {
+		return err
 	}
-	if err := wait(func() bool { return win.surfaceState == waylandSurfaceMapped }); err != nil {
-		return fmt.Errorf("initial map: %w", err)
+	before := [2]uint32{initial.width, initial.height}
+
+	// Maximize and restore run before Hide/Show. A compositor may re-derive the
+	// normal client size when a window is remapped (KWin subtracts its server-side
+	// decoration extents), so restoring to the pre-maximize size after a remap is
+	// compositor-defined rather than a property of the client transaction.
+	app.post(func() { win.setMaximized(true) })
+	maximized, err := wait("maximize resize", func(snapshot waylandHeadlessSnapshot) bool {
+		return snapshot.maximized &&
+			(snapshot.width != before[0] || snapshot.height != before[1]) &&
+			snapshot.rendererWidth == snapshot.width && snapshot.rendererHeight == snapshot.height &&
+			snapshot.rendererSubmissions > initial.rendererSubmissions
+	})
+	if err != nil {
+		return err
+	}
+
+	app.post(func() { win.setMaximized(false) })
+	restored, err := wait("restore resize", func(snapshot waylandHeadlessSnapshot) bool {
+		return !snapshot.maximized &&
+			snapshot.width == before[0] && snapshot.height == before[1] &&
+			snapshot.rendererWidth == snapshot.width && snapshot.rendererHeight == snapshot.height &&
+			snapshot.rendererSubmissions > maximized.rendererSubmissions
+	})
+	if err != nil {
+		return err
 	}
 
 	win.Hide()
-	if err := wait(func() bool { return win.surfaceState == waylandSurfaceUnmapped }); err != nil {
-		return fmt.Errorf("hide: %w", err)
+	if _, err := wait("hide", func(snapshot waylandHeadlessSnapshot) bool {
+		return snapshot.surfaceState == waylandSurfaceUnmapped
+	}); err != nil {
+		return err
 	}
 	win.Show()
-	if err := wait(func() bool { return win.surfaceState == waylandSurfaceMapped }); err != nil {
-		return fmt.Errorf("show: %w", err)
-	}
-
-	before, err := waylandHeadlessSize(app, win, runDone)
+	remapped, err := wait("show and present", func(snapshot waylandHeadlessSnapshot) bool {
+		return snapshot.surfaceState == waylandSurfaceMapped &&
+			snapshot.rendererSubmissions > restored.rendererSubmissions &&
+			snapshot.rendererWidth == snapshot.width && snapshot.rendererHeight == snapshot.height
+	})
 	if err != nil {
-		return fmt.Errorf("initial size: %w", err)
+		return err
 	}
-	app.post(func() { win.setMaximized(true) })
-	if err := wait(func() bool {
-		return win.maximized && (win.width != before[0] || win.height != before[1])
-	}); err != nil {
-		return fmt.Errorf("maximize resize: %w", err)
-	}
-	app.post(func() { win.setMaximized(false) })
-	if err := wait(func() bool {
-		return !win.maximized && win.width == before[0] && win.height == before[1]
-	}); err != nil {
-		return fmt.Errorf("restore resize: %w", err)
-	}
+	t.Logf("initial %dx%d, maximized %dx%d, restored %dx%d, remapped %dx%d, submissions %d",
+		initial.width, initial.height, maximized.width, maximized.height,
+		restored.width, restored.height, remapped.width, remapped.height, remapped.rendererSubmissions)
 
 	if err := compositor.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("stop compositor: %w", err)
@@ -88,29 +152,56 @@ func driveWaylandHeadlessWindow(app *waylandApplication, win *waylandWindow, run
 	return nil
 }
 
+// waylandCompositorArgs returns the headless arguments for the compositor named
+// by VIVA_WAYLAND_COMPOSITOR, which defaults to Weston. VIVA_WAYLAND_COMPOSITOR_ARGS
+// overrides them for compositors without a built-in profile; arguments are split
+// on whitespace (no quoting) and {socket} is replaced with the socket the test
+// waits for.
+func waylandCompositorArgs(name, socket string) []string {
+	override := os.Getenv("VIVA_WAYLAND_COMPOSITOR_ARGS")
+	if override != "" {
+		args := make([]string, 0, 4)
+		for _, field := range strings.Fields(override) {
+			args = append(args, strings.ReplaceAll(field, "{socket}", socket))
+		}
+		return args
+	}
+	if filepath.Base(name) == "kwin_wayland" {
+		return []string{"--virtual", "--socket=" + socket, "--width=1024", "--height=768", "--no-lockscreen", "--no-global-shortcuts"}
+	}
+	return []string{"--backend=headless", "--renderer=pixman", "--socket=" + socket, "--idle-time=0"}
+}
+
 // TestWaylandHeadlessIntegration exercises real libwayland, xdg-shell and
-// Vulkan WSI against Weston and the software Vulkan driver selected by the environment.
+// Vulkan WSI against a headless compositor and the software Vulkan driver
+// selected by the environment. Weston is the default; set VIVA_WAYLAND_COMPOSITOR
+// to run the same entry against another compositor with a headless backend.
 func TestWaylandHeadlessIntegration(t *testing.T) {
 	if os.Getenv("VIVA_WAYLAND_INTEGRATION") != "1" {
-		t.Skip("set VIVA_WAYLAND_INTEGRATION=1 to run the Weston/Vulkan integration test")
+		t.Skip("set VIVA_WAYLAND_INTEGRATION=1 to run the headless compositor/Vulkan integration test")
 	}
-	weston, err := exec.LookPath("weston")
+	compositorName := os.Getenv("VIVA_WAYLAND_COMPOSITOR")
+	if compositorName == "" {
+		compositorName = "weston"
+	}
+	compositorPath, err := exec.LookPath(compositorName)
 	if err != nil {
-		t.Fatalf("Weston is required for integration validation: %v", err)
+		t.Fatalf("%s is required for integration validation: %v", compositorName, err)
 	}
 	runtimeDir := t.TempDir()
 	if err := os.Chmod(runtimeDir, 0o700); err != nil {
 		t.Fatalf("runtime directory permissions: %v", err)
 	}
 	socket := fmt.Sprintf("viva-test-%d", os.Getpid())
-	command := exec.Command(weston, "--backend=headless", "--renderer=pixman", "--socket="+socket, "--idle-time=0")
+	command := exec.Command(compositorPath, waylandCompositorArgs(compositorPath, socket)...)
 	command.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+runtimeDir, "WAYLAND_DISPLAY="+socket, "LIBGL_ALWAYS_SOFTWARE=1", "HOME="+runtimeDir)
 	var compositorLog bytes.Buffer
 	command.Stdout = &compositorLog
 	command.Stderr = &compositorLog
 	if err := command.Start(); err != nil {
-		t.Fatalf("start Weston: %v", err)
+		t.Fatalf("start %s: %v", compositorName, err)
 	}
+	t.Logf("integration compositor: %s %v", compositorPath, command.Args[1:])
 	compositorDone := make(chan struct{})
 	go func() {
 		_ = command.Wait()
@@ -120,7 +211,7 @@ func TestWaylandHeadlessIntegration(t *testing.T) {
 		_ = command.Process.Kill()
 		<-compositorDone
 		if compositorLog.Len() != 0 {
-			t.Logf("Weston output:\n%s", compositorLog.String())
+			t.Logf("%s output:\n%s", compositorName, compositorLog.String())
 		}
 	})
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
@@ -135,29 +226,33 @@ func TestWaylandHeadlessIntegration(t *testing.T) {
 		}
 		select {
 		case <-compositorDone:
-			t.Fatalf("Weston exited before creating its socket:\n%s", compositorLog.String())
+			t.Fatalf("%s exited before creating its socket:\n%s", compositorName, compositorLog.String())
 		case <-time.After(25 * time.Millisecond):
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for the Weston socket")
+			t.Fatalf("timed out waiting for the %s socket", compositorName)
 		}
 	}
 
 	app, err := newWaylandApplication()
 	if err != nil {
-		t.Fatalf("connect to Weston: %v", err)
+		t.Fatalf("connect to %s: %v", compositorName, err)
 	}
 	runDone := make(chan struct{})
 	driverResult := make(chan error, 1)
 	driverStarted := false
+	var win *waylandWindow
+	var renderer *vulkanRenderer
 	runErr := app.Run(func(platform.Application) error {
-		win, err := app.openWindow(platform.Config{Width: 320, Height: 240})
+		opened, err := app.openWindow(platform.Config{Width: 320, Height: 240})
 		if err != nil {
 			return err
 		}
+		win = opened
+		renderer = opened.state.renderer
 		driverStarted = true
 		go func() {
-			if err := driveWaylandHeadlessWindow(app, win, runDone, command); err != nil {
+			if err := driveWaylandHeadlessWindow(t, app, win, runDone, command); err != nil {
 				driverResult <- err
 				app.Quit()
 				return
@@ -175,5 +270,12 @@ func TestWaylandHeadlessIntegration(t *testing.T) {
 	}
 	if runErr == nil {
 		t.Fatal("compositor disconnect returned a normal application exit")
+	}
+	t.Logf("application error after compositor disconnect: %v", runErr)
+	if win == nil || !win.closed.Load() || win.state != nil {
+		t.Fatal("window stayed open after compositor disconnect")
+	}
+	if renderer == nil || renderer.api != nil {
+		t.Fatal("Vulkan renderer was not released after compositor disconnect")
 	}
 }

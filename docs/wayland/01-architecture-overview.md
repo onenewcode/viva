@@ -1,7 +1,7 @@
 # Viva Linux/Wayland 架构与开发契约
 
 - 更新日期：2026-10-30
-- 审查基线：`61a78c8` + Task 12 当前 diff
+- 审查基线：`cb6958b` + Task 11 当前 diff
 - 用途：约束后续开发；不记录已完成的修复历史
 - 当前复核：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 - 未完成任务：[task.md](task.md)
@@ -85,10 +85,10 @@ registry 在 application 生命周期内持续存在。除 output 热插拔外�
 
 | 优先级 | 缺口 | 任务 |
 | :--- | :--- | :--- |
-| P1 | Weston/Vulkan 集成测试已添加，原生 race/headless/lavapipe 尚未执行 | Task 11 |
+| P1 | Weston 下的集成入口复跑未执行；KWin 虚拟后端的原生验收已完成 | Task 11 |
 | P3 | 完整 compositor、真实桌面/服务重连、驱动和性能矩阵未完成 | Task 8 |
 
-Task 8 的编号沿用现有清单，不因后插入任务而重排。
+Task 11 的原生验收结果（KWin 替代环境、lavapipe、validation、失败清理和遗留的 X11 偶发拖放失败）记录在 [02-implementation-architecture-review.md](02-implementation-architecture-review.md)。Task 8 的编号沿用现有清单，不因后插入任务而重排。
 
 ## 4. 验证要求
 
@@ -100,8 +100,8 @@ Task 8 的编号沿用现有清单，不因后插入任务而重排。
 4. GNOME、KDE、Sway/wlroots 的真实桌面与驱动矩阵；
 5. 空闲唤醒、resize 延迟、frame 背压和 GPU wait 性能。
 
-交叉编译、vet 和 fake 测试不能替代对应的真实验证。当前 CI 虽配置了原生 Linux 单元测试任务，但具体提交的 CI 结果仍需单独确认。
+交叉编译、vet 和 fake 测试不能替代对应的真实验证。当前 CI 虽配置了原生 Linux 单元测试任务，但具体提交的 CI 结果仍需单独确认。Task 11 已在本机完成第 1–3 层的最小验收，其余环境仍按本节分层记录。
 
 ## 5. 推荐顺序
 
-按 **Task 11 → Task 8** 推进。桌面服务公共抽象应在真实重连行为验收后实施；keep-alive 先明确产品契约再实施。
+Task 11 只剩 Weston 下的复跑，其余最小门禁已在本机完成；当前按 **Task 8** 推进。桌面服务公共抽象应在真实重连行为验收后实施；keep-alive 先明确产品契约再实施。

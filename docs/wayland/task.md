@@ -1,11 +1,11 @@
 # Wayland 未完成任务
 
 - 更新日期：2026-10-30
-- 基线：`61a78c8` + Task 12 当前 diff
+- 基线：`cb6958b` + Task 11 当前 diff
 - 开发契约：[01-architecture-overview.md](01-architecture-overview.md)
 - 当前 findings：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 
-本清单只保留未完成事项。Task 8 沿用原编号；后续任务从 Task 9 递增，不重排现有任务。
+本清单只保留未完成事项。Task 8 沿用原编号；后续任务从 Task 9 递增，不重排现有任务。Task 11 只保留未完成的 Weston 复跑，其余原生验收证据见 [02-implementation-architecture-review.md](02-implementation-architecture-review.md)。
 
 ## 执行规则
 
@@ -20,23 +20,9 @@
 
 ### Task 11：建立最小真实验证入口并完成原生验收
 
-**目标：** 提供可重复的原生验证入口，并在有 Linux/compositor/Vulkan 环境时完成验收；不要求在本机启动 VM，也不修改 CI。
+**已完成：** `TestWaylandHeadlessIntegration` 入口、`VIVA_WAYLAND_COMPOSITOR` 选择、原生 race 与 KWin 虚拟后端下的集成验收（首次呈现、swapchain 重建、失败清理）、lavapipe 与 validation 运行，以及首次原生执行暴露的两个测试替身缺陷修复。环境和结果见 [02-implementation-architecture-review.md](02-implementation-architecture-review.md) 第 4 节。
 
-已实现入口：
-
-- 原生 Linux 可执行 `go test -race ./internal/platform/linux`，覆盖系统 API 关闭并发和几何快照。
-- `TestWaylandHeadlessIntegration` 可在 Weston 下验证初始映射、Hide/Show、maximize/restore 几何变化和 compositor 断开；依赖迟到由同包原生单元测试覆盖。
-- 设置 `VIVA_WAYLAND_INTEGRATION=1` 后启用集成测试，由运行环境选择 lavapipe 和 Vulkan validation；默认环境跳过，不影响 fake 单元测试。
-
-**当前验收状态：**
-
-- 本机仅完成 gofmt、`git diff --check`、Linux 交叉 vet 和测试包交叉编译，没有执行原生集成测试。
-- CI 配置保持不变，不把测试入口的存在记为真实验证通过。
-
-**完成条件（尚未满足）：**
-
-- 在原生 Linux 执行 race 和集成测试，记录 Weston、驱动、validation 环境、命令和结果。
-- 验证 lavapipe 首次呈现、swapchain 重建和失败清理；失败项修复并复核后才能关闭 Task 11。
+**未完成：** 在 Weston 下复跑同一入口。本机没有 Weston，且无网络/无 sudo 安装；该复跑完成前任务保留在清单中，不能用 KWin 结果替代 Weston 结论。
 
 ## P3：完成完整验收矩阵
 
