@@ -80,14 +80,15 @@ type waylandApplication struct {
 	windows  []*waylandWindowState
 	firstErr error
 
-	status        *statusNotifier
-	desktop       *desktopWatch
-	desktopFailed bool
-	ibus          waylandInputMethod
-	ibusFD        int32
-	ibusFDSet     bool
-	ibusTried     bool
-	atspi         *atspiHost
+	status             *statusNotifier
+	desktop            *desktopWatch
+	desktopFailed      bool
+	watchHookInstalled bool
+	ibus               waylandInputMethod
+	ibusFD             int32
+	ibusFDSet          bool
+	ibusTried          bool
+	atspi              *atspiHost
 }
 
 // newWaylandApplication initializes Wayland display, event loop, and binds registry globals.
@@ -128,13 +129,6 @@ func newWaylandApplication() (*waylandApplication, error) {
 		return nil, err
 	}
 	app.setupDataDevice()
-	platform.SetWatchHook(func() {
-		app.post(func() {
-			app.syncDesktopWatch()
-		})
-	})
-	app.syncDesktopWatch()
-	activeWaylandApp.Store(app)
 	return app, nil
 }
 
@@ -238,6 +232,14 @@ func (app *waylandApplication) Run(start platform.ApplicationStart) error {
 	defer runtime.UnlockOSThread()
 	defer app.close()
 
+	platform.SetWatchHook(func() {
+		app.post(func() {
+			app.syncDesktopWatch()
+		})
+	})
+	app.watchHookInstalled = true
+	app.syncDesktopWatch()
+	activeWaylandApp.Store(app)
 	if err := start(app); err != nil {
 		app.closeAll()
 		return err
@@ -609,7 +611,10 @@ func (app *waylandApplication) hasWindows() bool {
 // close releases all Wayland proxies, sockets, and dynamically linked libraries.
 func (app *waylandApplication) close() {
 	activeWaylandApp.CompareAndSwap(app, nil)
-	platform.SetWatchHook(nil)
+	if app.watchHookInstalled {
+		platform.SetWatchHook(nil)
+		app.watchHookInstalled = false
+	}
 	app.closeStatus()
 	app.closeDesktop()
 	app.atspiClose()

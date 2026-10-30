@@ -4,6 +4,7 @@ package linux
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -16,11 +17,15 @@ type platformBackend interface {
 }
 
 func selectBackend() (platformBackend, error) {
+	return selectBackendWith(newWaylandApplication, log.Printf)
+}
+
+func selectBackendWith(newWayland func() (*waylandApplication, error), logf func(string, ...any)) (platformBackend, error) {
 	target := os.Getenv("VIVA_LINUX_BACKEND")
 
 	switch target {
 	case "wayland":
-		waylandApp, err := newWaylandApplication()
+		waylandApp, err := newWayland()
 		if err != nil {
 			return nil, fmt.Errorf("linux: forced Wayland backend failed: %w", err)
 		}
@@ -33,15 +38,24 @@ func selectBackend() (platformBackend, error) {
 		return &linuxApplication{}, nil
 
 	case "":
-		// Automatic probing: prefer Wayland, fallback to X11
+		// Automatic probing: prefer Wayland, fallback to X11.
+		var waylandErr error
 		if hasWaylandEnvironment() {
-			if waylandApp, err := newWaylandApplication(); err == nil {
+			waylandApp, err := newWayland()
+			if err == nil {
 				return waylandApp, nil
 			}
+			waylandErr = err
 		}
 
 		if os.Getenv("DISPLAY") != "" {
+			if waylandErr != nil {
+				logf("linux: Wayland backend initialization failed; falling back to X11: %v", waylandErr)
+			}
 			return &linuxApplication{}, nil
+		}
+		if waylandErr != nil {
+			return nil, fmt.Errorf("linux: Wayland backend initialization failed and X11 is unavailable: %w", waylandErr)
 		}
 
 		return nil, platform.ErrNoGraphics

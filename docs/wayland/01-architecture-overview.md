@@ -1,7 +1,7 @@
 # Viva Linux/Wayland 架构：目标设计与实施契约
 
 - 更新日期：2026-10-30
-- 审查基准：`b6762a0` + Task 4 当前 diff
+- 审查基准：`7f82260` + Task 5 当前 diff
 - 适用分支：`docs/linux-render-refresh-flicker`
 - 文档性质：架构目标、协议约束和迁移方向；不代表全部能力已经实现或验收
 
@@ -76,9 +76,11 @@ flowchart TD
 - `VIVA_LINUX_BACKEND=x11`：要求 `DISPLAY` 非空，不尝试 Wayland。
 - 未设置 override：
   1. `WAYLAND_DISPLAY` 非空，或 `$XDG_RUNTIME_DIR/wayland-0` 存在时，尝试 Wayland；
-  2. Wayland 初始化失败后，如果 `DISPLAY` 非空则选择 X11；
-  3. 两者均不可用时返回 `platform.ErrNoGraphics`。
+  2. Wayland 初始化失败后，如果 `DISPLAY` 非空则记录包含下层原因的诊断并选择 X11；
+  3. Wayland 初始化失败且没有 `DISPLAY` 时返回包装下层原因的错误；两者都没有可用环境时返回 `platform.ErrNoGraphics`。
 - 其他 override 值返回配置错误。
+
+Wayland 构造阶段建立显示连接、事件循环和协议对象；`activeWaylandApp`、watch hook 和 desktop watcher 到 `Run` 才激活，关闭时只清理该实例拥有的 hook。窗口和 Vulkan/图形设备创建仍位于后续启动路径，其错误不经 `ErrNoGraphics` 重写。
 
 X11 的 `selectBackend` 当前只完成环境检查和对象选择，真正的 XCB 连接可能在后续窗口创建时建立。因此，文档不能把“选择后端时已验证 X server 可连接”作为现有保证。
 
@@ -379,7 +381,7 @@ Vulkan fake 至少跟踪：
 | 能力 | 当前状态 | 目标/缺口 |
 | :--- | :--- | :--- |
 | Wayland-First 与 X11 override | 已具备 | 保持文档与实际探测时机一致 |
-| 后端探测副作用与错误链 | 目标未完整实现 | 自动后备保留下层诊断，探测不遗留全局 hook/服务，区分显示与设备错误 |
+| 后端探测副作用与错误链 | 已实现诊断保留和 `Run` 级服务/hook 生命周期 | 保持无显示、连接失败、强制模式和设备错误的独立回归测试 |
 | PureGo 动态绑定 | 已具备 | 继续用 ABI/协议测试保护 |
 | 共享 Vulkan 和 eventRouter | 已具备 | 收敛资源所有权和 present 契约 |
 | eventfd 命令队列 | 已具备基础，EINTR 与关闭同步已修复 | 代际检查和长期错误模型仍需收敛 |
@@ -403,11 +405,10 @@ Vulkan fake 至少跟踪：
 
 后续工作按以下顺序推进，不重复已经落地的呈现、输入调度、缩放往返、swapchain 和 CI 修复：
 
-1. **收敛后端探测与错误链**：保留自动后备诊断，区分显示连接、配置和图形设备错误，清理探测副作用。
-2. **收敛事件循环**：统一 event source，补齐 prepare/read/cancel，保持现有 ERR/HUP、POLLOUT、eventfd 和 deadline 行为。
-3. **完善显式窗口状态机**：减少布尔组合，集中 configure 事务、ACK、frame callback 和 surface 映射状态。
-4. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉，并明确 keep-alive 产品契约。
-5. **补验证体系**：在现有 Linux 原生单元测试之上，增加原生 race、headless compositor、Vulkan validation/lavapipe、真实桌面和性能验收。
+1. **收敛事件循环**：统一 event source，补齐 prepare/read/cancel，保持现有 ERR/HUP、POLLOUT、eventfd 和 deadline 行为。
+2. **完善显式窗口状态机**：减少布尔组合，集中 configure 事务、ACK、frame callback 和 surface 映射状态。
+3. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉，并明确 keep-alive 产品契约。
+4. **补验证体系**：在现有 Linux 原生单元测试之上，增加原生 race、headless compositor、Vulkan validation/lavapipe、真实桌面和性能验收。
 
 该顺序保留现有后端调度、PureGo、共享渲染和协议核心，不要求推倒重写。
 

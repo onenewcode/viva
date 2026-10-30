@@ -1,7 +1,7 @@
 # Wayland 待实施任务
 
 - 修订日期：2026-10-30
-- 当前基线：`b6762a0` + Task 4 当前 diff
+- 当前基线：`7f82260` + Task 5 当前 diff
 - 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
 - 当前审查：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 
@@ -18,25 +18,6 @@
 7. 每个任务提交前必须同步 `01`、`02` 和 `task.md`：记录基线提交与当前任务 diff、实现状态和验证证据，移除已完成 findings/待办且不重排历史任务编号，保留仍未完成的差距。Task 4 是阶段一致性检查，不替代逐任务同步。
 
 ## P2：继续目标架构收敛
-
-### Task 5：收敛后端探测副作用与错误链
-
-- 目标：后端自动选择保留下层诊断，区分无显示、配置错误和图形设备失败；探测阶段不留下全局副作用。
-- 主要文件：
-  - `internal/platform/linux/backend_select.go`
-  - `internal/platform/linux/backend_select_test.go`
-  - `internal/platform/linux/wayland_app.go`
-  - 相关应用初始化与清理测试
-- 实施要点：
-  - 区分环境探测、后端初始化和后续窗口/图形设备创建，不让探测启动窗口、后台服务或遗留全局 hook；
-  - 自动后备保留 Wayland 初始化失败的诊断，无可用 X11 时不得把已有但初始化失败的 Wayland 配置误报为无显示；
-  - 强制模式继续保留下层错误，显示连接与 Vulkan/设备错误保持可区分；
-  - 初始化失败和自动后备路径释放已创建的连接、FD 和全局状态。
-- 验收条件：
-  - Wayland 环境存在但初始化失败且无 DISPLAY 时，返回可识别的下层原因，而不是无条件 ErrNoGraphics；
-  - 自动后备到 X11 时诊断仍可获取，强制 Wayland 不静默降级；
-  - 探测失败不留下 watch hook、desktop watcher 或其他后台资源；
-  - 无显示、未知 override、显示连接失败和图形设备失败均有独立错误测试。
 
 ### Task 6：补齐 libwayland prepare/read 与统一 event-source 契约
 
