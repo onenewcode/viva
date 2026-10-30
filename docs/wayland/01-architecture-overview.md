@@ -1,7 +1,7 @@
 # Viva Linux/Wayland 架构与开发契约
 
 - 更新日期：2026-10-30
-- 审查基线：`cb6958b` + Task 11 当前 diff
+- 审查基线：`4e77606`
 - 用途：约束后续开发；不记录已完成的修复历史
 - 当前复核：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 - 未完成任务：[task.md](task.md)

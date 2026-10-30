@@ -1,7 +1,7 @@
 # Wayland 未完成任务
 
 - 更新日期：2026-10-30
-- 基线：`cb6958b` + Task 11 当前 diff
+- 基线：`4e77606`
 - 开发契约：[01-architecture-overview.md](01-architecture-overview.md)
 - 当前 findings：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 
@@ -28,7 +28,7 @@
 
 ### Task 8：补全 compositor、Vulkan、真实桌面和性能验收
 
-**目标：** 在 Task 11 最小门禁之上完成环境覆盖；保留原任务编号。
+**目标：** 在 Task 11 最小门禁之上完成环境覆盖；保留原任务编号。本机限制：真实会话锁定、没有 Weston/GNOME/Sway、IBus 未运行；已完成的驱动和会话片段见 [02-implementation-architecture-review.md](02-implementation-architecture-review.md) 第 5 节。
 
 - 扩展 headless compositor 的 scale、output 热插拔和复杂事件交错。
 - 在更多驱动上执行 Vulkan validation，覆盖 device/surface loss 和有界恢复。

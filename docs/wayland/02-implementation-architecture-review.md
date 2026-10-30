@@ -1,7 +1,7 @@
 # Linux/Wayland 当前实现复核
 
 - 日期：2026-10-30
-- 基线：`cb6958b` + Task 11 当前 diff
+- 基线：`4e77606` + Task 8 先行证据
 - 类型：只读源码复核 + 原生 Linux 验收
 - 开发契约：[01-architecture-overview.md](01-architecture-overview.md)
 - 后续任务：[task.md](task.md)
@@ -100,9 +100,20 @@ VK_LAYER_PATH=/tmp/vkval VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LOADE
 
 - 没有 Weston，headless 结论只来自 KWin 虚拟后端；Weston 下的复跑未执行，Task 11 因此保留在任务清单中。复跑时注意 restore 断言要求恢复到最大化前的 320x240，这是 KWin 的行为；若 Weston 重新推导普通窗口尺寸，需要先判断是客户端事务问题还是 compositor 定义差异；
 - validation layer 不是发行版安装，且应用请求 Vulkan 1.0，未覆盖更高 API 版本的校验；测试不断言 validation 输出，只人工检查日志；
-- 未覆盖 GNOME、Sway/wlroots、真实 GPU 驱动、多显示器热插拔、IBus、拖放、AT-SPI、session bus/portal 重启和性能测量，这些仍属于 Task 8；
+- 未覆盖 GNOME、Sway/wlroots、多显示器热插拔、IBus、拖放、AT-SPI、session bus/portal 重启和性能测量，这些仍属于 Task 8；真实驱动只执行了第 5 节的先行片段；
 - F1 使原生 race 门禁不是确定性的，结果按第 2 节记录，不视为已修复。
 
-## 5. 后续记录方式
+## 5. Task 8 先行片段
+
+在等待 Weston 期间，用同一集成入口补了可执行的驱动和真实会话片段：
+
+- **NVIDIA（nvidia_icd，RTX 5070 Ti Laptop）+ validation**：`PASS (3.07s)`，`initial 320x240, maximized 1024x740, restored 320x240, remapped 320x240, submissions 6`；loader 输出确认实例/设备层插入，没有 `VUID-`/`Validation Error`。
+- **lavapipe**：`PASS`，见 4.2。
+- **Intel（intel_icd，RPL-S）+ KWin 虚拟后端**：首次呈现失败，compositor 报 `[destroyed object]: error 7: importing the supplied dmabufs failed`，客户端把它作为 `Run` 错误返回并完成清理；关闭 validation 后同样复现。同一 ICD 的 `vkcube --wsi wayland` 在真实会话中启动并创建了设备，12 秒内没有报错；但会话锁定，无法确认它是否真正呈现，因此不能用它证明真实 KWin 能导入 Intel dmabuf。该失败目前只确认发生在 KWin 虚拟后端的导入路径，尚未确立为客户端缺陷，根因未隔离；本地不做静默回退。
+- **真实 KDE 会话**：会话当前锁定（`LockedHint=yes`，`kscreenlocker_greet` 运行）。临时会话模式探针能连接 `wayland-0`，在 125% 缩放下完成首次映射并提交首帧（320x240 逻辑 → 400x300 设备，客户端提交计数 1，未收到协议错误）；随后 maximize 停在 `framePending=true`，锁屏下 KWin 不为不可见 surface 发送 frame callback（推断），resize 事务无法完成，探针已回退。IBus 守护进程也未运行。
+
+未执行并保持为 Task 8 剩余项：GNOME、Sway/wlroots、多输出热插拔、device loss、IBus/拖放/AT-SPI、session bus/portal 重启和性能测量。真实桌面验收需要解锁的真实会话或一台可控制的测试机。
+
+## 6. 后续记录方式
 
 完成对应任务后删除其 finding，并同步任务清单和验证证据。已实现修复不再保留为历史章节；仅记录仍未解决的问题、未执行验证和新的基线。
