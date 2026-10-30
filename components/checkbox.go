@@ -5,12 +5,13 @@ import "github.com/vivaui/viva/ui"
 // Checkbox paints one official shadcn checkable control. State remains owned
 // by the caller and is exposed through a stable typed hit.
 type Checkbox struct {
-	canvas  *ui.Canvas
-	theme   ui.Theme
-	id      ui.ID
-	bounds  ui.Rect
-	label   string
-	checked bool
+	canvas    *ui.Canvas
+	theme     ui.Theme
+	id        ui.ID
+	bounds    ui.Rect
+	hitBounds ui.Rect
+	label     string
+	checked   bool
 	// indeterminate is Base UI's mixed state: the box shows a dash and the
 	// accessibility value is "mixed", whatever checked says.
 	indeterminate bool
@@ -36,6 +37,20 @@ func BeginCheckbox(canvas *ui.Canvas, theme ui.Theme, id ui.ID, bounds ui.Rect, 
 // Label sets the accessible name without changing visual geometry.
 func (checkbox Checkbox) Label(label string) Checkbox {
 	checkbox.label = label
+	return checkbox
+}
+
+// HitBounds makes an enclosing label or selection card activate this checkbox.
+// The visual square keeps its normal position and size; zero bounds use the
+// default enlarged target. The entire target exposes one checkbox semantic hit,
+// so it replaces the square's target rather than adding to it: the rect must
+// contain the square, and it must not cover other interactive hits painted
+// after this checkbox, because the later hit wins. Canvas.HitLabel is the other
+// way to make an enclosing region activate a control; it keeps the control's
+// own bounds and exposes the region as that control's label, so prefer it when
+// the semantic target should stay the square.
+func (checkbox Checkbox) HitBounds(bounds ui.Rect) Checkbox {
+	checkbox.hitBounds = bounds
 	return checkbox
 }
 
@@ -141,6 +156,9 @@ func (checkbox Checkbox) Paint() CheckboxResult {
 		hitBounds := ui.Rect{
 			X: checkbox.bounds.X - 12*scale, Y: checkbox.bounds.Y - 8*scale,
 			Width: checkbox.bounds.Width + 24*scale, Height: checkbox.bounds.Height + 16*scale,
+		}
+		if checkbox.hitBounds.Width > 0 && checkbox.hitBounds.Height > 0 {
+			hitBounds = checkbox.hitBounds
 		}
 		checkbox.canvas.HitWithOptions(checkbox.id, hitBounds, checkbox.label, ui.HitOptions{
 			Role: ui.RoleCheckbox, Disabled: checkbox.disabled,

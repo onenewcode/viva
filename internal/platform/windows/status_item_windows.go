@@ -37,7 +37,6 @@ const (
 	// notifyShowTip asks version 4 shells to show the tip as a standard tooltip.
 	notifyShowTip = 0x80
 
-	hwndMessage        = ^uintptr(2) // HWND_MESSAGE, -3
 	hwndTopmost        = ^uintptr(0) // HWND_TOPMOST, -1
 	wsPopup            = 0x80000000
 	wsExToolWindow     = 0x00000080
@@ -187,7 +186,10 @@ func (application *windowsApplication) ensureStatusWindow() error {
 	if registered, _, callErr := registerClass.Call(uintptr(unsafe.Pointer(&class))); registered == 0 {
 		return windowsCallError("register status window class", callErr)
 	}
-	window, _, callErr := createWindow.Call(0, uintptr(unsafe.Pointer(name)), 0, 0, 0, 0, 0, 0, hwndMessage, 0, application.instance, 0)
+	// A hidden top-level window and not a message-only one: the shell sends
+	// TaskbarCreated as a broadcast, which message-only windows never receive, so
+	// the icon would stay gone after Explorer restarts.
+	window, _, callErr := createWindow.Call(0, uintptr(unsafe.Pointer(name)), 0, 0, 0, 0, 0, 0, 0, 0, application.instance, 0)
 	if window == 0 {
 		unregisterClass.Call(uintptr(unsafe.Pointer(name)), application.instance)
 		return windowsCallError("create status window", callErr)
@@ -337,10 +339,16 @@ func newIconHandle(scaled platform.StatusIcon) (uintptr, error) {
 	return handle, nil
 }
 
-func statusProc(window, kind, first, second uintptr) uintptr {
+func statusProc(window, kind, first, second uintptr) (result uintptr) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			platform.ReportFault("status icon window procedure", recovered)
+			result = 0
+		}
+	}()
 	value, ok := statusStates.Load(window)
 	if !ok {
-		result, _, _ := defaultWindowProc.Call(window, kind, first, second)
+		result, _, _ = defaultWindowProc.Call(window, kind, first, second)
 		return result
 	}
 	status := value.(*statusState)
@@ -366,7 +374,7 @@ func statusProc(window, kind, first, second uintptr) uintptr {
 		}
 		return 0
 	}
-	result, _, _ := defaultWindowProc.Call(window, kind, first, second)
+	result, _, _ = defaultWindowProc.Call(window, kind, first, second)
 	return result
 }
 

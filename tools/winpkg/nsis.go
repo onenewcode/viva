@@ -197,6 +197,9 @@ func (script Script) Generate() ([]byte, error) {
 	if scope == ScopeUser {
 		line(`!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"`)
 	}
+	line(`!define MUI_FINISHPAGE_SHOWREADME`)
+	line(`!define MUI_FINISHPAGE_SHOWREADME_TEXT "$(CREATE_DESKTOP_SHORTCUT)"`)
+	line(`!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateDesktopShortcut`)
 	line(`!insertmacro MUI_PAGE_WELCOME`)
 	line(`!insertmacro MUI_PAGE_DIRECTORY`)
 	line(`!insertmacro MUI_PAGE_INSTFILES`)
@@ -208,6 +211,8 @@ func (script Script) Generate() ([]byte, error) {
 	line("")
 	line(`LangString CLOSE_APP ${LANG_ENGLISH} "Close ${APP_NAME} and try again."`)
 	line(`LangString CLOSE_APP ${LANG_SIMPCHINESE} "请先关闭 ${APP_NAME}，然后重试。"`)
+	line(`LangString CREATE_DESKTOP_SHORTCUT ${LANG_ENGLISH} "Create a desktop shortcut"`)
+	line(`LangString CREATE_DESKTOP_SHORTCUT ${LANG_SIMPCHINESE} "创建桌面快捷方式"`)
 	if script.Arch == "amd64" {
 		line(`LangString NEEDS_ARCH ${LANG_ENGLISH} "${APP_NAME} needs 64-bit Windows."`)
 		line(`LangString NEEDS_ARCH ${LANG_SIMPCHINESE} "${APP_NAME} 需要 64 位 Windows。"`)
@@ -247,6 +252,25 @@ func (script Script) Generate() ([]byte, error) {
 	line(`!macroend`)
 	line(`!insertmacro EnsureClosed ""`)
 	line(`!insertmacro EnsureClosed "un."`)
+	line("")
+
+	// The finish page runs after installation. The checkbox is MUI's "show
+	// readme" option, so a silent install (/S) skips it and creates no shortcut.
+	// The marker records that this installer created the shortcut once; the
+	// uninstaller deletes only on that marker, so a same-named shortcut the
+	// installer never made survives.
+	line(`Function CreateDesktopShortcut`)
+	if script.Icon != "" {
+		line(`  CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_ICON}"`)
+	} else {
+		line(`  CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}"`)
+	}
+	// A failed CreateShortcut leaves the error flag set; do not claim a shortcut
+	// the uninstaller would then delete.
+	line(`  ${IfNot} ${Errors}`)
+	line(`    WriteRegDWORD %s "${UNINSTALL_KEY}" "DesktopShortcut" 1`, root)
+	line(`  ${EndIf}`)
+	line(`FunctionEnd`)
 	line("")
 
 	line(`Function .onInit`)
@@ -357,6 +381,10 @@ func (script Script) Generate() ([]byte, error) {
 		line(`  Delete "$INSTDIR\${APP_ICON}"`)
 	}
 	line(`  Delete "$SMPROGRAMS\${APP_NAME}.lnk"`)
+	line(`  ReadRegDWORD $0 %s "${UNINSTALL_KEY}" "DesktopShortcut"`, root)
+	line(`  ${If} $0 == 1`)
+	line(`    Delete "$DESKTOP\${APP_NAME}.lnk"`)
+	line(`  ${EndIf}`)
 	line(`  Delete "$INSTDIR\Uninstall.exe"`)
 	line(`  RMDir "$INSTDIR"`)
 	for _, scheme := range script.URLSchemes {

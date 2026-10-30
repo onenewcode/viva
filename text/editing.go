@@ -131,8 +131,9 @@ func (editor *Editor) DeleteWord(forward bool) {
 	editor.record(change, before, editor.selectionState(), editSeparate)
 }
 
-// MoveLineBoundary implements Home/End for an unwrapped logical line.
-func (editor *Editor) MoveLineBoundary(end, extend bool) {
+// lineBoundary is the start or end of the logical line the caret is on: the
+// nearest newline, or the end of the text.
+func (editor *Editor) lineBoundary(end bool) int {
 	at := editor.caret
 	if end {
 		for at < len(editor.runes) && editor.runes[at] != '\n' {
@@ -143,5 +144,41 @@ func (editor *Editor) MoveLineBoundary(end, extend bool) {
 			at--
 		}
 	}
-	editor.MoveTo(at, extend)
+	return at
+}
+
+// MoveLineBoundary implements Home/End for an unwrapped logical line.
+func (editor *Editor) MoveLineBoundary(end, extend bool) {
+	editor.MoveTo(editor.lineBoundary(end), extend)
+}
+
+// DeleteToLineBoundary removes a selection, or the text from the caret to the
+// start (end false) or end (end true) of its logical line, as one undo unit. A
+// caret already on the boundary removes the one grapheme beyond it, which joins
+// the line to its neighbour, as DeleteBackward and DeleteForward do. Rows a
+// field wraps to are not lines here; a field that lays its own rows out moves
+// by them with MoveTo.
+func (editor *Editor) DeleteToLineBoundary(end bool) {
+	editor.BreakUndoGroup()
+	selection := editor.Selection()
+	if selection.Start != selection.End || editor.composing {
+		editor.DeleteBackward()
+		editor.BreakUndoGroup()
+		return
+	}
+	boundary := editor.lineBoundary(end)
+	if boundary == editor.caret {
+		if end {
+			editor.DeleteForward()
+		} else {
+			editor.DeleteBackward()
+		}
+		editor.BreakUndoGroup()
+		return
+	}
+	before := editor.selectionState()
+	target := ordered(Range{Start: editor.caret, End: boundary})
+	change := editor.replace(target, "", false)
+	editor.collapse(target.Start)
+	editor.record(change, before, editor.selectionState(), editSeparate)
 }

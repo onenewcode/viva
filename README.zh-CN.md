@@ -30,7 +30,7 @@ viva dev .        # hot reload: save a file, the window updates and keeps its st
 
 环境要求：Go 1.26 或更新版本（缺失时 viva 会自己下载）。macOS 上需要 Xcode 命令行工具，因为 Viva 通过 cgo 访问 Cocoa 和 Metal；Linux 上需要带系统 XCB 和 Vulkan 加载库的 X11；Windows 上需要 Win32、Direct3D 11 和 DirectWrite。Viva 在运行时加载系统库，自身不捆绑任何一个。
 
-当前版本是 `v0.1.3`；要固定版本就写明（`@v0.1.3`）。指南、API 参考和带实时预览的组件目录在 [`website/`](website/) 里，本地用 `npm run dev` 运行；也已经发布在 [vivaui.dev](https://vivaui.dev/zh/)。
+当前版本是 `v0.2.1`；要固定版本就写明（`@v0.2.1`）。指南、API 参考和带实时预览的组件目录在 [`website/`](website/) 里，本地用 `npm run dev` 运行；也已经发布在 [vivaui.dev](https://vivaui.dev/zh/)。
 
 下面的一切描述的都是这个仓库：它的测量、它自己的程序，以及如何开发框架本身，而不是如何用框架。
 
@@ -54,6 +54,7 @@ Viva 面向 macOS、Windows 和 Linux 上的原生桌面应用。WebAssembly/Web
 - 三种原生窗口模式：标准带标题栏、无边框（没有红绿灯按钮）和自定义标题栏（透明标题栏、内容占满高度、由页面声明的区域拖动窗口）。窗口关闭可以被应用拦截。
 - 通过 `app.RunApplication` 显式支持多窗口应用：每个窗口各自拥有独立的保留式绘制、焦点、输入、文本、失效和关闭状态，最后一个窗口关闭后原生循环退出。
 - 状态区图标与弹出面板：`Application.AddStatusItem` 把图标放到 macOS 菜单栏、Windows 通知区域或 Linux 的 StatusNotifier 宿主；`StatusItemConfig.Menu` 让图标打开系统自己的菜单（NSMenu、Win32 弹出菜单、`com.canonical.dbusmenu`）；`WindowPanel` 是在它旁边打开、失焦即关闭的无边框弹出面板；`Window.Hide`/`Show` 让应用在没有可见窗口时继续运行。
+- `Application.SetDockBadge` 在 macOS 为应用 Dock 图标画出的红色角标里放一段文字，空文字表示去掉角标。
 - `app.StoreSecret`/`LoadSecret`/`DeleteSecret` 把少量机密保存在系统自己的存储里（Keychain、Credential Manager、Secret Service）。
 - `ui.MonoFamily` 用任何已安装的字体族绘制等宽文本，`app.MonospaceFamilies` 列出它们。
 - `Config.OnFileDrop` 接收从文件管理器拖入的文件，并带上指针下的命中区域。

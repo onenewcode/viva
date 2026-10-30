@@ -303,6 +303,22 @@ func PlaySystemSound(sound uint8) error {
 	return nil
 }
 
+// ShowFatalError shows a modal alert. It needs the main thread and does nothing
+// on any other.
+func ShowFatalError(title, message string) {
+	nativeTitle, err := systemCString("alert title", title)
+	if err != nil {
+		return
+	}
+	defer C.free(unsafe.Pointer(nativeTitle))
+	nativeMessage, err := systemCString("alert message", message)
+	if err != nil {
+		return
+	}
+	defer C.free(unsafe.Pointer(nativeMessage))
+	C.viva_system_show_fatal_error(nativeTitle, nativeMessage)
+}
+
 func SendNotification(title, body string) error {
 	nativeTitle, err := systemCString("notification title", title)
 	if err != nil {

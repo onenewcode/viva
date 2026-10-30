@@ -187,6 +187,32 @@ type ScrollEvent struct {
 	Precise   bool
 }
 
+// StepY is DeltaY for content that moves in steps of unit pixels, such as the
+// rows of a list or terminal. A classic wheel never moves less than one unit per
+// event in its direction: macOS reports a slow notch as a fraction of a line,
+// which the pixel scale turns into a distance far below one row, so without the
+// floor several notches would pass before anything moves. A precise delta is
+// the distance the finger moved and is returned as it is.
+func (e ScrollEvent) StepY(unit float32) float32 {
+	return wheelStep(e.DeltaY, unit, e.Precise)
+}
+
+// StepX is StepY for DeltaX.
+func (e ScrollEvent) StepX(unit float32) float32 {
+	return wheelStep(e.DeltaX, unit, e.Precise)
+}
+
+func wheelStep(delta, unit float32, precise bool) float32 {
+	switch {
+	case precise || delta == 0 || unit <= 0:
+		return delta
+	case delta > 0:
+		return max(delta, unit)
+	default:
+		return min(delta, -unit)
+	}
+}
+
 // FileDropPhase says where a drag of files from the system is.
 type FileDropPhase uint8
 

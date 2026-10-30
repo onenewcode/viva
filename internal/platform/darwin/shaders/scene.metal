@@ -17,12 +17,15 @@ struct VertexOutput {
     float2 localPosition;
     float2 size;
     float radius;
-    float2 fragPixel;
-    float2 triA;
-    float2 triB;
-    float2 triC;
+    float2 triA [[flat]];
+    float2 triB [[flat]];
+    float2 triC [[flat]];
+    float pixelSize [[flat]];
     uint triangleMask [[flat]];
 };
+
+// Low bits retain edgeMask+1; this bit is local to the rasterizer varyings.
+constant uint boundedTriangleFlag = 1u << 8;
 
 static float cross2(float2 a, float2 b) { return a.x*b.y - a.y*b.x; }
 static float segmentDistance(float2 p, float2 a, float2 b) {
@@ -72,20 +75,39 @@ vertex VertexOutput viva_rectangle_vertex(
         // style=(p2.x, layer, p2.y, edgeMask+1), and the corner colors
         // color, shade1, shade2. The rasterizer interpolates them linearly
         // across the face, so a flat triangle (all three equal) is unchanged.
-        // The quad's second triangle collapses onto p0 and rasterizes nothing.
+        // Isolated regular faces use one triangle; meshes and slivers use a quad.
         const float2 points[3] = {
             instance.bounds.xy,
             instance.bounds.zw,
             instance.style.xz,
         };
-        uint index = vertexID < 3 ? vertexID : 0u;
-        uint edgeMask = uint(instance.style.w + 0.5) - 1u;
-        uint previous = (index + 2u) % 3u;
-        pixel = fringeVertex(points[previous], points[index], points[(index + 1u) % 3u], 1u << previous, 1u << index, edgeMask, viewportSize.z);
-        // Extrapolate corner colors so interpolation stays on the original mesh.
+        uint edgeMask = (uint(instance.style.w + 0.5) - 1u) & 7u;
         float2 ab = points[1] - points[0], ac = points[2] - points[0];
+        float2 bc = points[2] - points[1];
         float area = cross2(ab, ac);
-        if (abs(area) >= 1e-8) {
+        float longest2 = max(dot(ab, ab), max(dot(ac, ac), dot(bc, bc)));
+        bool valid = all(isfinite(points[0])) && all(isfinite(points[1])) && all(isfinite(points[2])) &&
+            isfinite(area) && isfinite(longest2) && abs(area) >= 1e-8;
+        // A sliver's offset lines can meet thousands of pixels away. Rasterize
+        // its finite support instead. Every face with a shared edge uses this
+        // path: mixing hardware and analytic edge ownership cracks at fractional
+        // scales because hardware snaps geometry to its own subpixel grid.
+        // Above this aspect ratio the miter displacement is at most eight
+        // device pixels. Below it the quad avoids both overflow and overdraw.
+        bool bounded = valid && (edgeMask != 7u || abs(area) < longest2 * 0.125);
+        uint index = vertexID < 3 ? vertexID : 0u;
+        uint previous = (index + 2u) % 3u;
+        if (!valid) {
+            pixel = 0.0;
+        } else if (bounded) {
+            float2 low = min(points[0], min(points[1], points[2])) - 0.5 * viewportSize.z;
+            float2 high = max(points[0], max(points[1], points[2])) + 0.5 * viewportSize.z;
+            pixel = mix(low, high, corners[vertexID]);
+        } else {
+            pixel = fringeVertex(points[previous], points[index], points[(index + 1u) % 3u], 1u << previous, 1u << index, edgeMask, viewportSize.z);
+        }
+        // Extrapolate corner colors so interpolation stays on the original mesh.
+        if (valid) {
             float2 delta = pixel - points[0];
             color = instance.color + cross2(delta, ac) / area * (instance.shade1 - instance.color)
                 + cross2(ab, delta) / area * (instance.shade2 - instance.color);
@@ -96,7 +118,7 @@ vertex VertexOutput viva_rectangle_vertex(
         triA = points[0];
         triB = points[1];
         triC = points[2];
-        triangleMask = uint(instance.style.w + 0.5);
+        triangleMask = (edgeMask + 1u) | (bounded ? boundedTriangleFlag : 0u);
     } else if (instance.style.z > 0.0) {
         // Shadow slots: bounds and style.x are the rounded rectangle that casts
         // the shadow, style.z its blur, shade1 = (offset.x, offset.y, spread). The
@@ -125,10 +147,10 @@ vertex VertexOutput viva_rectangle_vertex(
     output.localPosition = localPixel;
     output.size = size;
     output.radius = radius;
-    output.fragPixel = pixel;
     output.triA = triA;
     output.triB = triB;
     output.triC = triC;
+    output.pixelSize = viewportSize.z;
     output.triangleMask = triangleMask;
     return output;
 }
@@ -185,17 +207,52 @@ fragment float4 viva_rectangle_fragment(VertexOutput input [[stage_in]]) {
         float area2 = (input.triB.x - input.triA.x) * (input.triC.y - input.triA.y) -
             (input.triB.y - input.triA.y) * (input.triC.x - input.triA.x);
         float sign = area2 > 0.0 ? 1.0 : -1.0;
-        uint edgeMask = input.triangleMask - 1;
-        float d0 = (edgeMask & 1u) != 0u ? sign * edgeDistance(input.fragPixel, input.triA, input.triB) : 1e6;
-        float d1 = (edgeMask & 2u) != 0u ? sign * edgeDistance(input.fragPixel, input.triB, input.triC) : 1e6;
-        float d2 = (edgeMask & 4u) != 0u ? sign * edgeDistance(input.fragPixel, input.triC, input.triA) : 1e6;
+        uint edgeMask = (input.triangleMask & ~boundedTriangleFlag) - 1u;
+        // Use the actual sample position, not interpolation over an acute face.
+        float2 p = input.position.xy * input.pixelSize;
+        float pixel = input.pixelSize;
+        float2 low = min(input.triA, min(input.triB, input.triC)) - 0.5 * pixel;
+        float2 high = max(input.triA, max(input.triB, input.triC)) + 0.5 * pixel;
+        if (any(p < low) || any(p > high)) {
+            return 0.0;
+        }
+        if ((input.triangleMask & boundedTriangleFlag) != 0u) {
+            const float2 points[3] = {input.triA, input.triB, input.triC};
+            for (uint i = 0; i < 3; i++) {
+                if ((edgeMask & (1u << i)) != 0u) {
+                    continue;
+                }
+                // Evaluate in device coordinates: dividing a sample by 3 first
+                // can turn an exactly shared sample into a gap at 3x scale.
+                float2 a = points[i] / pixel, b = points[(i + 1u) % 3u] / pixel;
+                float direction = sign;
+                // Both faces evaluate the same ordered endpoints, so rounding
+                // cannot put a sample on the outside (or inside) of both.
+                if (a.x > b.x || (a.x == b.x && a.y > b.y)) {
+                    float2 swap = a;
+                    a = b;
+                    b = swap;
+                    direction = -direction;
+                }
+                float2 edge = b - a;
+                float side = direction * cross2(edge, input.position.xy - a);
+                edge *= direction;
+                // Screen-space top-left rule: a shared edge belongs to one face.
+                bool topLeft = edge.y < 0.0 || (edge.y == 0.0 && edge.x > 0.0);
+                if (side < 0.0 || (side == 0.0 && !topLeft)) {
+                    return 0.0;
+                }
+            }
+        }
+        float d0 = (edgeMask & 1u) != 0u ? sign * edgeDistance(p, input.triA, input.triB) : 1e6;
+        float d1 = (edgeMask & 2u) != 0u ? sign * edgeDistance(p, input.triB, input.triC) : 1e6;
+        float d2 = (edgeMask & 4u) != 0u ? sign * edgeDistance(p, input.triC, input.triA) : 1e6;
         float inside = min(d0, min(d1, d2));
-        float pixel = devicePixel(input.fragPixel);
         if (inside < 0.0) {
             // Acute offset-line miters must not paint beyond the actual ends.
-            float s0 = (edgeMask & 1u) != 0u ? segmentDistance(input.fragPixel, input.triA, input.triB) : 1e6;
-            float s1 = (edgeMask & 2u) != 0u ? segmentDistance(input.fragPixel, input.triB, input.triC) : 1e6;
-            float s2 = (edgeMask & 4u) != 0u ? segmentDistance(input.fragPixel, input.triC, input.triA) : 1e6;
+            float s0 = (edgeMask & 1u) != 0u ? segmentDistance(p, input.triA, input.triB) : 1e6;
+            float s1 = (edgeMask & 2u) != 0u ? segmentDistance(p, input.triB, input.triC) : 1e6;
+            float s2 = (edgeMask & 4u) != 0u ? segmentDistance(p, input.triC, input.triA) : 1e6;
             inside = -min(s0, min(s1, s2));
         }
         float coverage = edgeMask == 0 ? 1.0 : saturate(0.5 + inside / pixel);

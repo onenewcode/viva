@@ -612,6 +612,19 @@ func SendNotification(title, body string) error {
 	})
 }
 
+// ShowFatalError shows the message with zenity or kdialog and waits for it to
+// be dismissed. A session with neither prints nothing: the caller has already
+// logged the reason.
+func ShowFatalError(title, message string) {
+	if strings.IndexByte(title, 0) >= 0 || strings.IndexByte(message, 0) >= 0 {
+		return
+	}
+	_ = runFirstDesktopCommand("show fatal error", []desktopCommand{
+		{name: "zenity", arguments: []string{"--error", "--no-markup", "--title=" + title, "--text=" + message}},
+		{name: "kdialog", arguments: []string{"--title", title, "--error", message}},
+	})
+}
+
 type desktopCommand struct {
 	name      string
 	arguments []string

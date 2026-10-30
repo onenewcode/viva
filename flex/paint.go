@@ -50,6 +50,8 @@ func (f *Frame) paint(i int32) {
 		f.paintText(n)
 	case kindIcon:
 		canvas.DrawIcon(extra.icon, ui.Rect{X: r.X, Y: r.Y, Width: n.pref[axisX], Height: n.pref[axisY]}, n.color)
+	case kindImage:
+		canvas.DrawBitmap(f.images[n.aux], r)
 	case kindButton:
 		f.paintButton(n)
 	case kindCheckbox:

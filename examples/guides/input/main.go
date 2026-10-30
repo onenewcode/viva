@@ -75,8 +75,10 @@ func newConfig(m *model) app.Config {
 		})
 	}
 
-	// OnPointer sees every press, move and release; Target is the identity under
-	// the pointer. Here a secondary press on a row is the start of a context menu.
+	// OnPointer sees presses, releases and moves; Target is the identity under
+	// the pointer. A drag may be coalesced to its latest position, so a handler
+	// must follow the coordinates, not count moves. Here a secondary press on a
+	// row is the start of a context menu.
 	config.OnPointer = func(event ui.PointerEvent) ui.EventResult {
 		if event.Kind == ui.PointerDown && event.Button == ui.PointerButtonSecondary && event.Target.Scope() == rows {
 			row, _ := event.Target.Name().Index()

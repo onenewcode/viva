@@ -60,7 +60,7 @@ type TextFact struct {
 	Size     float32   `json:"size"`
 	Weight   float32   `json:"weight"`
 	Mono     bool      `json:"mono,omitempty"`
-	MonoFace uint8     `json:"monoFace,omitempty"`
+	MonoFace uint16    `json:"monoFace,omitempty"`
 	Color    Hue       `json:"color"`
 	Layer    uint16    `json:"layer,omitempty"`
 	Clip     *Box      `json:"clip,omitempty"`
@@ -123,7 +123,7 @@ func capture(canvas *ui.Canvas, tree *ui.Tree, measure text.MeasureFunc) (texts 
 	for _, t := range canvas.Texts() {
 		fact := TextFact{
 			Value: t.Value, Bounds: box(t.Bounds), Size: t.Style.Size, Weight: t.Style.Weight,
-			Mono: t.Style.Mono, MonoFace: uint8(t.Style.MonoFace), Color: hue(t.Style.Color),
+			Mono: t.Style.Mono, MonoFace: uint16(t.Style.MonoFace), Color: hue(t.Style.Color),
 			Layer: t.Layer, Clip: clipBox(t.ClipOf, t.HasClip),
 		}
 		if !t.Style.Mono {

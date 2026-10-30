@@ -769,6 +769,28 @@ static int viva_request_notification_authorization(
     return 0;
 }
 
+int viva_system_show_fatal_error(const char *title, const char *message) {
+    if (!NSThread.isMainThread) {
+        return -1;
+    }
+    @autoreleasepool {
+        NSString *alertTitle = viva_string(title);
+        NSString *alertMessage = viva_string(message);
+        if (alertTitle == nil || alertMessage == nil) {
+            return -1;
+        }
+        NSApplication *application = [NSApplication sharedApplication];
+        [application activateIgnoringOtherApps:YES];
+        NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+        alert.alertStyle = NSAlertStyleCritical;
+        alert.messageText = alertTitle;
+        alert.informativeText = alertMessage;
+        [alert addButtonWithTitle:@"OK"];
+        [alert runModal];
+    }
+    return 0;
+}
+
 int viva_system_send_notification(
     const char *title,
     const char *body,

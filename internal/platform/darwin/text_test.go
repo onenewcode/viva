@@ -442,3 +442,21 @@ func TestARegisteredFamilyIsMeasuredAndAnUnknownOneFallsBackToTheSystemFace(t *t
 		t.Fatalf("a missing family measured %v x %v (%v), want the system face %v x %v", fallbackWidth, fallbackHeight, err, system, systemHeight)
 	}
 }
+
+func TestFallbackFamiliesNeverChangeTheCell(t *testing.T) {
+	base := ui.MonoFamily("Menlo")
+	plainWidth, plainHeight, err := MeasureMono(13, base)
+	if err != nil || plainWidth <= 0 {
+		t.Fatalf("Menlo: %v %v", plainWidth, err)
+	}
+	for _, fallbacks := range [][]string{{"Songti SC"}, {"No Such Family Installed", "Songti SC"}, {"Courier New", "Songti SC", "STHeiti"}} {
+		width, height, err := MeasureMono(13, ui.MonoStack(base, fallbacks...))
+		if err != nil || width != plainWidth || height != plainHeight {
+			t.Errorf("Menlo with %q measures %v x %v (%v), want Menlo's own %v x %v", fallbacks, width, height, err, plainWidth, plainHeight)
+		}
+	}
+	system, systemHeight, _ := MeasureMono(13, ui.MonoSystem)
+	if width, height, err := MeasureMono(13, ui.MonoStack(ui.MonoSystem, "Songti SC")); err != nil || width != system || height != systemHeight {
+		t.Errorf("the system face with a fallback measures %v x %v (%v), want %v x %v", width, height, err, system, systemHeight)
+	}
+}

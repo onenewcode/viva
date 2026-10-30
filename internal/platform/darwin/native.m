@@ -313,6 +313,7 @@ enum {
     VIVA_TEXT_COMMAND_EVENT = 4,
     VIVA_TEXT_SET_SELECTION = 5,
     VIVA_TEXT_PASTE = 6,
+    VIVA_TEXT_PASTE_NO_TEXT = 7,
 };
 
 enum {
@@ -327,6 +328,24 @@ enum {
     VIVA_TEXT_INSERT_LINE_BREAK = 9,
     VIVA_TEXT_UNDO = 10,
     VIVA_TEXT_REDO = 11,
+    /* The rest continue platform.TextCommand's numbering, which the Go side takes
+     * as it is; TestNativeTextSelection checks every value against it. */
+    VIVA_TEXT_MOVE_LINE_START = 13,
+    VIVA_TEXT_MOVE_LINE_END = 14,
+    VIVA_TEXT_MOVE_LINE_START_AND_MODIFY_SELECTION = 15,
+    VIVA_TEXT_MOVE_LINE_END_AND_MODIFY_SELECTION = 16,
+    VIVA_TEXT_MOVE_DOCUMENT_START = 17,
+    VIVA_TEXT_MOVE_DOCUMENT_END = 18,
+    VIVA_TEXT_MOVE_DOCUMENT_START_AND_MODIFY_SELECTION = 19,
+    VIVA_TEXT_MOVE_DOCUMENT_END_AND_MODIFY_SELECTION = 20,
+    VIVA_TEXT_MOVE_WORD_LEFT = 21,
+    VIVA_TEXT_MOVE_WORD_RIGHT = 22,
+    VIVA_TEXT_MOVE_WORD_LEFT_AND_MODIFY_SELECTION = 23,
+    VIVA_TEXT_MOVE_WORD_RIGHT_AND_MODIFY_SELECTION = 24,
+    VIVA_TEXT_DELETE_WORD_BACKWARD = 25,
+    VIVA_TEXT_DELETE_WORD_FORWARD = 26,
+    VIVA_TEXT_DELETE_TO_LINE_START = 27,
+    VIVA_TEXT_DELETE_TO_LINE_END = 28,
 };
 
 extern void vivaPointerEvent(
@@ -653,6 +672,18 @@ int viva_terminal_key_routes_raw(
     }
     return named_key != 0 || control != 0 || command != 0 ||
         (alt != 0 && alt_sends_escape != 0);
+}
+
+/* viva_control_tab reports whether a key equivalent is Tab (or Shift+Tab, which
+ * AppKit types as the back-tab character) with Control held and Command not:
+ * the chord the window reserves for key view navigation. */
+static int viva_control_tab(NSEventModifierFlags modifiers, NSString *characters) {
+    if ((modifiers & NSEventModifierFlagControl) == 0 || (modifiers & NSEventModifierFlagCommand) != 0 ||
+        characters.length != 1) {
+        return 0;
+    }
+    unichar character = [characters characterAtIndex:0];
+    return character == NSTabCharacter || character == NSBackTabCharacter;
 }
 
 int viva_terminal_key_code(unsigned short character) {
@@ -1113,8 +1144,13 @@ static NSUInteger viva_text_index_at(viva_editor_line line, NSString *shown, CGF
 
 // viva_mono_font is the system fixed-pitch font, the one every fixed-pitch label
 // and the cell metrics are built from.
-#define VIVA_MONO_FAMILY_SLOTS 256
+//
+// A face from 2 up stands for an installed family and the families that draw what it
+// lacks; viva_register_mono_family teaches the numbers, in registration order.
+#define VIVA_MONO_FAMILY_SLOTS 4098 /* the 2 built-in faces and ui.MaxMonoFaces */
 static NSString *viva_mono_families[VIVA_MONO_FAMILY_SLOTS];
+static NSArray<NSString *> *viva_mono_fallbacks[VIVA_MONO_FAMILY_SLOTS];
+static BOOL viva_mono_classic[VIVA_MONO_FAMILY_SLOTS];
 static NSObject *viva_mono_family_lock(void) {
     static NSObject *lock;
     static dispatch_once_t once;
@@ -1122,22 +1158,36 @@ static NSObject *viva_mono_family_lock(void) {
     return lock;
 }
 
-void viva_register_mono_family(int face, const char *utf8) {
-    if (face < 2 || face >= VIVA_MONO_FAMILY_SLOTS || utf8 == NULL) {
+void viva_register_mono_family(int face, const char *utf8, int classic, const char *fallbacks) {
+    if (face < 2 || face >= VIVA_MONO_FAMILY_SLOTS) {
         return;
     }
     @synchronized(viva_mono_family_lock()) {
         [viva_mono_families[face] release];
-        viva_mono_families[face] = [[NSString alloc] initWithUTF8String:utf8];
+        [viva_mono_fallbacks[face] release];
+        viva_mono_families[face] = (utf8 != NULL && utf8[0] != '\0') ? [[NSString alloc] initWithUTF8String:utf8] : nil;
+        viva_mono_classic[face] = classic != 0;
+        // The fallbacks arrive as one name per line.
+        NSString *joined = fallbacks != NULL ? [[NSString alloc] initWithUTF8String:fallbacks] : nil;
+        viva_mono_fallbacks[face] = (joined != nil && joined.length > 0) ? [[joined componentsSeparatedByString:@"\n"] retain] : nil;
+        [joined release];
     }
 }
 
-static NSString *viva_mono_family_name(int face) {
+// viva_mono_face_traits copies what a face stands for: its primary family (nil for a
+// built-in one), whether the built-in primary is the classic face, and its fallback
+// families in order.
+static void viva_mono_face_traits(int face, NSString **family, BOOL *classic, NSArray<NSString *> **fallbacks) {
+    *family = nil;
+    *classic = face == 1;
+    *fallbacks = nil;
     if (face < 2 || face >= VIVA_MONO_FAMILY_SLOTS) {
-        return nil;
+        return;
     }
     @synchronized(viva_mono_family_lock()) {
-        return [[viva_mono_families[face] retain] autorelease];
+        *family = [[viva_mono_families[face] retain] autorelease];
+        *classic = viva_mono_classic[face];
+        *fallbacks = [[viva_mono_fallbacks[face] retain] autorelease];
     }
 }
 
@@ -1159,8 +1209,8 @@ char *viva_list_mono_families(void) {
     }
 }
 
-static NSFont *viva_mono_font(CGFloat size, CGFloat weight, int face) {
-    NSString *family = viva_mono_family_name(face);
+// viva_mono_base_font is the primary font of a face, without its fallbacks.
+static NSFont *viva_mono_base_font(CGFloat size, CGFloat weight, NSString *family, BOOL classic) {
     if (family != nil) {
         NSFont *named = [[NSFontManager sharedFontManager] fontWithFamily:family
                                                                    traits:(weight >= 0.34 ? NSBoldFontMask : 0)
@@ -1170,14 +1220,46 @@ static NSFont *viva_mono_font(CGFloat size, CGFloat weight, int face) {
             return named;
         }
     }
-    if (face == 1) {
-        NSFont *classic = [NSFont userFixedPitchFontOfSize:size];
-        if (classic != nil) {
-            return classic;
+    if (classic) {
+        NSFont *classicFont = [NSFont userFixedPitchFontOfSize:size];
+        if (classicFont != nil) {
+            return classicFont;
         }
     }
     NSFont *font = [NSFont monospacedSystemFontOfSize:size weight:weight];
     return font != nil ? font : [NSFont userFixedPitchFontOfSize:size];
+}
+
+// viva_mono_font_primary is the primary font of a face alone, the one the cell is measured in.
+static NSFont *viva_mono_font_primary(CGFloat size, CGFloat weight, int face) {
+    NSString *family = nil;
+    BOOL classic = NO;
+    NSArray<NSString *> *fallbacks = nil;
+    viva_mono_face_traits(face, &family, &classic, &fallbacks);
+    return viva_mono_base_font(size, weight, family, classic);
+}
+
+// viva_mono_font is the font of a face at a size and weight: its primary font, with the
+// families that draw what the primary lacks as the font's cascade list, so CoreText
+// tries them in order, before its own choice, for every character the primary has no
+// glyph for. A family that is not installed is skipped. The cell is the primary's: the
+// fallbacks never take part in the metrics, and every glyph is placed on the grid.
+static NSFont *viva_mono_font(CGFloat size, CGFloat weight, int face) {
+    NSString *family = nil;
+    BOOL classic = NO;
+    NSArray<NSString *> *fallbacks = nil;
+    viva_mono_face_traits(face, &family, &classic, &fallbacks);
+    NSFont *base = viva_mono_base_font(size, weight, family, classic);
+    if (base == nil || fallbacks.count == 0) {
+        return base;
+    }
+    NSMutableArray<NSFontDescriptor *> *cascade = [NSMutableArray arrayWithCapacity:fallbacks.count];
+    for (NSString *name in fallbacks) {
+        [cascade addObject:[NSFontDescriptor fontDescriptorWithFontAttributes:@{NSFontFamilyAttribute: name}]];
+    }
+    NSFontDescriptor *descriptor = [base.fontDescriptor fontDescriptorByAddingAttributes:@{NSFontCascadeListAttribute: cascade}];
+    NSFont *stacked = [NSFont fontWithDescriptor:descriptor size:size];
+    return stacked != nil ? stacked : base;
 }
 
 // viva_font_smoothing_enabled is whether the user leaves font smoothing on. AppKit turns it
@@ -1205,7 +1287,8 @@ static void viva_prepare_text_context(CGContextRef context, CGFloat scale) {
 // The native editor and the headless renderer both build it here, so they can only ever
 // look the same.
 static CTLineRef viva_new_mono_line(NSString *shown, CGFloat fontSize, NSColor *color, int monoFace) {
-    CTFontRef font = CTFontCreateWithName((CFStringRef)viva_mono_font(fontSize, 0, monoFace).fontName, fontSize, NULL);
+    // The NSFont itself, not its name looked up again: the name loses the fallback families.
+    CTFontRef font = (CTFontRef)CFRetain(viva_mono_font(fontSize, 0, monoFace));
     if (font == NULL) {
         return NULL;
     }
@@ -1316,7 +1399,8 @@ static id<MTLTexture> viva_text_input_texture(
     if (terminal) {
         // Sit on the same baseline as the terminal's own text, whatever the
         // composed characters' fallback fonts measure.
-        CTFontRef gridFont = CTFontCreateWithName((CFStringRef)viva_mono_font(fontSize, 0, monoFace).fontName, fontSize, NULL);
+        // The primary font alone: the fallbacks never take part in the metrics.
+        CTFontRef gridFont = CTFontCreateWithName((CFStringRef)viva_mono_font_primary(fontSize, 0, monoFace).fontName, fontSize, NULL);
         ascent = CTFontGetAscent(gridFont);
         descent = CTFontGetDescent(gridFont);
         CFRelease(gridFont);
@@ -2556,6 +2640,48 @@ static void viva_encode_scene(
 - (void)paste:(id)sender;
 @end
 
+/* The selectors AppKit's key bindings send for the navigation and deleting chords:
+ * Option with Left, Right, Backspace and Delete by word; Command with Left and
+ * Right to the ends of the line, with Up and Down (and Home and End, which AppKit
+ * scrolls with) to the ends of the text, Command+Backspace and Control+K removing
+ * to the ends of the line. A line is the text up to a newline. 0 for any other
+ * selector. */
+static int viva_navigation_command(SEL selector) {
+    static const struct { const char *name; int command; } table[] = {
+        {"moveWordLeft:", VIVA_TEXT_MOVE_WORD_LEFT},
+        {"moveWordRight:", VIVA_TEXT_MOVE_WORD_RIGHT},
+        {"moveWordLeftAndModifySelection:", VIVA_TEXT_MOVE_WORD_LEFT_AND_MODIFY_SELECTION},
+        {"moveWordRightAndModifySelection:", VIVA_TEXT_MOVE_WORD_RIGHT_AND_MODIFY_SELECTION},
+        {"deleteWordBackward:", VIVA_TEXT_DELETE_WORD_BACKWARD},
+        {"deleteWordForward:", VIVA_TEXT_DELETE_WORD_FORWARD},
+        {"moveToBeginningOfLine:", VIVA_TEXT_MOVE_LINE_START},
+        {"moveToLeftEndOfLine:", VIVA_TEXT_MOVE_LINE_START},
+        {"moveToEndOfLine:", VIVA_TEXT_MOVE_LINE_END},
+        {"moveToRightEndOfLine:", VIVA_TEXT_MOVE_LINE_END},
+        {"moveToBeginningOfLineAndModifySelection:", VIVA_TEXT_MOVE_LINE_START_AND_MODIFY_SELECTION},
+        {"moveToLeftEndOfLineAndModifySelection:", VIVA_TEXT_MOVE_LINE_START_AND_MODIFY_SELECTION},
+        {"moveToEndOfLineAndModifySelection:", VIVA_TEXT_MOVE_LINE_END_AND_MODIFY_SELECTION},
+        {"moveToRightEndOfLineAndModifySelection:", VIVA_TEXT_MOVE_LINE_END_AND_MODIFY_SELECTION},
+        {"moveToBeginningOfDocument:", VIVA_TEXT_MOVE_DOCUMENT_START},
+        {"scrollToBeginningOfDocument:", VIVA_TEXT_MOVE_DOCUMENT_START},
+        {"moveToEndOfDocument:", VIVA_TEXT_MOVE_DOCUMENT_END},
+        {"scrollToEndOfDocument:", VIVA_TEXT_MOVE_DOCUMENT_END},
+        {"moveToBeginningOfDocumentAndModifySelection:", VIVA_TEXT_MOVE_DOCUMENT_START_AND_MODIFY_SELECTION},
+        {"moveToEndOfDocumentAndModifySelection:", VIVA_TEXT_MOVE_DOCUMENT_END_AND_MODIFY_SELECTION},
+        {"deleteToBeginningOfLine:", VIVA_TEXT_DELETE_TO_LINE_START},
+        {"deleteToEndOfLine:", VIVA_TEXT_DELETE_TO_LINE_END},
+        {"deleteToBeginningOfParagraph:", VIVA_TEXT_DELETE_TO_LINE_START},
+        {"deleteToEndOfParagraph:", VIVA_TEXT_DELETE_TO_LINE_END},
+    };
+    const char *name = sel_getName(selector);
+    for (size_t index = 0; index < sizeof(table) / sizeof(table[0]); index++) {
+        if (strcmp(name, table[index].name) == 0) {
+            return table[index].command;
+        }
+    }
+    return 0;
+}
+
 @implementation VivaMetalView
 
 - (instancetype)initWithFrame:(NSRect)frame
@@ -3194,6 +3320,17 @@ static void viva_encode_scene(
         (NSEventModifierFlagCommand | NSEventModifierFlagControl |
          NSEventModifierFlagOption | NSEventModifierFlagShift);
     NSString *characters = event.charactersIgnoringModifiers;
+    if (_keyEventsEnabled && _callbackHandle != 0 && !_hasMarkedText && viva_control_tab(modifiers, characters)) {
+        // AppKit's window keeps Control+Tab and Control+Shift+Tab to move the
+        // key view and never passes them to keyDown:, so an application would
+        // not see the chord browsers and terminals switch tabs with. It is
+        // delivered here, before the window can take it. No release is
+        // promised: the window may swallow the matching keyUp too.
+        viva_key_event_count++;
+        vivaKeyEvent(_callbackHandle, self, VIVA_KEY_TAB, viva_modifier_flags(event.modifierFlags),
+            event.isARepeat ? 1 : 0, NULL, 0);
+        return YES;
+    }
     if (_textInputEnabled && _textTerminal && modifiers == NSEventModifierFlagCommand) {
         // A terminal has no selection to edit yet; only paste is meant here.
         if ([characters isEqualToString:@"v"] || [characters isEqualToString:@"V"]) {
@@ -4174,11 +4311,21 @@ static void viva_set_secure_event_input(BOOL on) {
         }
         return;
     }
-    if (!_textInputMultiline && value != nil) {
-        value = viva_single_line_paste(value);
-    }
     if (value.length == 0) {
+        // Nothing to insert. An application that takes pictures looks at the
+        // pasteboard itself; for any other editor the event changes nothing.
+        [self emitTextKind:VIVA_TEXT_PASTE_NO_TEXT
+                      text:@""
+             selectedRange:NSMakeRange(0, 0)
+           replacementRange:NSMakeRange(NSNotFound, 0)
+                   command:0];
         return;
+    }
+    if (!_textInputMultiline) {
+        value = viva_single_line_paste(value);
+        if (value.length == 0) {
+            return;
+        }
     }
     [self emitTextKind:VIVA_TEXT_PASTE
                   text:value
@@ -4232,6 +4379,8 @@ static void viva_set_secure_event_input(BOOL on) {
         command = VIVA_TEXT_UNDO;
     } else if (selector == @selector(redo:)) {
         command = VIVA_TEXT_REDO;
+    } else {
+        command = viva_navigation_command(selector);
     }
     if (command != 0) {
         [self emitTextKind:VIVA_TEXT_COMMAND_EVENT
@@ -5674,7 +5823,8 @@ int viva_measure_mono(double font_size, int mono_face, double *advance, double *
         return 1;
     }
     @autoreleasepool {
-        NSFont *native = viva_mono_font(font_size, 0, mono_face);
+        // The cell is the primary font's, whatever the face's fallbacks hold.
+        NSFont *native = viva_mono_font_primary(font_size, 0, mono_face);
         if (native == nil) {
             return 2;
         }

@@ -100,7 +100,8 @@ type painter struct {
 	clipped            []ui.Rectangle
 	clippedPaths       []ui.Triangle
 	clippedSoft        []ui.Shadow
-	order              []shapeRef // clipped, clippedPaths and clippedSoft interleaved in paint order
+	order              []shapeRef     // clipped, clippedPaths and clippedSoft interleaved in paint order
+	blocks             []ui.Rectangle // scratch for appendBlockElements
 	clippedTexts       []ui.Text
 	clippedImages      []ui.Image
 	// controls draws the window buttons of a custom titlebar, on platforms where
@@ -895,6 +896,7 @@ func (painter *painter) trim() {
 	painter.clippedPaths = trimPainterCapacity(painter.clippedPaths)
 	painter.clippedSoft = trimPainterCapacity(painter.clippedSoft)
 	painter.order = trimPainterCapacity(painter.order)
+	painter.blocks = trimPainterCapacity(painter.blocks)
 	painter.clippedTexts = trimPainterCapacity(painter.clippedTexts)
 	painter.clippedImages = trimPainterCapacity(painter.clippedImages)
 	painter.accessibility = trimPainterCapacity(painter.accessibility)
@@ -1257,12 +1259,14 @@ func (painter *painter) applyClipping() {
 		if roundPixel(text.Bounds.Width) <= 0 || roundPixel(text.Bounds.Height) <= 0 || text.Style.Size <= 0 {
 			continue
 		}
-		if !text.HasClip {
-			painter.clippedTexts = append(painter.clippedTexts, text)
-			continue
+		if text.HasClip {
+			if _, visible := intersectVisible(text.Bounds, text.ClipOf); !visible {
+				continue
+			}
 		}
-		if _, visible := intersectVisible(text.Bounds, text.ClipOf); visible {
-			painter.clippedTexts = append(painter.clippedTexts, text)
+		painter.clippedTexts = append(painter.clippedTexts, text)
+		if text.RunCount > 0 {
+			painter.appendBlockElements(text)
 		}
 	}
 	painter.layerShift = 0
@@ -1293,6 +1297,23 @@ func (painter *painter) applyClipping() {
 			image.Bounds = visible
 		}
 		painter.clippedImages = append(painter.clippedImages, image)
+	}
+}
+
+// appendBlockElements paints the Block Elements of a fixed-pitch line as rectangles after
+// the canvas's own, as the line's text is drawn after them (see ui.Canvas.BlockRectangles).
+func (painter *painter) appendBlockElements(text ui.Text) {
+	painter.blocks = painter.canvas.BlockRectangles(painter.blocks[:0], text)
+	for _, rectangle := range painter.blocks {
+		if rectangle.HasClip {
+			visible, cut := clipVisibility(rectangle.Bounds, rectangle.ClipOf)
+			if !visible {
+				continue
+			}
+			rectangle.HasClip = cut
+		}
+		painter.order = append(painter.order, shapeRef{index: int32(len(painter.clipped))})
+		painter.clipped = append(painter.clipped, rectangle)
 	}
 }
 
@@ -1951,6 +1972,10 @@ func (painter *painter) syncLabels() {
 			},
 			Layer: painter.platformLayer(label.Layer),
 			Mono:  label.Style.Mono, MonoFace: label.Style.MonoFace, CellWidth: label.CellWidth, Runs: painter.canvas.TextRuns(label),
+		}
+		if label.RunCount > 0 {
+			// The font does not draw Block Elements; appendBlockElements did.
+			entry.Value, entry.Runs = ui.ReplaceBlockElements(entry.Value, entry.Runs)
 		}
 		if label.HasClip && !containsRect(label.ClipOf, label.Bounds) {
 			// The clip cuts the label partway: the renderers scissor to it.

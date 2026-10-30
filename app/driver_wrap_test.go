@@ -152,3 +152,44 @@ func TestDriverArrowKeysMoveByVisualRowAndKeepTheColumn(t *testing.T) {
 		t.Fatalf("Home on the second row went to rune %d", got)
 	}
 }
+
+// Option and Command with an arrow, Backspace or Option with Delete are text-system commands
+// on macOS even in a field that lays out its own rows: only Command with Left and
+// Right, which end at the visual row, reach the application.
+func TestDriverOptionAndCommandKeysEditByWordAndLine(t *testing.T) {
+	notes := newWrappingNotes("alpha beta/gamma")
+	driver, err := NewDriver(notes.config(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+	if err := driver.Click(notes.bounds.X+11, notes.bounds.Y+8+10); err != nil {
+		t.Fatal(err)
+	}
+	notes.editor.MoveTo(16, false) // the end of "alpha beta/gamma"
+	press := func(key ui.Key, modifiers ui.Modifiers) {
+		t.Helper()
+		if err := driver.Key(key, modifiers); err != nil {
+			t.Fatal(err)
+		}
+	}
+	press(ui.KeyLeft, ui.ModifierAlt)
+	if got := notes.editor.Caret(); got != 11 {
+		t.Fatalf("Option+Left went to %d, want the start of gamma at 11", got)
+	}
+	press(ui.KeyRight, ui.ModifierAlt|ui.ModifierShift)
+	if got := notes.editor.Selection(); got != (text.Range{Start: 11, End: 16}) {
+		t.Fatalf("Option+Shift+Right selected %+v, want 11:16", got)
+	}
+	notes.editor.MoveTo(16, false)
+	press(ui.KeyBackspace, ui.ModifierAlt)
+	if got := notes.editor.String(); got != "alpha beta/" {
+		t.Fatalf("Option+Backspace left %q", got)
+	}
+	notes.editor.Insert("\nsecond line")
+	notes.editor.MoveTo(11, false)
+	press(ui.KeyBackspace, ui.ModifierMeta)
+	if got := notes.editor.String(); got != "\nsecond line" {
+		t.Fatalf("Command+Backspace left %q, want the first line removed", got)
+	}
+}

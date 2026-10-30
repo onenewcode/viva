@@ -2,6 +2,7 @@ package components
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/vivaui/viva/ui"
@@ -89,6 +90,35 @@ func TestChartIndexAt(t *testing.T) {
 	empty := chartGeometry{}
 	if empty.indexAt(5) != -1 {
 		t.Fatal("empty geometry has no index")
+	}
+}
+
+func TestChartCachedGeometryFollowsContainerPosition(t *testing.T) {
+	for _, hidden := range []bool{false, true} {
+		theme := ui.LightTheme()
+		chart := chartTestArea(theme)
+		chart.YAxis.Hidden = hidden
+		var state ChartState
+		var canvas ui.Canvas
+		bounds := ui.Rect{X: 10, Y: 20, Width: 300, Height: 180}
+		first := PaintAreaChart(&canvas, theme, bounds, ui.ID{}, chart, &state)
+		key := state.labels.key
+		bounds.X += 640
+		bounds.Y += 80
+		canvas.Reset()
+		second := PaintAreaChart(&canvas, theme, bounds, ui.ID{}, chart, &state)
+		if state.labels.key != key {
+			t.Fatal("moving a chart invalidated its label cache")
+		}
+		if second.Plot.X != first.Plot.X+640 || second.Plot.Y != first.Plot.Y+80 || second.Plot.Width != first.Plot.Width || second.Plot.Height != first.Plot.Height {
+			t.Fatalf("moved chart geometry: first=%+v second=%+v", first.Plot, second.Plot)
+		}
+		if got, want := second.PointX(2), first.PointX(2)+640; math.Abs(float64(got-want)) > .001 {
+			t.Fatalf("data point=%v, want %v", got, want)
+		}
+		if got := second.IndexAt(second.PointX(2)); got != 2 {
+			t.Fatalf("moved hit geometry=%d, want 2", got)
+		}
 	}
 }
 
@@ -521,5 +551,67 @@ func TestLinearXAxisTicksAreRoundValues(t *testing.T) {
 	}
 	if seen < 3 {
 		t.Fatalf("only %d x ticks", seen)
+	}
+}
+
+func TestXAxisTimeLabelsStayInsideChart(t *testing.T) {
+	fontSize := ui.LightTheme().Metrics.FontSizeS
+	for _, width := range []float32{60, 90, 180, 300, 480} {
+		for _, stamp := range []string{"20:33:25", "10-29 20:33", "2026-10-29 20:33:25"} {
+			var canvas ui.Canvas
+			canvas.SetMeasurer(chartTestMeasure)
+			theme := ui.LightTheme()
+			bounds := ui.Rect{X: 120, Y: 30, Width: width, Height: 200}
+			chart := AreaChart{Series: chartTestSeries(theme)[:1], X: []float32{0, .5, 1}, Values: [][]float32{{10, 30, 20}}, XAxis: ChartAxis{Linear: true, Fixed: true, Min: 0, Max: 1, Ticks: 3, Format: func(dst []byte, value float32) []byte { return append(dst, stamp...) }}}
+			plot := PaintAreaChart(&canvas, theme, bounds, ui.Item(1), chart, nil)
+			seen := 0
+			truncated := false
+			for _, text := range canvas.Texts() {
+				if text.Bounds.Y <= plot.Plot.Y+plot.Plot.Height {
+					continue
+				}
+				seen++
+				if text.Bounds.X < bounds.X || text.Bounds.X+text.Bounds.Width > bounds.X+bounds.Width+.001 {
+					t.Fatalf("time label %q escaped width %v: %+v", stamp, width, text.Bounds)
+				}
+				if painted := canvas.TextWidth(text.Value, fontSize); painted > text.Bounds.Width+.001 {
+					t.Fatalf("time label %q painted %.1f into %.1f at width %v", text.Value, painted, text.Bounds.Width, width)
+				}
+				truncated = truncated || strings.HasSuffix(text.Value, "…")
+			}
+			if seen < 2 {
+				t.Fatal("time-axis labels disappeared")
+			}
+			// The widest stamps cannot fit a narrow chart, so at least one label
+			// must reach the ellipsis path this test exists to protect.
+			if width <= 90 && len(stamp) > 12 && !truncated {
+				t.Fatalf("time label %q was not truncated to fit width %v", stamp, width)
+			}
+		}
+	}
+}
+
+func TestFocusedChartDescribesItsLatestPoint(t *testing.T) {
+	theme := ui.LightTheme()
+	bounds := ui.Rect{X: 10, Y: 10, Width: 320, Height: 200}
+	chart := AreaChart{Series: chartTestSeries(theme)[:1], X: []float32{0, .5, 1}, Values: [][]float32{{10, 30, 20}}, XAxis: ChartAxis{Linear: true, Fixed: true, Min: 0, Max: 1, Ticks: 3, Format: func(dst []byte, _ float32) []byte { return append(dst, 't') }}}
+	for _, focused := range []bool{false, true} {
+		var canvas ui.Canvas
+		canvas.SetMeasurer(chartTestMeasure)
+		if focused {
+			canvas.SetInteraction(ui.ID{}, ui.ID{}, ui.Item(1), true)
+		}
+		PaintAreaChart(&canvas, theme, bounds, ui.Item(1), chart, nil)
+		hits := canvas.Hits()
+		if len(hits) != 1 {
+			t.Fatalf("chart hits = %d", len(hits))
+		}
+		if focused {
+			if value := hits[0].Value; !strings.Contains(value, "Desktop") || !strings.Contains(value, "20") {
+				t.Fatalf("focused chart value = %q, want the latest point", value)
+			}
+		} else if hits[0].Value != "" {
+			t.Fatalf("unfocused chart value = %q, want nothing until a point is chosen", hits[0].Value)
+		}
 	}
 }

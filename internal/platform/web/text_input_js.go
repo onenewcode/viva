@@ -36,6 +36,7 @@ func (host *textInputHost) bind(node *accessibilityDOMNode) {
 		return
 	}
 	host.addListener(node, "input", host.inputEvent)
+	host.addListener(node, "paste", host.pasteEvent)
 	host.addListener(node, "select", host.selectEvent)
 	host.addListener(node, "compositionstart", host.compositionStart)
 	host.addListener(node, "compositionupdate", host.compositionUpdate)
@@ -201,6 +202,20 @@ func (host *textInputHost) inputEvent(node *accessibilityDOMNode, event js.Value
 		host.syncValueAndSelection(node.element)
 	}
 	host.repaint(changed)
+}
+
+// pasteEvent reports a paste that carries no text. The browser inserts nothing
+// for it and sends no input event, so the field would never hear of a picture
+// that was pasted.
+func (host *textInputHost) pasteEvent(node *accessibilityDOMNode, event js.Value) {
+	if host.syncing || host.active != node || host.composing || host.input.Terminal {
+		return
+	}
+	data := event.Get("clipboardData")
+	if data.IsUndefined() || data.IsNull() || data.Call("getData", "text/plain").String() != "" {
+		return
+	}
+	host.repaint(host.apply(platform.TextEvent{Kind: platform.TextPasteNoText}))
 }
 
 func (host *textInputHost) selectEvent(node *accessibilityDOMNode, _ js.Value) {

@@ -33,6 +33,8 @@ type Host interface {
 	OpenWindow(config Config, canvas *ui.Canvas, closed func()) (WindowControl, error)
 	// AddStatusItem puts an icon in the system's status area.
 	AddStatusItem(config StatusItemConfig) (StatusItemControl, error)
+	// SetDockBadge marks the application's icon in the Dock with text.
+	SetDockBadge(text string)
 	// Quit closes every window, close requests notwithstanding, and ends the
 	// loop. It is safe to call from any goroutine.
 	Quit()
@@ -205,6 +207,18 @@ func (application *Application) AddStatusItem(config StatusItemConfig) (*StatusI
 		return nil, err
 	}
 	return &StatusItem{control: control}, nil
+}
+
+// SetDockBadge marks the application's Dock icon with text, the red badge macOS
+// draws at the top corner of the tile. It says something the whole application
+// is waiting on, not one window's state: a mail client's unread count, or the
+// mark of a development build. An empty text removes the badge. It is called
+// from the startup callback or a window callback, like OpenWindow; a desktop
+// without a Dock accepts it and does nothing.
+func (application *Application) SetDockBadge(text string) {
+	if application != nil && application.host != nil {
+		application.host.SetDockBadge(text)
+	}
 }
 
 // Quit closes every window, whatever their close requests say, and ends

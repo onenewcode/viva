@@ -10,6 +10,12 @@ var tabsComponent = Component{
 	ID: "tabs", Title: "Tabs", Category: "Navigation", Summary: "调用方持有选中项的标签页导航。",
 	paint: (*State).paintTabs, key: (*State).keyTabs,
 	Examples: []Example{
+		{ID: "icons", Title: "图标与等宽标签", Description: "图标和文字作为整体居中；宽度随容器分配，支持键盘方向键。", Snippet: `options := []components.TabOption{
+    {ID: tabs.At(0), Label: "Overview", Icon: overviewIcon},
+    {ID: tabs.At(1), Label: "Activity", Icon: activityIcon},
+    {ID: tabs.At(2), Label: "Settings", Icon: settingsIcon},
+}
+components.BeginTabs(canvas, theme, bounds, options, options[selected].ID).Paint()`},
 		{ID: "default", Title: "分段标签", Description: "三个稳定 tab ID 驱动关联内容。", Snippet: `tabs := tree.Sub(page, tree.Name("tab"))
 labels := []string{"Overview", "Activity", "Settings"}
 strip := f.Tabs(tabs, labels, selected)
@@ -85,6 +91,19 @@ func (state *State) keyTabs(event ui.KeyEvent) ui.EventResult {
 func (state *State) paintTabs(canvas *ui.Canvas, theme ui.Theme, size ui.Size) {
 	selected := int(state.values[0])
 	labels := state.tabsLabels()
+	if state.exampleID == "icons" {
+		var slot flex.Box
+		state.page(canvas, theme, size, 540, state.Text("Tabs · 图标标签", "Tabs · Icon labels"), func(f *flex.Frame) {
+			slot = f.Slot().FillWidth().Height(36)
+			state.tabsPanel(f, theme, selected)
+		})
+		options := [...]components.TabOption{{ID: tabsItem.At(0), Label: labels[0], Icon: infoIcon}, {ID: tabsItem.At(1), Label: labels[1], Icon: alertIcon}, {ID: tabsItem.At(2), Label: labels[2], Icon: folderIcon}}
+		components.BeginTabs(canvas, theme, slot.Rect(), options[:], options[selected].ID).Paint()
+		if index, ok := canvas.ClickedIn(tabsItem); ok {
+			state.values[0] = int32(index)
+		}
+		return
+	}
 	state.page(canvas, theme, size, 540, state.Text("Tabs · 内容切换", "Tabs · Content switching"), func(f *flex.Frame) {
 		if state.exampleID == "vertical" {
 			f.Row().Gap(20).Children(func() {

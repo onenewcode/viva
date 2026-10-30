@@ -377,7 +377,9 @@ func (renderer *vulkanRenderer) memoryType(bits, properties uint32) (uint32, boo
 }
 
 func (sceneState *vulkanScene) createPipeline(renderer *vulkanRenderer) (err error) {
-	push := vkPushConstantRange{StageFlags: vkShaderStageVertex, Size: 16}
+	// The fragment stage reads the content origin and the pixel size to place
+	// its sample in the same device space the vertices were given in.
+	push := vkPushConstantRange{StageFlags: vkShaderStageVertex | vkShaderStageFragment, Size: 24}
 	layoutInfo := vkPipelineLayoutCreateInfo{SType: vkStructurePipelineLayoutCreateInfo, PushConstantCount: 1, PushConstants: &push}
 	if err := vkCheck(renderer.api.createPipelineLayout(renderer.device, &layoutInfo, nil, &sceneState.pipelineLayout), "create scene pipeline layout"); err != nil {
 		return err
@@ -492,8 +494,8 @@ func (sceneState *vulkanScene) record(renderer *vulkanRenderer, command uintptr,
 	renderer.api.cmdSetScissor(command, 0, 1, &scratch.scissor)
 	// The viewport is the target in device pixels; the scene is positioned in
 	// logical ones, so the shader divides by the target's size in those.
-	scratch.sceneFrame = [4]float32{float32(extent.Width) / scale, float32(extent.Height) / scale, 1 / scale}
-	renderer.api.cmdPushConstants(command, sceneState.pipelineLayout, vkShaderStageVertex, 0, uint32(unsafe.Sizeof(scratch.sceneFrame)), unsafe.Pointer(&scratch.sceneFrame[0]))
+	scratch.sceneFrame = [6]float32{float32(extent.Width) / scale, float32(extent.Height) / scale, 1 / scale, 0, float32(originX), float32(originY)}
+	renderer.api.cmdPushConstants(command, sceneState.pipelineLayout, vkShaderStageVertex|vkShaderStageFragment, 0, uint32(unsafe.Sizeof(scratch.sceneFrame)), unsafe.Pointer(&scratch.sceneFrame[0]))
 	scratch.offset = 0
 	renderer.api.cmdBindVertexBuffers(command, 0, 1, &sceneState.buffer, &scratch.offset)
 	renderer.api.cmdDraw(command, 6, uint32(count), 0, uint32(first))

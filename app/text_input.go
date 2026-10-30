@@ -40,6 +40,12 @@ const (
 	// ordinary editor; a terminal receives it as is, without line breaks
 	// flattened, and decides how to forward it.
 	TextPaste
+	// TextPasteNoText is a paste asked for while the clipboard holds no text. It
+	// changes nothing in an editor (TextEvent.Apply ignores it). A field that
+	// takes more than text, such as a chat box that accepts a screenshot, uses it
+	// as the cue to look at the clipboard's other formats (ClipboardImagePNG).
+	// Terminals never receive it.
+	TextPasteNoText
 )
 
 // TextCommand identifies one platform-normalized editing command.
@@ -75,6 +81,11 @@ const (
 	TextMoveWordRightAndModifySelection
 	TextDeleteWordBackward
 	TextDeleteWordForward
+	// TextDeleteToLineStart and TextDeleteToLineEnd remove the text between the
+	// caret and the start or end of its line (Command+Backspace and
+	// Command+Delete on macOS).
+	TextDeleteToLineStart
+	TextDeleteToLineEnd
 )
 
 // TextEvent contains rune-indexed selection and replacement ranges.

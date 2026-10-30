@@ -10,13 +10,26 @@ layout(location = 6) in vec2 inTriangleB;
 layout(location = 7) in vec2 inTriangleC;
 layout(location = 8) flat in uint inTriangleMask;
 
+layout(push_constant) uniform Frame {
+    vec2 viewport;
+    float pixelSize;
+    float unused;
+    // Where the content starts in the target, in device pixels.
+    vec2 origin;
+} frame;
+
 layout(location = 0) out vec4 outColor;
+
+// Low bits keep edgeMask+1; this bit is local to the rasterizer.
+#define boundedTriangleFlag (1u << 8)
 
 float edgeDistance(vec2 point, vec2 from, vec2 to) {
     vec2 edge = to - from;
     float edgeLength = max(length(edge), 1e-6);
     return (edge.x * (point.y - from.y) - edge.y * (point.x - from.x)) / edgeLength;
 }
+float cross2(vec2 a, vec2 b) { return a.x*b.y - a.y*b.x; }
+
 float segmentDistance(vec2 p, vec2 a, vec2 b) {
     vec2 edge = b - a;
     float along = clamp(dot(p - a, edge) / max(dot(edge, edge), 1e-12), 0.0, 1.0);
@@ -61,23 +74,69 @@ vec4 shadowColor(float pixel) {
 
 void main() {
     if (inTriangleMask > 0) {
+        // Winding-independent coverage: the signed distance to the nearest
+        // outer mesh edge is feathered over one device pixel, the same band the
+        // rounded-rect corners use. Shared tessellation edges stay opaque.
         float area = (inTriangleB.x - inTriangleA.x) * (inTriangleC.y - inTriangleA.y) -
             (inTriangleB.y - inTriangleA.y) * (inTriangleC.x - inTriangleA.x);
         float orientation = area > 0.0 ? 1.0 : -1.0;
-        uint edgeMask = inTriangleMask - 1;
-        float distance0 = (edgeMask & 1u) != 0u ? orientation * edgeDistance(inFragment, inTriangleA, inTriangleB) : 1e6;
-        float distance1 = (edgeMask & 2u) != 0u ? orientation * edgeDistance(inFragment, inTriangleB, inTriangleC) : 1e6;
-        float distance2 = (edgeMask & 4u) != 0u ? orientation * edgeDistance(inFragment, inTriangleC, inTriangleA) : 1e6;
+        uint edgeMask = (inTriangleMask & ~boundedTriangleFlag) - 1u;
+        // The actual sample in the content's device pixels, as D3D and Metal
+        // take it: the interpolated face would put a sample that lies exactly on
+        // a shared edge on either side by rounding.
+        vec2 device = gl_FragCoord.xy - frame.origin;
+        vec2 p = device * frame.pixelSize;
+        float pixel = frame.pixelSize;
+        // Marked edges are supporting lines: only their half-pixel neighborhood
+        // of the triangle itself is coverage. Without this cut a sliver paints
+        // its lines across the window.
+        vec2 low = min(inTriangleA, min(inTriangleB, inTriangleC)) - 0.5 * pixel;
+        vec2 high = max(inTriangleA, max(inTriangleB, inTriangleC)) + 0.5 * pixel;
+        if (any(lessThan(p, low)) || any(greaterThan(p, high))) {
+            outColor = vec4(0.0);
+            return;
+        }
+        if ((inTriangleMask & boundedTriangleFlag) != 0u) {
+            vec2 points[3] = vec2[](inTriangleA, inTriangleB, inTriangleC);
+            for (uint i = 0u; i < 3u; i++) {
+                if ((edgeMask & (1u << i)) != 0u) {
+                    continue;
+                }
+                // Evaluate in device coordinates: dividing a sample by 3 first
+                // can turn an exactly shared sample into a gap at 3x scale.
+                vec2 a = points[i] / pixel, b = points[(i + 1u) % 3u] / pixel;
+                float direction = orientation;
+                // Both faces evaluate the same ordered endpoints, so rounding
+                // cannot put a sample on the outside (or inside) of both.
+                if (a.x > b.x || (a.x == b.x && a.y > b.y)) {
+                    vec2 swap = a;
+                    a = b;
+                    b = swap;
+                    direction = -direction;
+                }
+                vec2 edge = b - a;
+                float side = direction * cross2(edge, device - a);
+                edge *= direction;
+                // Screen-space top-left rule: a shared edge belongs to one face.
+                bool topLeft = edge.y < 0.0 || (edge.y == 0.0 && edge.x > 0.0);
+                if (side < 0.0 || (side == 0.0 && !topLeft)) {
+                    outColor = vec4(0.0);
+                    return;
+                }
+            }
+        }
+        float distance0 = (edgeMask & 1u) != 0u ? orientation * edgeDistance(p, inTriangleA, inTriangleB) : 1e6;
+        float distance1 = (edgeMask & 2u) != 0u ? orientation * edgeDistance(p, inTriangleB, inTriangleC) : 1e6;
+        float distance2 = (edgeMask & 4u) != 0u ? orientation * edgeDistance(p, inTriangleC, inTriangleA) : 1e6;
         float inside = min(distance0, min(distance1, distance2));
-        float pixel = devicePixel(inFragment);
         if (inside < 0.0) {
             // Acute offset-line miters must not paint beyond the actual ends.
-            float s0 = (edgeMask & 1u) != 0u ? segmentDistance(inFragment, inTriangleA, inTriangleB) : 1e6;
-            float s1 = (edgeMask & 2u) != 0u ? segmentDistance(inFragment, inTriangleB, inTriangleC) : 1e6;
-            float s2 = (edgeMask & 4u) != 0u ? segmentDistance(inFragment, inTriangleC, inTriangleA) : 1e6;
+            float s0 = (edgeMask & 1u) != 0u ? segmentDistance(p, inTriangleA, inTriangleB) : 1e6;
+            float s1 = (edgeMask & 2u) != 0u ? segmentDistance(p, inTriangleB, inTriangleC) : 1e6;
+            float s2 = (edgeMask & 4u) != 0u ? segmentDistance(p, inTriangleC, inTriangleA) : 1e6;
             inside = -min(s0, min(s1, s2));
         }
-        float coverage = edgeMask == 0 ? 1.0 : clamp(0.5 + inside / pixel, 0.0, 1.0);
+        float coverage = edgeMask == 0u ? 1.0 : clamp(0.5 + inside / pixel, 0.0, 1.0);
         vec4 shade = clamp(inColor, 0.0, 1.0);
         float alpha = shade.a * coverage;
         outColor = vec4(shade.rgb * alpha, alpha);

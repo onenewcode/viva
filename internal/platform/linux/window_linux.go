@@ -115,8 +115,8 @@ type linuxWindowState struct {
 	router                  eventRouter
 	pendingKeyReleaseDetail uint8
 	pendingKeyReleaseTime   uint32
-	// held is an event read ahead of the loop to tell a key release from the
-	// first half of an autorepeat; the loop handles it next.
+	// held is an event read ahead for key autorepeat or drag motion compression;
+	// the loop handles it next.
 	held         unsafe.Pointer
 	drag         xdndDrag
 	resizeEvents uint64
@@ -258,10 +258,7 @@ func (application *linuxApplication) Run(start platform.ApplicationStart) error 
 				continue
 			}
 			for application.contains(state) {
-				event := state.takeHeld()
-				if event == nil {
-					event = state.win.api.pollForEvent(state.win.connection)
-				}
+				event := state.nextEvent()
 				if event == nil {
 					if code := state.win.api.connectionHasError(state.win.connection); code != 0 {
 						application.fail(fmt.Errorf("linux: XCB connection failed with code %d", code))
@@ -440,6 +437,51 @@ func (application *linuxApplication) pollTimeout() int32 {
 func (state *linuxWindowState) takeHeld() unsafe.Pointer {
 	event := state.held
 	state.held = nil
+	return event
+}
+
+// maxQueuedDragMotions bounds the queued drag positions one dispatch may
+// discard, so a queue under continuous input cannot keep the loop inside a
+// single window's connection: every batch ends and the outer loop serves the
+// other descriptors and the window-closed and error checks between batches.
+const maxQueuedDragMotions = 256
+
+// nextEvent returns the next event of the window, with the queued positions of
+// a primary-button drag collapsed to their latest one: an application only
+// paints the pointer where it ended up, so an obsolete position would cost a
+// frame and a present for nothing. Every other event, and a motion that moves
+// to another window, root, child, screen or set of held buttons and modifiers,
+// is a boundary and is delivered as it was read, in order.
+func (state *linuxWindowState) nextEvent() unsafe.Pointer {
+	event := state.takeHeld()
+	if event == nil {
+		event = state.win.api.pollForEvent(state.win.connection)
+	}
+	if event == nil || (*xcbGenericEvent)(event).ResponseType&0x7f != xcbMotionNotify {
+		return event
+	}
+	motion := (*xcbInputEvent)(event)
+	if motion.State&xcbButton1Mask == 0 {
+		return event
+	}
+	// Skip stale drag positions, bounding each read-ahead batch under continuous input.
+	for range maxQueuedDragMotions {
+		next := state.win.api.pollForEvent(state.win.connection)
+		if next == nil {
+			break
+		}
+		if (*xcbGenericEvent)(next).ResponseType&0x7f != xcbMotionNotify {
+			state.held = next
+			break
+		}
+		newer := (*xcbInputEvent)(next)
+		if newer.Event != motion.Event || newer.Root != motion.Root || newer.Child != motion.Child || newer.State != motion.State || newer.SameScreen != motion.SameScreen {
+			state.held = next
+			break
+		}
+		*motion = *newer
+		state.win.api.free(next)
+	}
 	return event
 }
 

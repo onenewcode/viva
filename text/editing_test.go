@@ -49,6 +49,33 @@ func TestAddressWordBoundariesAndLineNavigation(t *testing.T) {
 	}
 }
 
+func TestDeleteToLineBoundaryStopsAtNewlinesAndUndoesAsOne(t *testing.T) {
+	editor := NewEditor("first\nsecond line\nthird")
+	editor.MoveTo(12, false) // "second| line"
+	editor.DeleteToLineBoundary(false)
+	if editor.String() != "first\n line\nthird" || editor.Caret() != 6 {
+		t.Fatalf("to line start: %q caret %d", editor.String(), editor.Caret())
+	}
+	editor.DeleteToLineBoundary(true)
+	if editor.String() != "first\n\nthird" || editor.Caret() != 6 {
+		t.Fatalf("to line end: %q caret %d", editor.String(), editor.Caret())
+	}
+	// On the boundary it joins the neighbouring line instead of doing nothing.
+	editor.DeleteToLineBoundary(false)
+	if editor.String() != "first\nthird" || editor.Caret() != 5 {
+		t.Fatalf("at line start: %q caret %d", editor.String(), editor.Caret())
+	}
+	if !editor.Undo() || editor.String() != "first\n\nthird" || !editor.Undo() || editor.String() != "first\n line\nthird" {
+		t.Fatalf("undo: %q", editor.String())
+	}
+	// A selection is what goes, not the line.
+	editor.SetSelection(Range{Start: 0, End: 2})
+	editor.DeleteToLineBoundary(true)
+	if editor.String() != "rst\n line\nthird" {
+		t.Fatalf("selection: %q", editor.String())
+	}
+}
+
 // Typing into a single-line field folds every insert, so a clean rune must not
 // allocate; only text that actually has something to fold may.
 func TestSingleLineTypingDoesNotAllocate(t *testing.T) {

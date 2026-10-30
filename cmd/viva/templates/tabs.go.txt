@@ -25,6 +25,11 @@ type TabOption struct {
 	ID       ui.ID
 	Label    string
 	Disabled bool
+	// Icon is an optional leading icon. Icon and label form one centered group.
+	Icon ui.Icon
+	// IconOnly hides the label while keeping it as the tab's accessible name.
+	// Set Label even when only the icon is painted.
+	IconOnly bool
 }
 
 // Tabs paints a compact Base UI-style tab list. The active tab and associated
@@ -268,7 +273,7 @@ func (tabs Tabs) Paint() TabsResult {
 	if tabs.fit {
 		var widest, total float32
 		for index := range tabs.count() {
-			width := tabs.canvas.TextWidthWeight(tabs.option(index).Label, metrics.FontSizeM, weight) + tabsTriggerPad*2
+			width := tabs.contentWidth(tabs.option(index)) + tabsTriggerPad*2
 			widest = max(widest, width)
 			total += width
 		}
@@ -368,14 +373,14 @@ func (tabs Tabs) Paint() TabsResult {
 			foreground.Alpha *= 0.50
 		}
 		style := ui.TextStyle{Size: metrics.FontSizeM, Weight: weight, Color: foreground}
-		if tabs.direction == TabsVertical {
-			tabs.canvas.Label(option.Label, ui.Rect{X: trigger.X + tabsTriggerPad, Y: trigger.Y, Width: trigger.Width - tabsTriggerPad*2, Height: trigger.Height}, style)
-		} else {
-			tabs.canvas.LabelCenter(option.Label, trigger, style)
-		}
+		tabs.paintContent(option, trigger, style)
 		if !option.ID.IsZero() {
+			hint := ""
+			if option.IconOnly {
+				hint = option.Label
+			}
 			tabs.canvas.HitWithOptions(option.ID, trigger, option.Label, ui.HitOptions{
-				Role: ui.RoleTab, Value: option.Label,
+				Role: ui.RoleTab, Value: option.Label, Hint: hint,
 				Disabled: dimmed, FocusableWhenDisabled: true,
 				Selected: active,
 				SkipTab:  option.ID != tabs.tabStop,
@@ -394,7 +399,7 @@ func (tabs Tabs) triggerBounds(inner ui.Rect, index int, count, cursor float32) 
 		return ui.Rect{X: inner.X, Y: inner.Y + float32(index)*(height+gap), Width: inner.Width, Height: height}
 	}
 	if tabs.fit {
-		width := tabs.canvas.TextWidthWeight(tabs.option(index).Label, tabs.theme.Metrics.FontSizeM, ui.WeightMedium) + tabsTriggerPad*2
+		width := tabs.contentWidth(tabs.option(index)) + tabsTriggerPad*2
 		return ui.Rect{X: inner.X + cursor, Y: inner.Y, Width: width, Height: inner.Height}
 	}
 	width := (inner.Width - gap*(count-1)) / count
@@ -406,4 +411,52 @@ func (tabs Tabs) itemGap() float32 {
 		return tabsLineGap
 	}
 	return 0
+}
+
+func (tabs Tabs) contentWidth(option TabOption) float32 {
+	width := float32(0)
+	if !option.IconOnly {
+		width = tabs.canvas.TextWidthWeight(option.Label, tabs.theme.Metrics.FontSizeM, ui.WeightMedium)
+	}
+	if len(option.Icon.Commands) > 0 || len(option.Icon.Layers) > 0 {
+		width += tabs.theme.Metrics.FontSizeM
+		if option.Label != "" && !option.IconOnly {
+			width += 6
+		}
+	}
+	return width
+}
+
+func (tabs Tabs) paintContent(option TabOption, trigger ui.Rect, style ui.TextStyle) {
+	b := ui.Rect{X: trigger.X + tabsTriggerPad, Y: trigger.Y, Width: max(0, trigger.Width-tabsTriggerPad*2), Height: trigger.Height}
+	tabs.canvas.Clip(trigger)
+	defer tabs.canvas.Unclip()
+	if len(option.Icon.Commands) == 0 && len(option.Icon.Layers) == 0 {
+		if tabs.direction == TabsVertical {
+			tabs.canvas.Label(option.Label, b, style)
+		} else {
+			tabs.canvas.LabelCenter(option.Label, trigger, style)
+		}
+		return
+	}
+	size := min(tabs.theme.Metrics.FontSizeM, max(0, b.Height))
+	gap := float32(0)
+	if option.Label != "" && !option.IconOnly {
+		gap = 6
+	}
+	text := option.Label
+	if option.IconOnly {
+		text = ""
+	}
+	width := min(tabs.canvas.TextWidthWeight(text, style.Size, style.Weight)+size+gap, b.Width)
+	if tabs.direction != TabsVertical {
+		b.X += (b.Width - width) / 2
+	}
+	tabs.canvas.DrawIcon(option.Icon, ui.Rect{X: b.X, Y: b.Y + (b.Height-size)/2, Width: size, Height: size}, style.Color)
+	if text == "" {
+		return
+	}
+	b.X += size + gap
+	b.Width = max(0, width-size-gap)
+	tabs.canvas.Label(text, b, style)
 }

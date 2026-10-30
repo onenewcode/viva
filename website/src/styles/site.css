@@ -284,7 +284,6 @@
   }
   @media (max-width: 480px) {
     .header-inner { padding: 0 16px; gap: 18px; }
-    .header-navigation a:last-child { display: none; }
     .header-end { gap: 6px; }
     .theme-label, .open-preview-label { display: none; }
     .docs-grid, .docs-grid-wide { padding: 0 18px; }
@@ -423,6 +422,30 @@
   .link-title { color: var(--viva-text); font-size: 15px; }
   .list-heading { margin-top: 40px; font-size: 18px; }
 
+  /* Showcase: a wall of cards, three to a row. One screenshot, the name, a
+     sentence or two, three facts and the links; detail pages are added only when
+     a case outgrows a card. */
+  .showcase { max-width: 1200px; margin: auto; padding: 40px 32px 72px; }
+  .showcase-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  .showcase-card { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--viva-border); border-radius: 12px; background: var(--viva-surface); }
+  .showcase-card-shot { margin: 0; border-bottom: 1px solid var(--viva-border); background: var(--viva-background); }
+  .showcase-card-shot img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; }
+  .showcase-card-shot figcaption { padding: 6px 16px; font-size: 11px; line-height: 1.45; color: var(--viva-muted); }
+  .showcase-card-body { display: flex; flex-direction: column; flex: 1; padding: 14px 16px 16px; }
+  .showcase-card h2 { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 8px; font-size: 20px; letter-spacing: -.015em; }
+  .showcase-card h2 span { font-size: 13px; font-weight: 400; color: var(--viva-doc-secondary); }
+  .showcase-summary { margin-top: 8px; font-size: 13.5px; line-height: 1.65; }
+  .showcase-facts { display: flex; flex-wrap: wrap; gap: 3px 14px; margin-top: 12px; }
+  .showcase-facts div { display: flex; align-items: baseline; gap: 4px; }
+  .showcase-facts dt { font-size: 10.5px; color: var(--viva-muted); }
+  .showcase-facts dd { margin: 0; font-size: 11.5px; color: var(--viva-text); }
+  .showcase-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .showcase-link { display: inline-flex; align-items: center; gap: 4px; padding: 5px 9px; border: 1px solid var(--viva-strong-border); border-radius: 6px; font-size: 12px; color: var(--viva-text); background: var(--viva-background); }
+  .showcase-link:hover { background: var(--viva-surface-hover); }
+  .showcase-link-primary { border-color: var(--viva-text); background: var(--viva-text); color: var(--viva-background); }
+  .showcase-link-primary:hover { background: var(--viva-text); opacity: .86; }
+  .showcase-link span { font-size: 10px; opacity: .7; }
+
   .markdown { font-size: 16px; }
   .markdown > :first-child { margin-top: 0; }
   .markdown h1 { margin-bottom: 8px; }
@@ -457,8 +480,12 @@
     .home-stats dd { font-size: 30px; }
     .home h1 { font-size: 44px; }
   }
+  @media (max-width: 1000px) {
+    .showcase-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
   @media (max-width: 800px) {
     .home { padding: 0 24px 56px; }
+    .showcase { padding: 32px 24px 56px; }
     .home-hero { grid-template-columns: minmax(0, 1fr); row-gap: 40px; }
     .home-hero-art { max-width: 220px; }
     .home-grid, .home-measures, .guide-cards { grid-template-columns: minmax(0, 1fr); }
@@ -474,6 +501,29 @@
     .home h1 { font-size: 34px; }
     .home-lead { font-size: 16px; }
     .home-stats dd { font-size: 30px; }
+    .showcase { padding: 28px 18px 48px; }
+    .showcase-card-body { padding: 14px 16px 16px; }
+    .showcase-card h2 { font-size: 19px; }
+  }
+  /* Four sections no longer fit one row on a phone: the brand and the controls
+     keep the first row, and the navigation takes a second one instead of
+     wrapping each two-character label one character per line. */
+  @media (max-width: 700px) {
+    :root { --viva-header-height: 88px; }
+    .header-inner { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 52px 36px; align-items: center; height: var(--viva-header-height); padding: 0 16px; column-gap: 16px; row-gap: 0; }
+    .brand { grid-column: 1; grid-row: 1; }
+    .header-navigation { grid-column: 1 / -1; grid-row: 2; gap: 20px; }
+    .header-navigation a { white-space: nowrap; }
+    .header-end { grid-column: 2; grid-row: 1; justify-self: end; gap: 14px; margin-left: 0; }
+    .showcase-grid { grid-template-columns: minmax(0, 1fr); }
+  }
+  /* At the 320px floor the first row is 30px too wide: the brand and the
+     language switch shrink, and the repository link lives on in the footer. */
+  @media (max-width: 360px) {
+    .header-inner { column-gap: 10px; }
+    .brand-lockup { height: 22px; }
+    .header-end { gap: 8px; }
+    .repository-link { display: none; }
   }
 }
 

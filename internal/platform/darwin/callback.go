@@ -50,6 +50,7 @@ func vivaPointerEvent(
 	state := cgo.Handle(handle).Value().(*runState)
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			platform.ReportFault("darwin: AppKit callback", recovered)
 			state.err = fmt.Errorf("darwin: pointer handler panicked: %v", recovered)
 			C.viva_view_close(view)
 		}
@@ -79,6 +80,7 @@ func vivaViewResized(handle C.uintptr_t, view unsafe.Pointer, width C.double, he
 	state := cgo.Handle(handle).Value().(*runState)
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			platform.ReportFault("darwin: AppKit callback", recovered)
 			state.err = fmt.Errorf("darwin: resize handler panicked: %v", recovered)
 			C.viva_view_close(view)
 		}
@@ -102,6 +104,7 @@ func vivaFrameChanged(handle C.uintptr_t, view unsafe.Pointer, x, y, width, heig
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			platform.ReportFault("darwin: AppKit callback", recovered)
 			state.err = fmt.Errorf("darwin: frame change handler panicked: %v", recovered)
 			C.viva_view_close(view)
 		}
@@ -117,6 +120,7 @@ func vivaWindowReopenRequested(handle C.uintptr_t, view unsafe.Pointer) (handled
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			platform.ReportFault("darwin: AppKit callback", recovered)
 			state.err = fmt.Errorf("darwin: reopen handler panicked: %v", recovered)
 			C.viva_view_close(view)
 			handled = 1
@@ -134,6 +138,7 @@ func vivaWindowMinimized(handle C.uintptr_t, view unsafe.Pointer, minimized C.in
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			platform.ReportFault("darwin: AppKit callback", recovered)
 			state.err = fmt.Errorf("darwin: minimize handler panicked: %v", recovered)
 			C.viva_view_close(view)
 		}
@@ -146,6 +151,7 @@ func vivaRedrawRequested(handle C.uintptr_t, view unsafe.Pointer) {
 	state := cgo.Handle(handle).Value().(*runState)
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			platform.ReportFault("darwin: AppKit callback", recovered)
 			state.err = fmt.Errorf("darwin: redraw handler panicked: %v", recovered)
 			C.viva_view_close(view)
 		}
@@ -283,6 +289,7 @@ func deliverKey(handle C.uintptr_t, view unsafe.Pointer, event KeyEvent, utf8 *C
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			platform.ReportFault("darwin: AppKit callback", recovered)
 			state.err = fmt.Errorf("darwin: key handler panicked: %v", recovered)
 			C.viva_view_close(view)
 		}
@@ -311,6 +318,7 @@ func vivaShortcutEvent(handle C.uintptr_t, view unsafe.Pointer, modifiers C.int,
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			platform.ReportFault("darwin: AppKit callback", recovered)
 			state.err = fmt.Errorf("darwin: shortcut handler panicked: %v", recovered)
 			C.viva_view_close(view)
 		}
@@ -338,6 +346,7 @@ func vivaScrollEvent(handle C.uintptr_t, view unsafe.Pointer, deltaX C.double, d
 	state := cgo.Handle(handle).Value().(*runState)
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			platform.ReportFault("darwin: AppKit callback", recovered)
 			state.err = fmt.Errorf("darwin: scroll handler panicked: %v", recovered)
 			C.viva_view_close(view)
 		}
@@ -368,6 +377,7 @@ func vivaFileDropEvent(handle C.uintptr_t, view unsafe.Pointer, phase C.int, x C
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			platform.ReportFault("darwin: AppKit callback", recovered)
 			state.err = fmt.Errorf("darwin: file drop handler panicked: %v", recovered)
 			C.viva_view_close(view)
 		}
@@ -411,6 +421,7 @@ func vivaCloseRequested(handle C.uintptr_t, view unsafe.Pointer) {
 	allow := func() { C.viva_view_close_confirmed(view) }
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			platform.ReportFault("darwin: AppKit callback", recovered)
 			state.err = fmt.Errorf("darwin: close handler panicked: %v", recovered)
 			allow()
 		}
@@ -577,6 +588,7 @@ func vivaTextInput(
 	state := cgo.Handle(handle).Value().(*runState)
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			platform.ReportFault("darwin: AppKit callback", recovered)
 			state.err = fmt.Errorf("darwin: text input handler panicked: %v", recovered)
 			C.viva_view_close(view)
 		}

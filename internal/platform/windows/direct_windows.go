@@ -166,6 +166,7 @@ type directRasterizer struct {
 	output      []byte // the pixels of the last label, reused
 	pieces      []gridPiece
 	spans       []colorSpan // the colors of the last ClearType grid label, valid until the next call
+	fallbacks   []faceFallback
 }
 
 func newDirectRasterizer() (*directRasterizer, error) {
@@ -196,6 +197,7 @@ func (rasterizer *directRasterizer) close() {
 	if rasterizer.translucent != nil {
 		rasterizer.translucent.close()
 	}
+	rasterizer.releaseFontFallbacks()
 	release(&rasterizer.factory)
 }
 
@@ -403,6 +405,7 @@ func coverageOfChannels(pixels []byte, bitmap *textBitmap, width, height int, dr
 // (premultiplied BGRA, grayscale antialiasing), so a line is one texture however many colors it holds.
 func (rasterizer *directRasterizer) grid(pixels []byte, label platform.TextLabel, size float32, width, height int) error {
 	family := monoFamily(label.MonoFace)
+	fallback := rasterizer.fontFallback(label.MonoFace)
 	pitch := label.CellWidth * float32(size/label.FontSize)
 	baseline := float32(platform.LabelBaseline(height, float64(size)))
 	target := rasterizer.translucent
@@ -415,7 +418,7 @@ func (rasterizer *directRasterizer) grid(pixels []byte, label platform.TextLabel
 	var drawErr error
 	for _, piece := range rasterizer.gridPieces(label, pitch) {
 		target.setColor(piece.color)
-		if err := rasterizer.drawRun(target, family, size, piece.weight, piece.run, piece.text, piece.left, piece.span, pitch, baseline); err != nil && drawErr == nil {
+		if err := rasterizer.drawRun(target, family, fallback, size, piece.weight, piece.run, piece.text, piece.left, piece.span, pitch, baseline); err != nil && drawErr == nil {
 			drawErr = err
 		}
 	}
@@ -434,12 +437,13 @@ func (rasterizer *directRasterizer) grid(pixels []byte, label platform.TextLabel
 // drawRun draws a run of a grid line starting at left: printable ASCII characters advance by
 // exactly the pitch of the grid, a single wider character is centered on its cells, and
 // the run's decorations are DirectWrite's own.
-func (rasterizer *directRasterizer) drawRun(target *directTarget, family string, size, weight float32, run ui.TextRun, piece string, left, span, pitch, baseline float32) error {
+func (rasterizer *directRasterizer) drawRun(target *directTarget, family string, fallback uintptr, size, weight float32, run ui.TextRun, piece string, left, span, pitch, baseline float32) error {
 	format, err := rasterizer.services.formatStyle(family, size, weight, run.Italic)
 	if err != nil {
 		return err
 	}
 	defer release(&format)
+	setFontFallback(format, fallback)
 	units, err := syscall.UTF16FromString(piece)
 	if err != nil {
 		return err

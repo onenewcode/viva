@@ -6,6 +6,55 @@ import (
 	"github.com/vivaui/viva/ui"
 )
 
+func TestButtonVectorIconKeepsAccessibleLabel(t *testing.T) {
+	icon := checkIcon
+	for _, disabled := range []bool{false, true} {
+		var canvas ui.Canvas
+		button := BeginButton(&canvas, ui.DarkTheme(), ui.Item(1), ui.Rect{Width: 80}).WithIcon(icon).Icon()
+		if disabled {
+			button = button.Disabled()
+		}
+		button.Ghost("Edit panel")
+		if len(canvas.Texts()) != 0 || len(canvas.Triangles()) == 0 {
+			t.Fatal("icon-only button must draw the vector without visible label text")
+		}
+		hit := canvas.Hits()[0]
+		if hit.Label != "Edit panel" || hit.Hint != hit.Label || hit.Disabled != disabled || hit.Bounds.Width != 32 {
+			t.Fatalf("icon button semantics: %+v", hit)
+		}
+	}
+}
+
+func TestButtonIconAndTextFitTogether(t *testing.T) {
+	var canvas ui.Canvas
+	button := BeginButton(&canvas, ui.LightTheme(), ui.Item(1), ui.Rect{X: 10}).WithIcon(checkIcon).SizeToFit("Save")
+	button.Default("Save")
+	if len(canvas.Triangles()) == 0 || len(canvas.Texts()) != 1 || canvas.Texts()[0].Value != "Save" {
+		t.Fatal("leading icon button must retain its visible text")
+	}
+	want := canvas.TextWidthWeight("Save", ui.LightTheme().Metrics.FontSizeM, ui.WeightMedium) + 20 + 16 + 8
+	if button.BoundsWidth() != want {
+		t.Fatalf("icon and label fitted width = %v, want %v", button.BoundsWidth(), want)
+	}
+}
+
+func TestNarrowIconButtonKeepsItsIconInside(t *testing.T) {
+	bounds := ui.Rect{X: 40, Y: 10, Width: 12}
+	var canvas ui.Canvas
+	BeginButton(&canvas, ui.LightTheme(), ui.Item(1), bounds).WithIcon(checkIcon).Ghost("Edit panel")
+	triangles := canvas.Triangles()
+	if len(triangles) == 0 {
+		t.Fatal("narrow icon button drew no icon")
+	}
+	for _, triangle := range triangles {
+		for _, point := range triangle.Points {
+			if point.X < bounds.X-.001 || point.X > bounds.X+bounds.Width+.001 {
+				t.Fatalf("icon vertex X %.2f escaped %+v", point.X, bounds)
+			}
+		}
+	}
+}
+
 func TestButtonOfficialVariants(t *testing.T) {
 	theme := ui.LightTheme()
 	tests := [...]struct {

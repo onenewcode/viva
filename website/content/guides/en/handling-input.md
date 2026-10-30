@@ -86,8 +86,10 @@ func newConfig(m *model) app.Config {
 		})
 	}
 
-	// OnPointer sees every press, move and release; Target is the identity under
-	// the pointer. Here a secondary press on a row is the start of a context menu.
+	// OnPointer sees presses, releases and moves; Target is the identity under
+	// the pointer. A drag may be coalesced to its latest position, so a handler
+	// must follow the coordinates, not count moves. Here a secondary press on a
+	// row is the start of a context menu.
 	config.OnPointer = func(event ui.PointerEvent) ui.EventResult {
 		if event.Kind == ui.PointerDown && event.Button == ui.PointerButtonSecondary && event.Target.Scope() == rows {
 			row, _ := event.Target.Name().Index()
@@ -166,6 +168,8 @@ Two different places or names can never be confused, because they are interned r
 A click is handled where the control is declared: `f.Button(...).Clicked()`, or `Clicked()` on a `Hit` box, as the rows of the list do. A drag between two panes needs no handler either: `f.Splitter` captures the pointer, shows the resize cursor and keeps both panes inside their minimum sizes, and the example only gives the first pane `m.split.Pos` wide.
 
 `OnPointer` is for what is left. It receives down, move, up and exit events in logical window pixels, and `Target` is the identity under the pointer. A press keeps its original target through the move and up events that follow, and `Captured` is true while that is the case, which is what makes a drag of your own work even when the pointer leaves the control. The example uses it for a secondary press on a row, the start of a context menu.
+
+The moves of a drag may be coalesced to the latest queued position, as the platform does natively, so a handler depends on the coordinates rather than on the number of calls: a drag that follows the displacement from its press still ends where the pointer is.
 
 `Button` tells primary from secondary presses. `ClickCount` numbers presses of one button close together, 1 for a lone press and 2 for the second press of a double click. `HitOptions.Cursor` sets the pointer shape while a hit is hovered or dragged (`f.Splitter` already uses `PointerCursorResizeHorizontal`).
 

@@ -21,17 +21,24 @@ var (
 	monoFamilySent int
 )
 
-// syncMonoFamilies tells the native side the names of the font families the
-// application registered with ui.MonoFamily since the last call. Faces are
-// numbered in registration order, so only the new ones are sent.
+// syncMonoFamilies tells the native side what the faces the application registered
+// with ui.MonoFamily and ui.MonoStack since the last call stand for. Faces are numbered
+// in registration order, so only the new ones are sent.
 func syncMonoFamilies() {
-	count := ui.MonoFamilyCount()
+	count := ui.MonoFaceCount()
 	monoFamilyLock.Lock()
 	defer monoFamilyLock.Unlock()
 	for monoFamilySent < count {
-		name := C.CString(ui.MonoFamilyName(ui.MonoFace(2 + monoFamilySent)))
-		C.viva_register_mono_family(C.int(2+monoFamilySent), name)
+		face := ui.MonoFace(2 + monoFamilySent)
+		name := C.CString(ui.MonoFamilyName(face))
+		fallbacks := C.CString(strings.Join(ui.MonoFallbacks(face), "\n"))
+		classic := C.int(0)
+		if ui.MonoIsClassic(face) {
+			classic = 1
+		}
+		C.viva_register_mono_family(C.int(2+monoFamilySent), name, classic, fallbacks)
 		C.free(unsafe.Pointer(name))
+		C.free(unsafe.Pointer(fallbacks))
 		monoFamilySent++
 	}
 }

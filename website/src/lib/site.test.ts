@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import { site } from './site.ts';
 import { home } from './home.ts';
+import { showcase } from './showcase.ts';
 import { skillNames, skillPath } from './skills.ts';
 
 const guides = new URL('../../content/guides/', import.meta.url);
@@ -22,6 +23,26 @@ test('site and home dictionaries have the same keys in both languages', () => {
   assert.equal(home.zh.principles.length, home.en.principles.length);
   assert.equal(home.zh.platforms.length, home.en.platforms.length);
   assert.deepEqual(home.zh.platforms.map(entry => entry.name), home.en.platforms.map(entry => entry.name));
+});
+
+test('showcase cases exist in both languages with the same links and facts', () => {
+  assert.deepEqual(Object.keys(showcase.zh).sort(), Object.keys(showcase.en).sort());
+  assert.deepEqual(showcase.zh.cases.map(entry => entry.slug), showcase.en.cases.map(entry => entry.slug));
+  assert.ok(showcase.en.cases.length >= 2);
+  for (const [index, english] of showcase.en.cases.entries()) {
+    const chinese = showcase.zh.cases[index];
+    assert.equal(chinese.facts.length, english.facts.length, `${english.slug}: facts`);
+    assert.deepEqual(chinese.links.map(link => link.href), english.links.map(link => link.href), `${english.slug}: links`);
+    // The schema is language-neutral: if the two dictionaries disagree, the page
+    // publishes a different structured-data description per locale.
+    assert.deepEqual(chinese.schema, english.schema, `${english.slug}: schema`);
+  }
+});
+
+test('English showcase copy has no Chinese prose and the Chinese copy is Chinese', () => {
+  walk(showcase.en, text => assert.doesNotMatch(text, han, text));
+  assert.match(showcase.zh.summary, han);
+  for (const entry of showcase.zh.cases) assert.match(entry.summary, han);
 });
 
 test('English chrome has no Chinese prose and Chinese chrome is Chinese', () => {

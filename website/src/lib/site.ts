@@ -5,7 +5,7 @@ import type { Locale } from './i18n';
 // is a compile error and a test failure rather than mixed-language prose.
 const english = {
   skip: 'Skip to content', home: 'Viva home',
-  navDocs: 'Docs', navComponents: 'Components', navApi: 'API',
+  navDocs: 'Docs', navComponents: 'Components', navShowcase: 'Showcase', navApi: 'API',
   primaryNavigation: 'Primary', language: 'Documentation language',
   repository: 'Viva on GitHub',
   search: 'Search',
@@ -36,7 +36,7 @@ const english = {
 
 const chinese: typeof english = {
   skip: '跳转到正文', home: 'Viva 首页',
-  navDocs: '文档', navComponents: '组件', navApi: 'API',
+  navDocs: '文档', navComponents: '组件', navShowcase: '案例', navApi: 'API',
   primaryNavigation: '主导航', language: '文档语言',
   repository: 'Viva 的 GitHub 仓库',
   search: '搜索',

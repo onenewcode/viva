@@ -7,6 +7,26 @@ import (
 	"github.com/vivaui/viva/ui"
 )
 
+func TestCheckboxEnclosingCardHasOneSemanticTarget(t *testing.T) {
+	var canvas ui.Canvas
+	card := ui.Rect{X: 10, Y: 20, Width: 300, Height: 64}
+	BeginCheckbox(&canvas, ui.DarkTheme(), ui.Item(1), ui.Rect{X: 270, Y: 40}, true).
+		Label("Production server").HitBounds(card).Paint()
+	if len(canvas.Hits()) != 1 {
+		t.Fatal("card and square must be one keyboard stop")
+	}
+	hit := canvas.Hits()[0]
+	if hit.Bounds != card || !hit.Checked || hit.Role != ui.RoleCheckbox || hit.Label != "Production server" {
+		t.Fatalf("selection card target: %+v", hit)
+	}
+	if !hit.Focusable || hit.SkipTab {
+		t.Fatalf("enclosing target must keep the checkbox in the Tab order: %+v", hit)
+	}
+	if got := canvas.Rectangles()[0].Bounds; got.X != 270 || got.Y != 40 || got.Width != 16 {
+		t.Fatalf("enclosing target changed the visual square: %+v", got)
+	}
+}
+
 func TestCheckboxCheckIsCenteredAtDisplayScales(t *testing.T) {
 	// Display presets must land within half a device pixel: at these scales the
 	// box and the mark round to the same lattice. Custom fractional scales still

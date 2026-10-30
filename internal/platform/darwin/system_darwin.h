@@ -19,6 +19,8 @@ int viva_system_clipboard_has_image(const char *pasteboard);
 int viva_system_clipboard_image_png(const char *pasteboard, size_t max_png, size_t max_raw, uint8_t **data, size_t *length, char **error_message);
 // Puts an image (PNG bytes) on a named pasteboard, as TIFF when as_tiff is set.
 int viva_system_pasteboard_put_image(const char *pasteboard, const uint8_t *png, size_t length, int as_tiff);
+// Shows a modal alert. It must run on the main thread; elsewhere it returns -1.
+int viva_system_show_fatal_error(const char *title, const char *message);
 int viva_system_set_cursor(uint8_t shape, char **error_message);
 int viva_system_open_files(
     const char *title,

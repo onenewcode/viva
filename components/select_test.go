@@ -81,6 +81,31 @@ func TestSelectClosedSmallDisabledAndInvalidTrigger(t *testing.T) {
 	}
 }
 
+func TestSelectExtraSmallTriggerStepsTheTypeDown(t *testing.T) {
+	theme := ui.DarkTheme()
+	var canvas ui.Canvas
+	control := BeginSelect(&canvas, theme, ui.Rect{Width: 168}, SelectOptions{
+		TriggerID: ui.Item(1), Label: "Target", Value: "本机-2", Open: true,
+		Content: ui.Rect{Y: 32, Width: 168, Height: 72}, Scope: ui.Item(9), DismissID: ui.Item(10),
+		Size: SelectSizeXSmall,
+	})
+	control.AddItem(SelectItem{ID: ui.Item(2), Label: "本机-2"})
+	control.AddItem(SelectItem{ID: ui.Item(3), Label: "Staging"})
+	if height := control.TriggerBounds().Height; height != theme.Metrics.ControlHeight-8 {
+		t.Fatalf("extra-small trigger height = %v", height)
+	}
+	texts := canvas.Texts()
+	if len(texts) != 3 || texts[0].Value != "本机-2" || texts[0].Style.Size != theme.Metrics.FontSizeS {
+		t.Fatalf("extra-small trigger text = %+v", texts)
+	}
+	// A compact trigger still opens the body-size menu a desktop select opens.
+	for _, item := range texts[1:] {
+		if item.Style.Size != theme.Metrics.FontSizeM {
+			t.Fatalf("extra-small popup item text = %+v", item)
+		}
+	}
+}
+
 func TestSelectGeometryAndCommandStreamAreDeterministic(t *testing.T) {
 	var canvas ui.Canvas
 	paint := func() {

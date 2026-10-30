@@ -137,12 +137,17 @@ type Window interface {
 }
 
 // Application creates windows that share one native application event loop.
-// OpenWindow and AddStatusItem are called on that event-loop thread.
+// OpenWindow, AddStatusItem and SetDockBadge are called on that event-loop
+// thread.
 type Application interface {
 	OpenWindow(Config) (Window, error)
 	// AddStatusItem puts an icon in the system's status area: the menu bar on
 	// macOS, the notification area on Windows, a StatusNotifier host on Linux.
 	AddStatusItem(StatusItemConfig) (StatusItem, error)
+	// SetDockBadge marks the application's icon in the Dock with text, the red
+	// badge macOS draws at its top corner. An empty text removes it. A desktop
+	// without a Dock accepts it and does nothing.
+	SetDockBadge(text string)
 	// Quit closes every window, bypassing close requests, and ends the loop.
 	// It is thread-safe.
 	Quit()
@@ -680,6 +685,11 @@ const (
 	// separate undo unit; a terminal decides how to forward it (for example
 	// inside bracketed-paste markers).
 	TextPaste
+	// TextPasteNoText reports a paste asked for while the pasteboard holds no text.
+	// It edits nothing: an editor that takes text only ignores it. An application
+	// whose field accepts more than text (a chat box that takes a screenshot) reads
+	// the other formats itself, with ClipboardImagePNG. Terminals never receive it.
+	TextPasteNoText
 )
 
 // TextCommand identifies keyboard editing commands emitted by AppKit.
@@ -716,6 +726,11 @@ const (
 	TextMoveWordRightAndModifySelection
 	TextDeleteWordBackward
 	TextDeleteWordForward
+	// TextDeleteToLineStart and TextDeleteToLineEnd remove the text between the
+	// caret and the start or end of its line (Command+Backspace and
+	// Command+Delete on macOS).
+	TextDeleteToLineStart
+	TextDeleteToLineEnd
 )
 
 // TextEvent contains rune-indexed ranges. MarkedSelection is relative to Text.
@@ -802,6 +817,10 @@ func (event TextEvent) Apply(editor *text.Editor) {
 			editor.DeleteWord(false)
 		case TextDeleteWordForward:
 			editor.DeleteWord(true)
+		case TextDeleteToLineStart:
+			editor.DeleteToLineBoundary(false)
+		case TextDeleteToLineEnd:
+			editor.DeleteToLineBoundary(true)
 		}
 	}
 }

@@ -88,13 +88,13 @@ var (
 
 func newDropTable() {
 	dropTable = [7]uintptr{
-		syscall.NewCallback(dropQueryInterface),
-		syscall.NewCallback(dropAddRef),
-		syscall.NewCallback(dropRelease),
-		syscall.NewCallback(dropDragEnter),
-		syscall.NewCallback(dropDragOver),
-		syscall.NewCallback(dropDragLeave),
-		syscall.NewCallback(dropDrop),
+		guarded3("drag and drop: QueryInterface", dropQueryInterface),
+		guarded1("drag and drop: AddRef", dropAddRef),
+		guarded1("drag and drop: Release", dropRelease),
+		guarded5("drag and drop: DragEnter", dropDragEnter),
+		guarded4("drag and drop: DragOver", dropDragOver),
+		guarded1("drag and drop: DragLeave", dropDragLeave),
+		guarded5("drag and drop: Drop", dropDrop),
 	}
 }
 

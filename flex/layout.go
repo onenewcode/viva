@@ -117,7 +117,7 @@ func (f *Frame) measureLeaf(n *node) {
 	case kindSwitch:
 		w, h := components.SwitchHitExtent(f.theme, n.flags&flagSmall != 0)
 		n.pref = [2]float32{w, h}
-	case kindIcon:
+	case kindIcon, kindImage:
 		n.pref = [2]float32{16, 16}
 	case kindSegmented:
 		var width float32 = 8

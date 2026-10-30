@@ -435,7 +435,7 @@ type vulkanScratch struct {
 	scissor     vkRect2D
 	cut         vkRect2D
 	offset      uint64
-	sceneFrame  [4]float32
+	sceneFrame  [6]float32
 	textFrame   [8]float32
 	tint        [4]float32
 	submit      vkSubmitInfo

@@ -15,7 +15,33 @@ type ChartSeries struct {
 	Label  string
 	Color  ui.Color
 	Hidden bool
+	// AreaStyle optionally overrides the fill of this series in AreaChart.
+	// Other chart kinds ignore it. Nil preserves the chart's default fill.
+	AreaStyle *ChartAreaStyle
 }
+
+// ChartAreaDefaultOpacity is the fill alpha a chart uses when its series has no
+// ChartAreaStyle. Set ChartAreaStyle.Opacity to this value to keep the default
+// alpha while overriding only the color or gradient.
+const ChartAreaDefaultOpacity = 0.4
+
+// ChartAreaStyle controls a series' fill independently of its line. The
+// pointer on ChartSeries is optional; an explicit zero Opacity is transparent,
+// so use ChartAreaDefaultOpacity when only the color should change.
+type ChartAreaStyle struct {
+	// Color overrides the series fill color. A zero color uses the series color.
+	Color ui.Color
+	// Opacity multiplies the fill alpha, clamped to [0,1]. Non-finite is zero.
+	Opacity float32
+	// Gradient overrides the endpoint colors of ChartFillGradient. Nil fades
+	// Color (or the series color) using the chart's default alpha stops.
+	Gradient *ChartAreaGradient
+}
+
+// ChartAreaGradient is a vertical, baseline-relative color gradient. From is
+// at the farthest curve edge and To is at the baseline, including below zero.
+// Colors include alpha; ChartAreaStyle.Opacity multiplies both endpoints.
+type ChartAreaGradient struct{ From, To ui.Color }
 
 // ChartLegendPosition selects where the chart container reserves its legend.
 type ChartLegendPosition uint8

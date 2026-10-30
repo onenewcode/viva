@@ -22,6 +22,8 @@ group: guides
 | 密钥 | `app.StoreSecret`、`app.LoadSecret`、`app.DeleteSecret` |
 | 状态栏图标与面板 | `Application.AddStatusItem`、`app.WindowPanel` |
 | 等宽字体 | `app.MonospaceFamilies` |
+| Dock 角标 | `Application.SetDockBadge` |
+| 文件管理器为文件或文件夹显示的图标 | `app.FileIcon` |
 
 ## 各平台用什么实现
 
@@ -47,4 +49,5 @@ group: guides
 - 在浏览器里，剪贴板和文件选择器按设计返回 `ErrAsyncRequired`。提前返回会谎报成功，而等待会让 WebAssembly 事件循环死锁。
 - 要跟随系统的浅色或深色外观，就在绘制时读取 `app.SystemAppearance`，并只调用一次 `app.WatchSystemAppearance`，传入一个请求重绘的函数。它在事件循环线程上调用，且只在外观真的变了时调用。Linux 不监听桌面门户，而是在窗口获得焦点时重新读取一次，桌面没有给出偏好时返回 `AppearanceUnknown`；无窗口的 `Driver` 在调用 `SetSystemAppearance` 之前也返回 `AppearanceUnknown`。
 - 如果用户可以不管系统而固定选择浅色或深色，就用这个选择调用 `app.SetNativeAppearance`，这样 macOS 自己绘制的窗口按钮、菜单、文件对话框和原生文本编辑会和窗口一致；传入 `AppearanceUnknown` 就还给系统，期间 `SystemAppearance` 仍然报告系统自己的外观。
+- Dock 角标用 macOS 自己的机制：系统在应用 Dock 图标右上角画一个红色徽标并写入这段文字，尺寸也由系统决定。Windows 和 Linux 没有 Dock 图标，什么也不做；空文字表示去掉角标。
 - Linux 剪贴板读取有三秒期限，不增加空闲线程或轮询循环。

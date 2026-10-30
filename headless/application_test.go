@@ -114,3 +114,24 @@ func TestApplicationSessionIdleWindowsDoNotRepaint(t *testing.T) {
 		t.Fatalf("idle paints = %v", paints)
 	}
 }
+
+func TestDockBadgeCommandReportsWhatTheDockWasAskedToShow(t *testing.T) {
+	application := newApplicationSession(Options{Scale: 1})
+	t.Cleanup(application.closeAll)
+	closed, err := application.OpenWindow(app.Config{Title: "main", Width: 200, Height: 100}, nil, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closed.Close()
+	if text := run(t, application, "dockbadge\n"); !strings.Contains(text, `ok label=""`) {
+		t.Fatalf("unset badge: %q", text)
+	}
+	application.SetDockBadge("DEV")
+	if text := run(t, application, "dockbadge\n"); !strings.Contains(text, `ok label="DEV"`) {
+		t.Fatalf("set badge: %q", text)
+	}
+	application.SetDockBadge("")
+	if text := run(t, application, "dockbadge\n"); !strings.Contains(text, `ok label=""`) {
+		t.Fatalf("cleared badge: %q", text)
+	}
+}

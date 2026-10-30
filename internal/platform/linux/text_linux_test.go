@@ -1,6 +1,8 @@
 package linux
 
 import (
+	"bytes"
+	"fmt"
 	"math"
 	"testing"
 
@@ -106,6 +108,82 @@ func TestRasterizeFixedPitchASCIIStartsAtItsColumn(t *testing.T) {
 	}
 }
 
+func TestRasterizeLigatureRunsDoesNotAccumulateScaling(t *testing.T) {
+	services, err := newTextServices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer services.close()
+	services.useFonts(systemFonts().grayscale())
+	label := platform.TextLabel{
+		Value: "abcabc", Width: 64, Height: 24, FontSize: 16, Mono: true, CellWidth: 8,
+		Runs: []ui.TextRun{
+			{Bytes: 3, Cells: 3, Color: ui.RGB(255, 255, 255), Ligatures: true},
+			{Column: 4, Bytes: 3, Cells: 3, Color: ui.RGB(255, 255, 255), Ligatures: true},
+		},
+	}
+	want, err := services.configureLayout("abc", monoFamily(label.MonoFace), label.FontSize, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first []byte
+	for frame := range 32 {
+		pixels, _, err := services.rasterize(label, 1, 64, 24, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if frame == 0 {
+			first = pixels
+		} else if !bytes.Equal(pixels, first) {
+			t.Fatalf("frame %d changed an unchanged label's pixels", frame)
+		}
+		got, err := services.configureLayout("abc", monoFamily(label.MonoFace), label.FontSize, 0, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("frame %d left scaled text metrics: got %+v, want %+v", frame, got, want)
+		}
+	}
+	rasterAlphaBounds(t, services, label)
+}
+
+func TestRasterizeLigatureRunFitsItsCells(t *testing.T) {
+	for _, scale := range []float32{1, 1.25, 1.5, 2} {
+		for _, value := range []string{"check", "followups", "issue-draft", "workbench_workspaces_e2e-vision-conversation-smoke"} {
+			t.Run(fmt.Sprintf("%s@%g", value, scale), func(t *testing.T) {
+				services, err := newTextServices()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer services.close()
+				// The cells are narrower than the font's advance, so the fitting
+				// scale is not the identity and a reshaped layout shows up in the
+				// width the run is drawn at.
+				label := platform.TextLabel{
+					Value: value, Width: 600, Height: 28, FontSize: 14, Mono: true, CellWidth: 7,
+					Runs: []ui.TextRun{{Bytes: int32(len(value)), Cells: int32(len(value)), Color: ui.RGB(255, 255, 255), Ligatures: true}},
+				}
+				services.useFonts(systemFonts().grayscale())
+				measured, err := services.configureLayout(value, monoFamily(label.MonoFace), label.FontSize*scale, 0, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				show := services.showLayout
+				services.showLayout = func(context, layout uintptr) {
+					var logical pangoRectangle
+					services.layoutGetExtents(layout, nil, &logical)
+					if width := float32(logical.Width) / pangoScale; width != measured.Width {
+						t.Errorf("run was reshaped after fitting: measured %g, drawing %g", measured.Width, width)
+					}
+					show(context, layout)
+				}
+				rasterAlphaBoundsAt(t, services, label, scale)
+			})
+		}
+	}
+}
+
 type alphaBounds struct{ minX, minY, maxX, maxY int }
 
 func rasterAlphaBounds(t *testing.T, services *textServices, label platform.TextLabel) alphaBounds {
@@ -179,6 +257,25 @@ func BenchmarkRasterizeTextMixed(benchmark *testing.B) {
 	benchmark.ResetTimer()
 	for range benchmark.N {
 		if _, _, err := services.rasterize(label, 1, 240, 32, false); err != nil {
+			benchmark.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRasterizeLigatureRun(benchmark *testing.B) {
+	services, err := newTextServices()
+	if err != nil {
+		benchmark.Fatal(err)
+	}
+	defer services.close()
+	label := platform.TextLabel{
+		Value: "workbench_workspaces_e2e-vision-conversation-smoke", Width: 480, Height: 24, FontSize: 16, Mono: true, CellWidth: 8,
+	}
+	label.Runs = []ui.TextRun{{Bytes: int32(len(label.Value)), Cells: int32(len(label.Value)), Color: ui.RGB(255, 255, 255), Ligatures: true}}
+	benchmark.ReportAllocs()
+	benchmark.ResetTimer()
+	for range benchmark.N {
+		if _, _, err := services.rasterize(label, 1, 480, 24, false); err != nil {
 			benchmark.Fatal(err)
 		}
 	}

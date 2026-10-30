@@ -185,6 +185,7 @@ func TestGenerateUserScope(t *testing.T) {
 		`File "/oname=${APP_EXE}" "/tmp/p/fixture-notes"`, `File "/oname=${APP_ICON}" "/tmp/p/icon.ico"`,
 		`!define APP_ICON "fixture-notes.ico"`,
 		`CreateShortcut "$SMPROGRAMS\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_ICON}"`,
+		`CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_ICON}"`,
 		`WriteUninstaller "$INSTDIR\Uninstall.exe"`,
 		`!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}"`,
 		`WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${APP_NAME}"`,
@@ -196,6 +197,12 @@ func TestGenerateUserScope(t *testing.T) {
 		`VIProductVersion "2.0.1.0"`, `VIAddVersionKey /LANG=${LANG_ENGLISH} "FileVersion" "${APP_VERSION}"`,
 		`VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "ProductName" "${APP_NAME}"`,
 		`!insertmacro MUI_LANGUAGE "English"`, `!insertmacro MUI_LANGUAGE "SimpChinese"`,
+		"!define MUI_FINISHPAGE_SHOWREADME\n",
+		`!define MUI_FINISHPAGE_SHOWREADME_TEXT "$(CREATE_DESKTOP_SHORTCUT)"`,
+		`!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateDesktopShortcut`,
+		`LangString CREATE_DESKTOP_SHORTCUT ${LANG_ENGLISH} "Create a desktop shortcut"`,
+		`LangString CREATE_DESKTOP_SHORTCUT ${LANG_SIMPCHINESE} "创建桌面快捷方式"`,
+		`${IfNot} ${Errors}` + "\n" + `    WriteRegDWORD HKCU "${UNINSTALL_KEY}" "DesktopShortcut" 1`,
 		`!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"`, "/SD IDCANCEL IDRETRY retry",
 		`RMDir "$INSTDIR"`, "  SetDateSave off\n",
 	} {
@@ -210,7 +217,15 @@ func TestGenerateUserScope(t *testing.T) {
 	}
 	// Uninstall removes exactly the files written.
 	uninstall := got[strings.Index(got, `Section "Uninstall"`):]
-	for _, want := range []string{`Delete "$INSTDIR\${APP_EXE}"`, `Delete "$INSTDIR\${APP_ICON}"`, `Delete "$INSTDIR\Uninstall.exe"`, `Delete "$SMPROGRAMS\${APP_NAME}.lnk"`} {
+	for _, want := range []string{
+		`Delete "$INSTDIR\${APP_EXE}"`,
+		`Delete "$INSTDIR\${APP_ICON}"`,
+		`Delete "$INSTDIR\Uninstall.exe"`,
+		`Delete "$SMPROGRAMS\${APP_NAME}.lnk"`,
+		`ReadRegDWORD $0 HKCU "${UNINSTALL_KEY}" "DesktopShortcut"`,
+		`${If} $0 == 1`,
+		`Delete "$DESKTOP\${APP_NAME}.lnk"`,
+	} {
 		if !strings.Contains(uninstall, want) {
 			t.Errorf("the uninstaller lacks %q", want)
 		}
@@ -223,6 +238,9 @@ func TestGenerateMachineScope(t *testing.T) {
 	got := generate(t, script)
 	for _, want := range []string{
 		"RequestExecutionLevel admin\n", `InstallDir "$PROGRAMFILES64\${APP_NAME}"`, "SetShellVarContext all",
+		`!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateDesktopShortcut`,
+		`${IfNot} ${Errors}` + "\n" + `    WriteRegDWORD HKLM "${UNINSTALL_KEY}" "DesktopShortcut" 1`,
+		`ReadRegDWORD $0 HKLM "${UNINSTALL_KEY}" "DesktopShortcut"`,
 		`WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayName"`, `DeleteRegKey HKLM "${UNINSTALL_KEY}"`,
 		`ReadRegStr $0 HKLM "${UNINSTALL_KEY}" "InstallLocation"`, "SetRegView 64",
 	} {
@@ -242,7 +260,8 @@ func TestGenerateArm64AndNoIconNoURL(t *testing.T) {
 	script.Arch, script.Icon, script.URL, script.Publisher = "arm64", "", "", ""
 	got := generate(t, script)
 	for _, want := range []string{"IsWow64Process2", "43620", `!define APP_PUBLISHER "Fixture Notes"`,
-		`CreateShortcut "$SMPROGRAMS\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}"` + "\n", `"DisplayIcon" "$INSTDIR\${APP_EXE}"`} {
+		`CreateShortcut "$SMPROGRAMS\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}"` + "\n",
+		`CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}"` + "\n", `"DisplayIcon" "$INSTDIR\${APP_EXE}"`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the script lacks %q", want)
 		}

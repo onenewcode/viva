@@ -2,6 +2,7 @@ package windows
 
 import (
 	"math"
+	"syscall"
 	"testing"
 	"unsafe"
 
@@ -18,6 +19,7 @@ func TestUIAStructureABI(t *testing.T) {
 		{"VARIANT", unsafe.Sizeof(variant{}), 24},
 		{"UiaRect", unsafe.Sizeof(uiaRectangle{}), 32},
 		{"COM interface tear-off", unsafe.Sizeof(uiaInterface{}), 16},
+		{"MEMORY_BASIC_INFORMATION", unsafe.Sizeof(memoryBasicInformation{}), 48},
 	} {
 		if layout.size != layout.want {
 			t.Errorf("%s: size %d, want %d", layout.name, layout.size, layout.want)
@@ -343,5 +345,66 @@ func TestUIAUpdateCostsNothingUntilAClientAsks(t *testing.T) {
 	}
 	if len(tree.children) != 0 {
 		t.Fatal("elements exist with no client")
+	}
+}
+
+func TestUIANavigateRejectsAnUnwritableResult(t *testing.T) {
+	var result uintptr
+	if status := uiaNavigate(0, 0, uintptr(unsafe.Pointer(&result))); uint32(status) != resultElementNotAvailable {
+		t.Fatalf("valid result without a provider: status %#x, want element not available", status)
+	}
+	if status := uiaNavigate(0, 0, ^uintptr(0)); uint32(status) != resultPointer {
+		t.Fatalf("unwritable result: status %#x, want E_POINTER", status)
+	}
+}
+
+// The window's element offers IRawElementProviderFragmentRoot, whose table is
+// IUnknown followed by ElementProviderFromPoint and GetFocus: it does not
+// repeat the fragment's methods. A client that calls slot 4 of that interface
+// means GetFocus. Handing out one eleven-entry table for both interfaces made
+// UI Automation's call to ElementProviderFromPoint run Navigate with whatever
+// the registers held, which wrote through a stale pointer into the heap.
+func TestUIAFragmentRootHasItsOwnInterfaceTable(t *testing.T) {
+	tree := engagedTree(t, true, []platform.AccessibilityNode{{ID: ui.Item(1), Role: platform.A11yRoleButton}})
+	root := tree.root
+	simple := root.simplePointer()
+	query := func(iid guid) uintptr {
+		var out uintptr
+		status, _, _ := syscall.SyscallN(vtable(simple, 0), simple, uintptr(unsafe.Pointer(&iid)), uintptr(unsafe.Pointer(&out)))
+		if status != 0 {
+			t.Fatalf("QueryInterface failed: %#x", status)
+		}
+		return out
+	}
+	fragment := query(iidRawElementProviderFragment)
+	fragmentRoot := query(iidRawElementProviderFragmentRoot)
+	if fragment == fragmentRoot {
+		t.Fatal("the fragment and the fragment root are the same interface pointer")
+	}
+	if fragment != root.fragmentPointer() || fragmentRoot != root.fragmentRootPointer() {
+		t.Fatal("QueryInterface did not return the element's own interfaces")
+	}
+
+	var focused uintptr
+	if status, _, _ := syscall.SyscallN(vtable(fragmentRoot, 4), fragmentRoot, uintptr(unsafe.Pointer(&focused))); status != 0 {
+		t.Fatalf("GetFocus through the fragment root: %#x", status)
+	}
+	if focused != root.fragmentPointer() {
+		t.Errorf("GetFocus returned %#x, want the root's IRawElementProviderFragment %#x", focused, root.fragmentPointer())
+	}
+
+	var gotRoot uintptr
+	if status, _, _ := syscall.SyscallN(vtable(fragment, 8), fragment, uintptr(unsafe.Pointer(&gotRoot))); status != 0 {
+		t.Fatalf("get_FragmentRoot: %#x", status)
+	}
+	if gotRoot != root.fragmentRootPointer() {
+		t.Errorf("get_FragmentRoot returned %#x, want an IRawElementProviderFragmentRoot %#x", gotRoot, root.fragmentRootPointer())
+	}
+
+	// Elements are handed back as fragments, the window's own included.
+	var first uintptr
+	syscall.SyscallN(vtable(fragment, 3), fragment, uintptr(uiaNavigateFirstChild), uintptr(unsafe.Pointer(&first)))
+	if first != tree.children[0].fragmentPointer() {
+		t.Errorf("Navigate to the first child returned %#x, want %#x", first, tree.children[0].fragmentPointer())
 	}
 }

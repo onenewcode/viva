@@ -3,7 +3,6 @@ package windows
 import (
 	"math"
 	"sync"
-	"syscall"
 	"unicode/utf16"
 	"unsafe"
 
@@ -123,15 +122,15 @@ func initializePatternTables(unknown []uintptr) {
 func callbackFor(function any) uintptr {
 	switch function := function.(type) {
 	case func(uintptr) uintptr:
-		return syscall.NewCallback(function)
+		return guarded1(uiaFault, function)
 	case func(uintptr, uintptr) uintptr:
-		return syscall.NewCallback(function)
+		return guarded2(uiaFault, function)
 	case func(uintptr, uintptr, uintptr) uintptr:
-		return syscall.NewCallback(function)
+		return guarded3(uiaFault, function)
 	case func(uintptr, uintptr, uintptr, uintptr) uintptr:
-		return syscall.NewCallback(function)
+		return guarded4(uiaFault, function)
 	case func(uintptr, uintptr, uintptr, uintptr, uintptr) uintptr:
-		return syscall.NewCallback(function)
+		return guarded5(uiaFault, function)
 	}
 	panic("windows: unsupported UI Automation callback shape")
 }

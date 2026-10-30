@@ -145,6 +145,18 @@ func (scroller MessageScroller) Geometry() MessageScrollerGeometry {
 	return geometry
 }
 
+// OffsetForThumb maps a thumb top back to a content offset, the inverse of the
+// placement Geometry paints. With no travel the current offset is kept, so
+// pressing a track that cannot move does not move the list.
+func (geometry MessageScrollerGeometry) OffsetForThumb(thumbTop float32) float32 {
+	travel := geometry.Track.Height - geometry.Thumb.Height
+	if travel <= 0 || geometry.MaxOffset <= 0 {
+		return geometry.Offset
+	}
+	offset := (thumbTop - geometry.Track.Y) * geometry.MaxOffset / travel
+	return messageScrollerClamp(offset, 0, geometry.MaxOffset)
+}
+
 // ItemGeometry translates one caller-supplied item offset and extent. The
 // index is carried unchanged so stable application identity stays explicit.
 func (scroller MessageScroller) ItemGeometry(index int, contentOffset, extent float32) MessageScrollerItemGeometry {

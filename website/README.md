@@ -39,6 +39,11 @@ stacked vertically with independent previews and reset buttons; the production
 component source is expanded once below them.
 
 - `/` redirects to `/zh/`; `/zh/` and `/en/` open the home page.
+- `/zh/showcase/` and `/en/showcase/` show applications built with Viva as
+  cards: one window screenshot, the name, two sentences, the facts worth
+  checking and links to the product and its source. Cards, not case studies:
+  detail pages are added only when one application has more to say than a card
+  can hold.
 - `/zh/docs/<slug>/` and `/en/docs/<slug>/` hold the guides; `/zh/components/` and
   `/en/components/` index the catalog.
 - `/zh/ui/<component>/` and `/en/ui/<component>/` document each generated page.

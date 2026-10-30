@@ -462,10 +462,12 @@ size_t viva_text_line_selection(const viva_text_line *line, size_t start, size_t
 // viva_measure_mono reports the system fixed-pitch font's cell advance and line
 // height at a size.
 int viva_measure_mono(double font_size, int mono_face, double *advance, double *height);
-// viva_register_mono_family names the installed family a mono_face number stands
-// for (2 and up). viva_list_mono_families returns every installed fixed-pitch
-// family, one per line, in memory the caller frees.
-void viva_register_mono_family(int face, const char *utf8);
+// viva_register_mono_family teaches what a mono_face number (2 and up) stands for: the
+// installed family it draws in first (empty for a stack over a built-in face), whether
+// that built-in face is the classic one, and the families that draw the characters the
+// primary lacks, one name per line, in order. viva_list_mono_families returns every
+// installed fixed-pitch family, one per line, in memory the caller frees.
+void viva_register_mono_family(int face, const char *utf8, int classic, const char *fallbacks);
 char *viva_list_mono_families(void);
 
 #endif

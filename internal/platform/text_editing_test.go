@@ -63,9 +63,50 @@ func TestClipboardEditingIsAtomicAndSecure(t *testing.T) {
 			t.Fatal("secure field was changed")
 		}
 	}
-	_, changed, err := TextClipboardEvent(state, false, 'v', func() (string, error) { return "", nil }, nil)
-	if changed || err != nil {
-		t.Fatal("empty clipboard deleted selection")
+	// A clipboard with no text deletes nothing; it is reported as a paste of no
+	// text, for a field that takes pictures.
+	event, changed, err := TextClipboardEvent(state, false, 'v', func() (string, error) { return "", nil }, nil)
+	if !changed || err != nil || event.Kind != TextPasteNoText || event.Text != "" || event.HasReplacement {
+		t.Fatalf("empty clipboard paste = %+v changed=%v err=%v", event, changed, err)
+	}
+	editor := text.NewEditor("secret")
+	editor.SetSelection(text.Range{End: 6})
+	event.Apply(editor)
+	if editor.String() != "secret" {
+		t.Fatalf("a paste of no text edited the field to %q", editor.String())
+	}
+	// A clipboard that cannot be read reports the error and sends nothing.
+	if _, changed, err := TextClipboardEvent(state, false, 'v', func() (string, error) { return "", errors.New("busy") }, nil); changed || err == nil {
+		t.Fatalf("an unreadable clipboard: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestAppleEditingKeyMap(t *testing.T) {
+	for _, tc := range []struct {
+		key     input.Key
+		mods    input.Modifiers
+		command TextCommand
+	}{
+		{input.KeyLeft, input.ModifierAlt, TextMoveWordLeft},
+		{input.KeyRight, input.ModifierAlt | input.ModifierShift, TextMoveWordRightAndModifySelection},
+		{input.KeyBackspace, input.ModifierAlt, TextDeleteWordBackward},
+		{input.KeyDelete, input.ModifierAlt, TextDeleteWordForward},
+		{input.KeyLeft, input.ModifierMeta, TextMoveLineStart},
+		{input.KeyRight, input.ModifierMeta | input.ModifierShift, TextMoveLineEndAndModifySelection},
+		{input.KeyUp, input.ModifierMeta, TextMoveDocumentStart},
+		{input.KeyDown, input.ModifierMeta | input.ModifierShift, TextMoveDocumentEndAndModifySelection},
+		{input.KeyBackspace, input.ModifierMeta, TextDeleteToLineStart},
+	} {
+		got, ok := AppleTextEditingCommand(KeyEvent{Key: tc.key, Modifiers: tc.mods})
+		if !ok || got != tc.command {
+			t.Fatalf("%+v: %v %v", tc, got, ok)
+		}
+	}
+	// Plain arrows, Control (Windows and Linux) and mixed chords are not Apple's.
+	for _, mods := range []input.Modifiers{0, input.ModifierShift, input.ModifierControl, input.ModifierAlt | input.ModifierMeta, input.ModifierAlt | input.ModifierControl} {
+		if command, ok := AppleTextEditingCommand(KeyEvent{Key: input.KeyLeft, Modifiers: mods}); ok {
+			t.Fatalf("modifiers %v mapped to %v", mods, command)
+		}
 	}
 }
 

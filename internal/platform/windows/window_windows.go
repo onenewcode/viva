@@ -94,6 +94,7 @@ type windowState struct {
 	textRectangles                         []render.Rectangle
 	textEngine                             ui.TextEngine
 	textSpans                              []ui.TextSpan
+	textRuns                               []ui.TextRun
 	captionPress                           captionPress
 	imeComposing                           bool
 	pendingHighSurrogate                   uint16
@@ -145,7 +146,7 @@ type nativeWindow struct {
 // reportFrame tells the application where its content area is now, in logical
 // pixels of the window's display. It reports only changes.
 func (state *windowState) reportFrame() {
-	if !state.ready || state.config.OnFrameChange == nil || state.window == 0 || state.zoomed() {
+	if !state.ready || state.config.OnFrameChange == nil || state.window == 0 || state.minimized || state.zoomed() {
 		return
 	}
 	var client rect
@@ -364,6 +365,7 @@ func windowProc(window, kind, first, second uintptr) (result uintptr) {
 	active.Store(state)
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			platform.ReportFault("window procedure", recovered)
 			state.fail(fmt.Errorf("windows: event handler panicked: %v", recovered))
 			result = 0
 		}
@@ -374,28 +376,7 @@ func windowProc(window, kind, first, second uintptr) (result uintptr) {
 		state.constrainTracking((*minMaxInfo)(pointer(second)))
 		return 0
 	case wmDestroy:
-		state.stopCaretTimer()
-		state.closeDrop()
-		state.accessibility.close()
-		state.renderer.close()
-		state.closeText()
-		if state.config.Waker != nil && state.config.OnRedraw != nil {
-			state.config.Waker.Unbind()
-		}
-		state.destroyIcons()
-		removeNotificationIcon(window)
-		windowStates.Delete(window)
-		state.window = 0
-		state.application.windows--
-		if state.application.firstErr == nil && state.err != nil {
-			state.application.firstErr = state.err
-		}
-		if state.config.OnClosed != nil {
-			state.config.OnClosed()
-		}
-		if state.application.windows == 0 {
-			active.CompareAndSwap(state, nil)
-		}
+		state.destroyed(window)
 		return 0
 	case wmAllowClose:
 		destroyWindow.Call(window)
@@ -786,6 +767,47 @@ func (state *windowState) frameWithText(frame platform.Frame, err error, nativeV
 		}
 	}
 }
+
+// destroyed releases what the window held when the system destroys it. The
+// window count goes down however a step fails: a count left standing keeps the
+// message loop running with no window to show, and the single-instance claim held
+// by a process nobody can see.
+func (state *windowState) destroyed(window uintptr) {
+	released := false
+	release := func() {
+		if released {
+			return
+		}
+		released = true
+		windowStates.Delete(window)
+		state.window = 0
+		state.application.windows--
+	}
+	defer func() {
+		release()
+		if state.application.windows == 0 {
+			active.CompareAndSwap(state, nil)
+		}
+	}()
+	state.stopCaretTimer()
+	state.closeDrop()
+	state.accessibility.close()
+	state.renderer.close()
+	state.closeText()
+	if state.config.Waker != nil && state.config.OnRedraw != nil {
+		state.config.Waker.Unbind()
+	}
+	state.destroyIcons()
+	removeNotificationIcon(window)
+	release()
+	if state.application.firstErr == nil && state.err != nil {
+		state.application.firstErr = state.err
+	}
+	if state.config.OnClosed != nil {
+		state.config.OnClosed()
+	}
+}
+
 func (state *windowState) fail(err error) {
 	if state.err == nil {
 		state.err = err

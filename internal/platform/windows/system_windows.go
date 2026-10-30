@@ -92,6 +92,7 @@ var shellNotifyIcon = shell.NewProc("Shell_NotifyIconW")
 var loadIcon = user.NewProc("LoadIconW")
 var setCursorNative = user.NewProc("SetCursor")
 var messageBeep = user.NewProc("MessageBeep")
+var messageBox = user.NewProc("MessageBoxW")
 var openClipboard = user.NewProc("OpenClipboard")
 var closeClipboard = user.NewProc("CloseClipboard")
 var emptyClipboard = user.NewProc("EmptyClipboard")
@@ -452,6 +453,21 @@ func PlaySystemSound(sound uint8) error {
 		return windowsCallError("play system sound", callErr)
 	}
 	return nil
+}
+
+// ShowFatalError shows a message box that blocks until it is dismissed. It does
+// not need a window or a message loop of its own.
+func ShowFatalError(title, message string) {
+	titleText, err := syscall.UTF16PtrFromString(title)
+	if err != nil {
+		titleText, _ = syscall.UTF16PtrFromString("Error")
+	}
+	messageText, err := syscall.UTF16PtrFromString(message)
+	if err != nil {
+		return
+	}
+	const iconError, setForeground, topMost = 0x10, 0x10000, 0x40000
+	messageBox.Call(0, uintptr(unsafe.Pointer(messageText)), uintptr(unsafe.Pointer(titleText)), iconError|setForeground|topMost)
 }
 
 // SendNotification shows a balloon from the notification area. The icon that

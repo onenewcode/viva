@@ -1,6 +1,7 @@
 package windows
 
 import (
+	"github.com/vivaui/viva/internal/platform"
 	"sort"
 	"sync"
 	"syscall"
@@ -43,7 +44,13 @@ var (
 	fontEnumCallbackPtr uintptr
 )
 
-func fontEnumCallback(logFont *enumLogFont, metric *newTextMetric, fontType uint32, _ uintptr) uintptr {
+func fontEnumCallback(logFont *enumLogFont, metric *newTextMetric, fontType uint32, _ uintptr) (result uintptr) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			platform.ReportFault("font enumeration", recovered)
+			result = 1
+		}
+	}()
 	if logFont == nil || metric == nil || fontType&rasterFontType != 0 || metric.PitchAndFamily&tmpfFixedPitch != 0 {
 		return 1
 	}

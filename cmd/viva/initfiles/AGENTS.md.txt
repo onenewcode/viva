@@ -49,7 +49,7 @@ m.view.Draw(canvas, theme, bounds, func(f *flex.Frame) {
 - Containers: `Row` (left to right), `Column` (top to bottom), `Stack` (on top of each
   other), `Grid(minCell)` (as many equal columns as fit), `Scroll(offset)` (a clipped
   column taller than itself). Leaves: `Text`, `Paragraph`, `Wrap`, `Spacer`, `Divider`, `Icon`,
-  `Button`, `Checkbox`, `Switch`, `Slot`, `Progress(fraction)` (a bar; `.Indeterminate()` for unknown length),
+  `Image(bitmap)` (a `ui.Bitmap` such as `app.FileIcon` returns, 16 px square unless sized), `Button`, `Checkbox`, `Switch`, `Slot`, `Progress(fraction)` (a bar; `.Indeterminate()` for unknown length),
   `Spinner()`, `Splitter(id, &state)` (see Keys, drag and the mouse), `Slider(id, &state)` (a number picker, see below).
 - Size: nothing = as big as its content; `Width`, `Height`, `Size` fix it; `FillWidth`,
   `FillHeight`, `Fill` take the room; `Grow(n)` shares free room along the container;

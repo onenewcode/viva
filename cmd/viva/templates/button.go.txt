@@ -52,6 +52,7 @@ type Button struct {
 	bounds   ui.Rect
 	state    ButtonState
 	size     ButtonSize
+	icon     ui.Icon
 	disabled bool
 }
 
@@ -71,6 +72,17 @@ func BeginButton(canvas *ui.Canvas, theme ui.Theme, id ui.ID, bounds ui.Rect) Bu
 func (button Button) WithState(state ButtonState) Button {
 	button.state = state
 	return button
+}
+
+// WithIcon adds a leading vector icon. At an icon size the label is hidden
+// visually and retained as the accessible name and hover hint.
+func (button Button) WithIcon(icon ui.Icon) Button {
+	button.icon = icon
+	return button
+}
+
+func (button Button) hasIcon() bool {
+	return len(button.icon.Commands) > 0 || len(button.icon.Layers) > 0
 }
 
 // Size selects an official size variant.
@@ -113,10 +125,33 @@ func (button Button) Disabled() Button {
 	return button
 }
 
+// The leading icon keeps one square, one gap and one vertical inset in every
+// size, so SizeToFit and paint agree and a narrow control shrinks the icon
+// instead of drawing it past its own edge.
+const (
+	buttonIconSize  = 16
+	buttonIconGap   = 8
+	buttonIconInset = 8
+)
+
+func buttonIconExtent(height float32) float32 {
+	return max(0, min(float32(buttonIconSize), height-buttonIconInset))
+}
+
 // SizeToFit widens the button to its label plus the selected size padding.
 func (button Button) SizeToFit(label string) Button {
-	height, padding, fontSize, _ := button.geometry()
+	height, padding, fontSize, iconOnly := button.geometry()
 	button.bounds.Width = button.canvas.TextWidthWeight(label, fontSize, ui.WeightMedium) + padding*2
+	if button.hasIcon() {
+		if iconOnly {
+			button.bounds.Width = height
+		} else {
+			button.bounds.Width += buttonIconExtent(height)
+			if label != "" {
+				button.bounds.Width += buttonIconGap
+			}
+		}
+	}
 	button.bounds.Height = height
 	return button
 }
@@ -302,10 +337,29 @@ func (button Button) paint(label string, variant ButtonVariant) ButtonResult {
 	} else if style.filled {
 		button.canvas.Rounded(button.bounds, radius, style.background)
 	}
-	paintButtonLabel(button.canvas, label, button.bounds, fontSize, style)
+	hint := ""
+	if button.hasIcon() {
+		size := min(buttonIconExtent(height), button.bounds.Width)
+		width := size
+		if !iconOnly && label != "" {
+			width = min(button.bounds.Width, width+buttonIconGap+button.canvas.TextWidthWeight(label, fontSize, ui.WeightMedium))
+		}
+		x := button.bounds.X + (button.bounds.Width-width)/2
+		if size > 0 {
+			button.canvas.DrawIcon(button.icon, ui.Rect{X: x, Y: button.bounds.Y + (height-size)/2, Width: size, Height: size}, style.foreground)
+		}
+		if iconOnly {
+			hint = label
+		} else if label != "" {
+			text := ui.Rect{X: x + size + buttonIconGap, Y: button.bounds.Y, Width: max(0, width-size-buttonIconGap), Height: height}
+			paintButtonLabel(button.canvas, label, text, fontSize, style)
+		}
+	} else {
+		paintButtonLabel(button.canvas, label, button.bounds, fontSize, style)
+	}
 	if !button.id.IsZero() {
 		button.canvas.HitWithOptions(button.id, button.bounds, label, ui.HitOptions{
-			Role: ui.RoleButton, Disabled: button.disabled,
+			Role: ui.RoleButton, Disabled: button.disabled, Hint: hint,
 		})
 	}
 	return result

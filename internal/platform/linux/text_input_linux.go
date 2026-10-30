@@ -308,6 +308,14 @@ func (state *linuxTextInput) prefixWidth(shown string, values []rune, end int, s
 	return state.engine.Caret(shown, size, 0, len(string(values[:end]))), nil
 }
 
+// ownsChord reports whether the focused field takes this key itself, ahead of the
+// application's shortcuts: the clipboard chords of a field that is not a terminal,
+// as on Windows. Otherwise an application's own Paste binding would take Control+V
+// from the box the person is typing in.
+func (state *linuxTextInput) ownsChord(event platform.KeyEvent) bool {
+	return state != nil && state.enabled && !state.input.Terminal && platform.TextClipboardAction(event) != 0
+}
+
 func (state *linuxTextInput) key(event platform.KeyEvent) (platform.Frame, bool, error) {
 	if !state.enabled {
 		return platform.Frame{}, false, nil
@@ -321,6 +329,15 @@ func (state *linuxTextInput) key(event platform.KeyEvent) (platform.Frame, bool,
 	}
 	if command, ok := platform.TextHistoryCommand(event); ok {
 		frame, err := state.textEvent(platform.TextEvent{Kind: platform.TextCommandEvent, Command: command})
+		return frame, true, err
+	}
+	if action := platform.TextClipboardAction(event); action != 0 {
+		// A clipboard that cannot be read or written leaves the field as it is.
+		clipboard, changed, err := platform.TextClipboardEvent(state.state, state.input.Secure, action, ClipboardText, SetClipboardText)
+		if err != nil || !changed {
+			return platform.Frame{}, true, nil
+		}
+		frame, err := state.textEvent(clipboard)
 		return frame, true, err
 	}
 	command := platform.TextCommand(0)

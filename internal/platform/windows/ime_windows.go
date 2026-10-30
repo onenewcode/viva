@@ -11,6 +11,7 @@ import (
 	"github.com/vivaui/viva/internal/platform"
 	"github.com/vivaui/viva/internal/render"
 	"github.com/vivaui/viva/internal/scene"
+	"github.com/vivaui/viva/internal/textmetrics"
 	"github.com/vivaui/viva/text"
 	"github.com/vivaui/viva/ui"
 )
@@ -118,35 +119,50 @@ func (state *windowState) updateTextVisuals() error {
 	}
 	input := &state.textInput
 	caretX := state.textCaret(input.FontSize, state.textCaretIndex())
-	textWidth := state.textEngine.Width(state.textDisplayValue(), input.FontSize, 0)
+	textWidth := state.textWidth()
 	visibleWidth := max(1, input.Width-textCaretWidth)
 	state.textScroll = max(0, min(state.textScroll, caretX, max(0, textWidth-visibleWidth)))
 	if caretX-state.textScroll > visibleWidth {
 		state.textScroll = caretX - visibleWidth
 	}
 	originX := input.X - state.textScroll
-	state.textLabels[state.baseTextLabelCount] = platform.TextLabel{
+	label := platform.TextLabel{
 		Value: state.textDisplayValue(), X: originX, Y: input.Y,
 		Width:  max(input.Width+state.textScroll, textWidth+textCaretWidth),
 		Height: input.Height, FontSize: input.FontSize, Color: input.Color, Layer: input.Layer,
 		Clipped: true, Clip: ui.Rect{X: input.X, Y: input.Y, Width: input.Width, Height: input.Height},
 	}
-	selection := state.textState.Selection
-	selectionStart, selectionEnd := state.textExtent(input.FontSize, selection)
-	base := state.baseRectangleCount
-	state.textRectangles[base] = render.Rectangle{
-		Bounds: scene.Rect{X: originX + selectionStart, Y: input.Y, Width: selectionEnd - selectionStart, Height: input.Height},
-		Color:  scene.Color{Red: 0.22, Green: 0.48, Blue: 1, Alpha: 0.34},
-		Layer:  input.Layer,
+	if input.Terminal {
+		// A terminal's preedit stands on the terminal's cells, in its fixed-pitch font,
+		// not on the advances of the system UI font.
+		color := ui.Color{Red: float32(input.Color.Red), Green: float32(input.Color.Green), Blue: float32(input.Color.Blue), Alpha: float32(input.Color.Alpha)}
+		state.textRuns = platform.TerminalPreeditRuns(state.textRuns[:0], label.Value, color)
+		label.Mono, label.MonoFace, label.CellWidth, label.Runs = true, input.MonoFace, terminalCellWidth(input.FontSize), state.textRuns
 	}
+	state.textLabels[state.baseTextLabelCount] = label
+	base := state.baseRectangleCount
 	caretHeight := min(input.Height, input.FontSize*1.35)
 	caretColor := scene.Color{Red: float32(input.Color.Red), Green: float32(input.Color.Green), Blue: float32(input.Color.Blue), Alpha: float32(input.Color.Alpha)}
+	state.textRectangles[base] = render.Rectangle{}
 	state.textRectangles[base+1] = render.Rectangle{}
-	if state.caretVisible {
-		state.textRectangles[base+1] = render.Rectangle{
-			Bounds: scene.Rect{X: originX + caretX, Y: input.Y + (input.Height-caretHeight)/2, Width: textCaretWidth, Height: caretHeight},
-			Color:  caretColor,
+	// A terminal is a preedit surface with a cursor of its own: the native
+	// editor draws the composition only, never a caret or a selection (see
+	// platform.TextInput.Terminal), which would otherwise blink in the cursor's
+	// cell.
+	if !input.Terminal {
+		selection := state.textState.Selection
+		selectionStart, selectionEnd := state.textExtent(input.FontSize, selection)
+		state.textRectangles[base] = render.Rectangle{
+			Bounds: scene.Rect{X: originX + selectionStart, Y: input.Y, Width: selectionEnd - selectionStart, Height: input.Height},
+			Color:  scene.Color{Red: 0.22, Green: 0.48, Blue: 1, Alpha: 0.34},
 			Layer:  input.Layer,
+		}
+		if state.caretVisible {
+			state.textRectangles[base+1] = render.Rectangle{
+				Bounds: scene.Rect{X: originX + caretX, Y: input.Y + (input.Height-caretHeight)/2, Width: textCaretWidth, Height: caretHeight},
+				Color:  caretColor,
+				Layer:  input.Layer,
+			}
 		}
 	}
 	state.textRectangles[base+2] = render.Rectangle{}
@@ -199,6 +215,20 @@ func (state *windowState) textCaretIndex() int {
 	return state.textState.Selection.End
 }
 
+// textWidth is the width of the input's display value.
+func (state *windowState) textWidth() float32 {
+	if state.textInput.Terminal {
+		return state.textCaret(state.textInput.FontSize, utf8.RuneCountInString(state.textDisplayValue()))
+	}
+	return state.textEngine.Width(state.textDisplayValue(), state.textInput.FontSize, 0)
+}
+
+// terminalCellWidth is the width of one terminal cell at a font size: the pitch every
+// platform's fixed-pitch text is placed on (see ui.Canvas.MonoCellSize).
+func terminalCellWidth(size float32) float32 {
+	return size * textmetrics.MonoAdvance
+}
+
 // textByte is the byte offset of the rune index in the text input's display value.
 func (state *windowState) textByte(runeIndex int) int {
 	value := state.textDisplayValue()
@@ -212,6 +242,9 @@ func (state *windowState) textByte(runeIndex int) int {
 
 // textCaret is the x of the caret before the rune index, from the left of the input.
 func (state *windowState) textCaret(size float32, runeIndex int) float32 {
+	if state.textInput.Terminal {
+		return float32(platform.TerminalPreeditColumn(state.textDisplayValue(), runeIndex)) * terminalCellWidth(size)
+	}
 	return state.textEngine.Caret(state.textDisplayValue(), size, 0, state.textByte(runeIndex))
 }
 
@@ -219,6 +252,9 @@ func (state *windowState) textCaret(size float32, runeIndex int) float32 {
 // rectangle a selection or a composition underline is drawn as. A range with text of
 // both directions is drawn from its leftmost to its rightmost glyph.
 func (state *windowState) textExtent(size float32, runes text.Range) (left, right float32) {
+	if state.textInput.Terminal {
+		return state.textCaret(size, runes.Start), state.textCaret(size, runes.End)
+	}
 	state.textSpans = state.textEngine.Selection(state.textSpans[:0], state.textDisplayValue(), size, 0, state.textByte(runes.Start), state.textByte(runes.End))
 	if len(state.textSpans) == 0 {
 		return 0, 0
@@ -508,9 +544,16 @@ func (state *windowState) cancelComposition() {
 	releaseInputContext.Call(state.window, context)
 }
 
+// caretBlinks reports whether a native caret belongs on screen: the window has
+// the keyboard and the input is not a terminal preedit surface, which draws its
+// own cursor and asks for no caret (see platform.TextInput.Terminal).
+func (state *windowState) caretBlinks() bool {
+	return state.textEnabled && state.focused && !state.textInput.Terminal
+}
+
 func (state *windowState) restartCaretTimer() error {
 	state.stopCaretTimer()
-	if !state.textEnabled || !state.focused || state.window == 0 {
+	if !state.caretBlinks() || state.window == 0 {
 		return nil
 	}
 	interval, _, _ := getCaretBlinkTime.Call()
@@ -562,20 +605,21 @@ func (state *windowState) setCaretVisible(visible bool) {
 }
 
 func (state *windowState) handleComposition(flags uintptr) {
+	// An input method that has no context to give, or a composition string it
+	// cannot report, loses that one composition. Closing the window over it would
+	// end the whole session for a password typed through a third-party IME.
 	context, _, _ := getInputContext.Call(state.window)
 	if context == 0 {
-		state.fail(fmt.Errorf("windows: acquire IME context"))
 		return
 	}
 	defer releaseInputContext.Call(state.window, context)
 	if flags&resultString != 0 {
 		value, err := compositionText(context, resultString)
-		if err != nil {
-			state.fail(err)
-			return
-		}
 		state.imeComposing = false
 		state.imeHasTarget = false
+		if err != nil {
+			return
+		}
 		state.handleTextEvent(platform.TextEvent{Kind: platform.TextInsert, Text: value})
 		return
 	}
@@ -584,7 +628,6 @@ func (state *windowState) handleComposition(flags uintptr) {
 	}
 	value, err := compositionText(context, compositionString)
 	if err != nil {
-		state.fail(err)
 		return
 	}
 	state.imeTarget, state.imeHasTarget = compositionTarget(context, value)

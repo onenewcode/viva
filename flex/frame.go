@@ -47,6 +47,7 @@ const (
 	kindSpinner
 	kindSplitter
 	kindSlider
+	kindImage
 )
 
 type direction uint8
@@ -194,6 +195,7 @@ type Frame struct {
 	textareas  []components.TextareaSnapshot
 	segmented  []segmented
 	choices    []components.SegmentOption // the options Choice builds, shared by the frame
+	images     []ui.Bitmap                // what each Image element draws, indexed by its aux
 	exts       []extra                    // exts[0] is never written: an element without extras points at it
 	floats     []int32                    // the Popups, which belong to no container
 	lines      []string
@@ -229,6 +231,7 @@ func (view *View) Begin(canvas *ui.Canvas, theme ui.Theme, bounds ui.Rect) *Fram
 	f.lines = f.lines[:0]
 	f.exts = append(f.exts[:0], extra{})
 	f.inputs, f.groups, f.textareas, f.segmented, f.choices = f.inputs[:0], f.groups[:0], f.textareas[:0], f.segmented[:0], f.choices[:0]
+	f.images = f.images[:0]
 	f.floats = f.floats[:0]
 	f.scratch.reset()
 	f.widgets.reset()
@@ -294,6 +297,7 @@ func (f *Frame) trim() {
 	f.textareas = trimFlexCapacity(f.textareas)
 	f.segmented = trimFlexCapacity(f.segmented)
 	f.choices = trimFlexCapacity(f.choices)
+	f.images = trimFlexCapacity(f.images)
 	f.exts = trimFlexCapacity(f.exts)
 	f.floats = trimFlexCapacity(f.floats)
 	f.lines = trimFlexCapacity(f.lines)
@@ -444,6 +448,18 @@ func (f *Frame) Icon(icon ui.Icon) Box {
 	n := &f.nodes[b.i]
 	f.extra(b.i).icon = icon
 	n.color = f.theme.Foreground
+	return b
+}
+
+// Image adds a bitmap, 16 pixels square unless given a size, scaled to fill the
+// element's rectangle. It is the way to show a picture the application draws or
+// asks the system for, such as app.FileIcon, among text and icons; the bitmap
+// is not copied, so its pixels must stay unchanged while the page is on screen
+// (see ui.Bitmap). An empty or invalid bitmap leaves the room blank.
+func (f *Frame) Image(bitmap ui.Bitmap) Box {
+	b := f.box(kindImage)
+	f.nodes[b.i].aux = int32(len(f.images))
+	f.images = append(f.images, bitmap)
 	return b
 }
 

@@ -646,6 +646,9 @@ func (driver *Driver) textKey(key ui.Key, modifiers ui.Modifiers) error {
 	if command, ok := platform.TextEditingCommand(editKey); ok {
 		return driver.textEvent(platform.TextEvent{Kind: platform.TextCommandEvent, Command: command})
 	}
+	if command, ok := platform.AppleTextEditingCommand(editKey); ok {
+		return driver.textEvent(platform.TextEvent{Kind: platform.TextCommandEvent, Command: command})
+	}
 	extend := modifiers&ui.ModifierShift != 0
 	var event platform.TextEvent
 	switch key {

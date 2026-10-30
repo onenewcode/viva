@@ -102,15 +102,84 @@ func TextEditingCommand(event KeyEvent) (TextCommand, bool) {
 	return 0, false
 }
 
+// AppleTextEditingCommand maps the macOS navigation chords AppKit's text system
+// turns into commands: Option with Left and Right moves by word and with Backspace
+// and Delete removes one; Command with Left and Right goes to the ends of the line,
+// with Up and Down to the ends of the text, and with Backspace removes to the line
+// start. Shift extends a move. Command with Forward Delete is bound to nothing. A line is the text up to a newline; a
+// field that wraps and lays its own rows out takes Command with an arrow as a key
+// event instead. The native macOS backend gets the same commands from AppKit's
+// selectors, so this is for the headless driver, which has no AppKit; it is not
+// TextEditingCommand, whose Control chords are what Windows and Linux use.
+func AppleTextEditingCommand(event KeyEvent) (TextCommand, bool) {
+	shift := event.Modifiers&input.ModifierShift != 0
+	switch event.Modifiers &^ input.ModifierShift {
+	case input.ModifierAlt:
+		switch event.Key {
+		case input.KeyLeft:
+			if shift {
+				return TextMoveWordLeftAndModifySelection, true
+			}
+			return TextMoveWordLeft, true
+		case input.KeyRight:
+			if shift {
+				return TextMoveWordRightAndModifySelection, true
+			}
+			return TextMoveWordRight, true
+		case input.KeyBackspace:
+			if !shift {
+				return TextDeleteWordBackward, true
+			}
+		case input.KeyDelete:
+			if !shift {
+				return TextDeleteWordForward, true
+			}
+		}
+	case input.ModifierMeta:
+		switch event.Key {
+		case input.KeyLeft:
+			if shift {
+				return TextMoveLineStartAndModifySelection, true
+			}
+			return TextMoveLineStart, true
+		case input.KeyRight:
+			if shift {
+				return TextMoveLineEndAndModifySelection, true
+			}
+			return TextMoveLineEnd, true
+		case input.KeyUp:
+			if shift {
+				return TextMoveDocumentStartAndModifySelection, true
+			}
+			return TextMoveDocumentStart, true
+		case input.KeyDown:
+			if shift {
+				return TextMoveDocumentEndAndModifySelection, true
+			}
+			return TextMoveDocumentEnd, true
+		case input.KeyBackspace:
+			if !shift {
+				return TextDeleteToLineStart, true
+			}
+		}
+	}
+	return 0, false
+}
+
 // TextClipboardEvent performs clipboard I/O before returning an edit. A failed
 // read/write never changes the document, so a field with no selection and a broken
 // pasteboard keeps its text; secure fields never copy or cut. A cut is an empty
-// TextPaste, which the editor applies as a delete in the same undo unit.
+// TextPaste, which the editor applies as a delete in the same undo unit. A paste
+// with no text on the clipboard is a TextPasteNoText, so that a field which also
+// takes pictures can look for one.
 func TextClipboardEvent(state TextState, secure bool, action byte, read func() (string, error), write func(string) error) (TextEvent, bool, error) {
 	if action == 'v' {
 		value, err := read()
-		if err != nil || value == "" {
+		if err != nil {
 			return TextEvent{}, false, err
+		}
+		if value == "" {
+			return TextEvent{Kind: TextPasteNoText}, true, nil
 		}
 		return TextEvent{Kind: TextPaste, Text: value}, true, nil
 	}

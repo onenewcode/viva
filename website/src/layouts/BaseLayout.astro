@@ -10,7 +10,7 @@ import SearchDialog from '../components/SearchDialog.svelte';
 import '../styles/global.css';
 import { locales, languageNames, defaultLocale, componentsPath, type Locale } from '../lib/i18n';
 import { siteText } from '../lib/site';
-import { homePath, docsPath, apiPath, type Section } from '../lib/routes';
+import { homePath, docsPath, apiPath, showcasePath, type Section } from '../lib/routes';
 
 interface Props {
   title: string;
@@ -29,6 +29,7 @@ const text = siteText(locale);
 const navigation = [
   { section: 'docs', href: docsPath(locale), label: text.navDocs },
   { section: 'components', href: componentsPath(locale), label: text.navComponents },
+  { section: 'showcase', href: showcasePath(locale), label: text.navShowcase },
   { section: 'api', href: apiPath(locale), label: text.navApi },
 ] as const;
 

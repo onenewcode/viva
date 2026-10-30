@@ -162,8 +162,8 @@ func (frame *vulkanFrame) record(renderer *vulkanRenderer, command uintptr, exte
 	scale := renderer.pixelScale()
 	scratch.viewport = vkViewport{Width: float32(extent.Width), Height: float32(extent.Height), MaximumDepth: 1}
 	renderer.api.cmdSetViewport(command, 0, 1, &scratch.viewport)
-	scratch.sceneFrame = [4]float32{float32(extent.Width) / scale, float32(extent.Height) / scale, 1 / scale}
-	renderer.api.cmdPushConstants(command, renderer.scene.pipelineLayout, vkShaderStageVertex, 0, uint32(unsafe.Sizeof(scratch.sceneFrame)), unsafe.Pointer(&scratch.sceneFrame[0]))
+	scratch.sceneFrame = [6]float32{float32(extent.Width) / scale, float32(extent.Height) / scale, 1 / scale, 0, 0, 0}
+	renderer.api.cmdPushConstants(command, renderer.scene.pipelineLayout, vkShaderStageVertex|vkShaderStageFragment, 0, uint32(unsafe.Sizeof(scratch.sceneFrame)), unsafe.Pointer(&scratch.sceneFrame[0]))
 	scratch.offset = 0
 	renderer.api.cmdBindVertexBuffers(command, 0, 1, &frame.buffer, &scratch.offset)
 	renderer.api.cmdBindPipeline(command, vkPipelineBindPointGraphics, frame.cutPipeline)

@@ -14,6 +14,8 @@ semantics; adapters never report a fabricated success.
 | Open external URL | `NSWorkspace` | `ShellExecuteW` | installed `xdg-open` or `gio` | `window.open`; popup rejection is `ErrUserGestureRequired` |
 | System sound | AppKit system sounds | `MessageBeep` | `canberra-gtk-play` or X11 bell | `ErrUnsupported` |
 | Notification | UserNotifications; app bundle ID and permission required | shell notification icon; running window required | the desktop's `org.freedesktop.Notifications` service, under the executable's name; installed `notify-send` without one; no click callback | only when Notification permission is already granted |
+| Dock badge (`Application.SetDockBadge`) | `NSDockTile.badgeLabel`: the red label macOS draws at the tile's top corner, and an empty label removes it | nothing to do: the taskbar badge a program can set is a picture, not a label | nothing to do: a launcher entry has no badge | nothing to do |
+| File icon (`FileIcon`, returns `ui.Bitmap`) | `NSWorkspace.iconForFile:`: the icon Finder shows, an application bundle's own included | `ErrUnsupported` | `ErrUnsupported` | `ErrUnsupported` |
 | Preferred languages (`PreferredLanguages`, returns `[]string`) | `NSLocale.preferredLanguages` | `GetUserPreferredUILanguages` | `LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, `LANG`; the C locale reports nothing | `navigator.languages` |
 | System appearance (`SystemAppearance`, `WatchSystemAppearance`; returns `Appearance`) | the application's effective appearance, watched by KVO | the `AppsUseLightTheme` setting, changes heard as `WM_SETTINGCHANGE` | the settings portal's `org.freedesktop.appearance` `color-scheme`, else the XSETTINGS manager, `GTK_THEME`, GTK's `settings.ini` and KDE's `ColorScheme`; changes heard as the portal's `SettingChanged` (one session-bus connection the event loop polls, open only while something watches) and as the XSETTINGS manager's property change; unknown when none says | `prefers-color-scheme`, watched with `matchMedia` |
 | Native look (`SetNativeAppearance`) | `NSApplication.appearance`: window buttons, menus, file dialogs and native text editing follow it | nothing to do: Viva draws the window buttons | nothing to do: Viva draws the window buttons | nothing to do |
@@ -31,6 +33,21 @@ semantics; adapters never report a fabricated success.
 - `ErrPermissionDenied` means the user or system denied the capability.
 
 Callers should use `errors.Is` rather than matching error strings.
+
+## Pasting a picture into a text field
+
+A text field cannot hold a picture, so a paste (Command or Control+V, Shift+Insert)
+with no text on the clipboard changes nothing. The field is told: its
+`TextInput.OnEvent` receives a `TextPasteNoText` event and may then read the
+picture with `ClipboardImagePNG`, as a chat box that accepts a screenshot does.
+`TextEvent.Apply` ignores the event, so an ordinary editor needs no code for it,
+and a terminal never receives it. macOS, Windows, Linux and the headless driver
+send it; the browser sends it from the `paste` event when the clipboard data has
+no `text/plain` (not yet exercised in a browser).
+
+On Linux a focused text field that is not a terminal also takes Control+C, Control+X
+and Control+V (and the Insert and Delete forms) itself, ahead of `OnShortcut`, as
+it does on Windows; before, those chords reached only the application.
 
 ## Linux Boundary
 

@@ -44,6 +44,30 @@ for (const locale of ['zh', 'en']) {
     assert.ok(index.entries.some(entry => entry.kind === 'guide' && entry.href === `/${locale}/docs/getting-started/`), 'no getting-started guide');
     for (const entry of index.entries) assert.match(entry.href, /^\/[a-z]{2}\//, `bad href ${entry.href}`);
   });
+
+  test(`${locale} header links the showcase and marks it current on its own page`, () => {
+    const navigation = html => html.slice(html.indexOf('class="header-navigation"'), html.indexOf('class="header-end"'));
+    const home = navigation(readPage(`${locale}/`));
+    assert.ok(home.includes(`href="/${locale}/showcase/"`), 'no showcase link in the header');
+    assert.ok(home.includes(locale === 'zh' ? '案例' : 'Showcase'), 'no showcase label in the header');
+    assert.ok(!home.includes(`href="/${locale}/showcase/" aria-current`), 'showcase is current on the home page');
+    const page = navigation(readPage(`${locale}/showcase/`));
+    assert.match(page, new RegExp(`href="/${locale}/showcase/" aria-current="page"`), 'showcase is not current on its own page');
+  });
+
+  test(`${locale} showcase shows both applications as cards with their screenshots and links`, () => {
+    const html = readPage(`${locale}/showcase/`);
+    assert.ok(html.includes(`<html lang="${lang(locale)}"`));
+    for (const language of ['zh', 'en']) assert.ok(html.includes(`href="/${language}/showcase/"`), `${language} switch`);
+    assert.equal([...html.matchAll(/<h1[ >]/g)].length, 1);
+    for (const name of ['Motty', 'Tinglan']) assert.ok(html.includes(name), `missing ${name}`);
+    for (const href of ['https://motty.page', 'https://github.com/t8y2/motty', 'https://github.com/t8y2/motty/releases', 'https://github.com/talongao/tinglan', 'https://github.com/talongao/tinglan/issues']) {
+      assert.ok(html.includes(href), `missing ${href}`);
+    }
+    for (const image of ['motty-hero', 'tinglan-hero']) assert.ok(html.includes(image), `missing ${image}`);
+    assert.equal([...html.matchAll(/class="showcase-card-shot"/g)].length, 2, 'one screenshot per card');
+    assert.equal([...html.matchAll(/class="showcase-card"/g)].length, 2, 'one card per case');
+  });
 }
 
 test('unknown paths fail with a 404 page instead of the root redirect', () => {
@@ -270,6 +294,17 @@ test('a guide leads with its h1, not with the sidebar labels', () => {
   }
 });
 
+test('the showcase names every application it presents', () => {
+  for (const locale of ['zh', 'en']) {
+    const graph = structuredData(readPage(`${locale}/showcase/`));
+    const applications = graph.filter(node => node['@type'] === 'SoftwareApplication');
+    assert.deepEqual(applications.map(node => node.name), ['Motty', 'Tinglan']);
+    assert.ok(applications[0].codeRepository.endsWith('/t8y2/motty'));
+    assert.equal(applications[1].license, 'https://www.gnu.org/licenses/agpl-3.0.html');
+    assert.equal(new Set(graph.map(node => node['@id'])).size, graph.length, 'duplicate @id in one graph');
+  }
+});
+
 test('the home page defines the product in its body text, not only in metadata', () => {
   assert.ok(readPage('en/').includes('is a Go framework for native desktop applications'), 'the English lead never defines Viva');
   assert.ok(readPage('zh/').includes('是面向原生桌面应用的 Go 框架'), 'the Chinese lead never defines Viva');
@@ -277,7 +312,7 @@ test('the home page defines the product in its body text, not only in metadata',
 
 test('every page opts out of Cloudflare email obfuscation around its body', () => {
   // The zone setting rewrites anything that looks like an address, and the
-  // install command `go get github.com/vivaui/viva@v0.1.3` matches. The
+  // install command `go get github.com/vivaui/viva@v0.2.1` matches. The
   // documented marker keeps the setting on for the rest of the site.
   for (const locale of ['zh', 'en']) {
     for (const path of [`${locale}/`, `${locale}/docs/getting-started/`, `${locale}/api/`]) {
@@ -287,7 +322,7 @@ test('every page opts out of Cloudflare email obfuscation around its body', () =
       assert.ok(start > 0 && end > start, `${path}: no email_off marker around the body`);
     }
   }
-  assert.ok(readPage('en/docs/getting-started/').includes('viva@v0.1.3'), 'the install command lost its version');
+  assert.ok(readPage('en/docs/getting-started/').includes('viva@v0.2.1'), 'the install command lost its version');
 });
 
 test('the crawler files describe the site that was built', () => {
@@ -299,6 +334,7 @@ test('the crawler files describe the site that was built', () => {
     }
   }
   assert.ok(sitemap.includes('hreflang="x-default"'), 'sitemap has no x-default alternate');
+  assert.ok(sitemap.includes('<loc>https://vivaui.dev/en/showcase/</loc>'), 'sitemap lacks the showcase');
 
   const robots = readFileSync(new URL('robots.txt', output), 'utf8');
   assert.match(robots, /^User-agent: \*$/m, 'robots.txt allows no crawler explicitly');
@@ -306,12 +342,13 @@ test('the crawler files describe the site that was built', () => {
   assert.match(robots, /^Sitemap: https:\/\/vivaui\.dev\/sitemap\.xml$/m, 'robots.txt names no sitemap');
 
   // llms.txt is the map an assistant reads instead of crawling every page, so it
-  // lists the guides and the reference indexes and stops there.
+  // lists the guides, the reference indexes and the showcase, and stops there.
   const llms = readFileSync(new URL('llms.txt', output), 'utf8');
   assert.ok(llms.startsWith('# Viva\n'), 'llms.txt has no title');
   assert.match(llms, /^> Viva is a Go framework/m, 'llms.txt has no one-line summary');
   for (const slug of guideSlugs) assert.ok(llms.includes(`https://vivaui.dev/en/docs/${slug}/`), `llms.txt lacks ${slug}`);
   assert.ok(llms.includes('https://vivaui.dev/en/components/') && llms.includes('https://vivaui.dev/en/api/'), 'llms.txt lacks the reference indexes');
+  assert.ok(llms.includes('https://vivaui.dev/en/showcase/'), 'llms.txt lacks the showcase');
   assert.ok(!llms.includes('/en/ui/button/'), 'llms.txt lists every component page instead of the catalog');
 
   const headers = readFileSync(new URL('_headers', output), 'utf8');

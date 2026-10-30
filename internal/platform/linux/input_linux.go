@@ -155,7 +155,7 @@ func (router eventRouter) key(keymap *xcbKeymap, event *xcbInputEvent, repeat bo
 	} else if key.IsModifier() {
 		return nil
 	}
-	if router.config.OnShortcut != nil && platform.ShortcutCandidate(keyEvent) {
+	if router.config.OnShortcut != nil && platform.ShortcutCandidate(keyEvent) && !router.text.ownsChord(keyEvent) {
 		frame, handled, err := router.config.OnShortcut(keyEvent)
 		if err := router.presentFrame(frame, err); err != nil {
 			return err

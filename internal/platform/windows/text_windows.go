@@ -66,11 +66,14 @@ type textMetrics struct {
 	Depth, Lines                                                       uint32
 }
 
+// monoFamily is the family a face draws in first. The families that draw what it
+// lacks are the face's font fallback (see directRasterizer.fontFallback); the cell is
+// always measured in this one.
 func monoFamily(face ui.MonoFace) string {
 	if name := ui.MonoFamilyName(face); name != "" {
 		return name
 	}
-	if face == ui.MonoClassic {
+	if ui.MonoIsClassic(face) {
 		return "Courier New"
 	}
 	return "Consolas"

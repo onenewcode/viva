@@ -2,7 +2,7 @@
 import BaseLayout from './BaseLayout.astro';
 import { siteText } from '../lib/site';
 import { componentsPath, type Locale } from '../lib/i18n';
-import { apiPath, docsPath, homePath, type Heading, type NavGroup, type Section } from '../lib/routes';
+import { apiPath, docsPath, homePath, showcasePath, type Heading, type NavGroup, type Section } from '../lib/routes';
 
 // Guides and API pages: a navigation list, the prose, and its headings.
 interface Props {
@@ -31,6 +31,7 @@ const sections: Record<Section, { name: string; href: string }> = {
   home: { name: 'Viva', href: homePath(locale) },
   docs: { name: text.navDocs, href: docsPath(locale) },
   components: { name: text.navComponents, href: componentsPath(locale) },
+  showcase: { name: text.navShowcase, href: showcasePath(locale) },
   api: { name: text.navApi, href: apiPath(locale) },
 };
 const current = sections[section];

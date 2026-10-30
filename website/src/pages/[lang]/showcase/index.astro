@@ -1,0 +1,58 @@
+---
+import type { GetStaticPaths } from 'astro';
+import BaseLayout from '../../../layouts/BaseLayout.astro';
+import { locales, isLocale, type Locale } from '../../../lib/i18n';
+import { showcaseText } from '../../../lib/showcase';
+import { showcasePath } from '../../../lib/routes';
+import mottyHero from '../../../assets/showcase/motty-hero.webp';
+import tinglanHero from '../../../assets/showcase/tinglan-hero.webp';
+
+export const getStaticPaths = (() => locales.map(lang => ({ params: { lang } }))) satisfies GetStaticPaths;
+const locale = Astro.params.lang;
+if (!isLocale(locale)) throw new Error('Unsupported locale');
+const text = showcaseText(locale);
+const alternates = Object.fromEntries(locales.map(language => [language, showcasePath(language)])) as Record<Locale, string>;
+
+// The screenshot belongs to the case, not to the copy: a new case has to bring
+// its own file, and a missing one fails the build instead of rendering a frame.
+const heroFor = (slug: string) => {
+  if (slug === 'motty') return mottyHero;
+  if (slug === 'tinglan') return tinglanHero;
+  throw new Error(`No screenshot for showcase case: ${slug}`);
+};
+
+const origin = (Astro.site?.href ?? 'https://vivaui.dev/').replace(/\/$/, '');
+// Each card is a product, so each gets its own schema.org node; the layout
+// already names Viva and this site.
+const applications = text.cases.map(entry => ({
+  '@type': 'SoftwareApplication',
+  '@id': `${origin}/#${entry.slug}`,
+  name: entry.name,
+  description: entry.summary,
+  isAccessibleForFree: true,
+  ...entry.schema,
+}));
+---
+
+<BaseLayout {locale} title={text.title} summary={text.summary} section="showcase" {alternates} schema={applications}>
+  <main class="showcase" id="main-content" tabindex="-1">
+    <h1 class="sr-only">{text.title}</h1>
+    <div class="showcase-grid">
+      {text.cases.map((entry, index) => {
+        const hero = heroFor(entry.slug);
+        return <article class="showcase-card" id={entry.slug} aria-labelledby={`${entry.slug}-title`}>
+          <figure class="showcase-card-shot">
+            <img src={hero.src} alt={entry.heroAlt} width={hero.width} height={hero.height} loading={index === 0 ? 'eager' : 'lazy'} decoding="async" />
+            <figcaption>{entry.heroCaption}</figcaption>
+          </figure>
+          <div class="showcase-card-body">
+            <h2 id={`${entry.slug}-title`}>{entry.name}<span>{entry.tagline}</span></h2>
+            <p class="showcase-summary">{entry.summary}</p>
+            <dl class="showcase-facts">{entry.facts.map(fact => <div><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}</dl>
+            <div class="showcase-links">{entry.links.map(link => <a class:list={['showcase-link', { 'showcase-link-primary': link.primary }]} href={link.href} target="_blank" rel="noopener noreferrer">{link.label}<span aria-hidden="true">↗</span></a>)}</div>
+          </div>
+        </article>;
+      })}
+    </div>
+  </main>
+</BaseLayout>

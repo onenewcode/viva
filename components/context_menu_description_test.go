@@ -97,6 +97,41 @@ func TestContextMenuDescriptionMeasuresPaintsAndKeepsOneAction(t *testing.T) {
 	}
 }
 
+func TestContextMenuDescriptionRowGroupsTitleAndDetail(t *testing.T) {
+	for _, theme := range []ui.Theme{ui.LightTheme(), ui.DarkTheme()} {
+		var canvas ui.Canvas
+		item := ContextMenuItem{ID: ui.Item(2), Label: "Medium risk", Description: "Deletes still ask."}
+		height := ContextMenuItemHeight(theme, item, 0)
+		menu := BeginContextMenu(&canvas, theme, ui.Rect{Y: 40, Width: 280, Height: 8 + height}, ContextMenuOptions{})
+		row := menu.AddItem(item)
+		menu.End()
+		var titleY, titleHeight, detailY, detailHeight float32
+		var title, detail bool
+		for _, text := range canvas.Texts() {
+			switch text.Value {
+			case item.Label:
+				title, titleY, titleHeight = true, text.Bounds.Y, text.Bounds.Height
+			case item.Description:
+				detail, detailY, detailHeight = true, text.Bounds.Y, text.Bounds.Height
+			}
+		}
+		if !title || !detail {
+			t.Fatalf("title=%v description=%v were not painted", title, detail)
+		}
+		if titleHeight != menuLineHeight(theme.Metrics.FontSizeM) || detailHeight != menuLineHeight(theme.Metrics.FontSizeS) {
+			t.Fatalf("line heights title=%v detail=%v", titleHeight, detailHeight)
+		}
+		if gap := detailY - (titleY + titleHeight); gap != menuDescriptionGap {
+			t.Fatalf("title-to-detail gap=%v, want %v", gap, menuDescriptionGap)
+		}
+		top := titleY - row.Y
+		bottom := row.Y + row.Height - (detailY + detailHeight)
+		if top != bottom || top <= 0 {
+			t.Fatalf("row pads are not symmetric: top=%v bottom=%v", top, bottom)
+		}
+	}
+}
+
 func BenchmarkContextMenuDescription(b *testing.B) {
 	var canvas ui.Canvas
 	theme := ui.LightTheme()

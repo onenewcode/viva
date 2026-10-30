@@ -17,6 +17,8 @@ type fakeHost struct {
 	items   []*fakeStatusItem
 	quits   int
 	reject  string
+	// badge is the label the application last put on the Dock tile.
+	badge string
 }
 
 type fakeWindow struct {
@@ -66,6 +68,8 @@ func (host *fakeHost) AddStatusItem(config StatusItemConfig) (StatusItemControl,
 	host.items = append(host.items, item)
 	return item, nil
 }
+
+func (host *fakeHost) SetDockBadge(text string) { host.badge = text }
 
 func (host *fakeHost) Quit() { host.quits++ }
 
@@ -423,4 +427,20 @@ func TestWindowFrameIsWhereTheOriginPutIt(t *testing.T) {
 	if _, ok := none.Frame(); ok {
 		t.Fatal("a nil window reports a frame")
 	}
+}
+
+func TestSetDockBadgeMarksTheApplicationIconAndAnEmptyTextClearsIt(t *testing.T) {
+	host := &fakeHost{}
+	application := &Application{host: host}
+	application.SetDockBadge("DEV")
+	if host.badge != "DEV" {
+		t.Fatalf("badge = %q", host.badge)
+	}
+	application.SetDockBadge("")
+	if host.badge != "" {
+		t.Fatalf("badge after clearing = %q", host.badge)
+	}
+	// A program outside a running application has no Dock tile to ask.
+	var stopped *Application
+	stopped.SetDockBadge("DEV")
 }

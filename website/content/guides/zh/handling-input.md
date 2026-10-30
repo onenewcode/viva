@@ -86,8 +86,10 @@ func newConfig(m *model) app.Config {
 		})
 	}
 
-	// OnPointer sees every press, move and release; Target is the identity under
-	// the pointer. Here a secondary press on a row is the start of a context menu.
+	// OnPointer sees presses, releases and moves; Target is the identity under
+	// the pointer. A drag may be coalesced to its latest position, so a handler
+	// must follow the coordinates, not count moves. Here a secondary press on a
+	// row is the start of a context menu.
 	config.OnPointer = func(event ui.PointerEvent) ui.EventResult {
 		if event.Kind == ui.PointerDown && event.Button == ui.PointerButtonSecondary && event.Target.Scope() == rows {
 			row, _ := event.Target.Name().Index()
@@ -166,6 +168,8 @@ if id.Scope() == rows {                    // 点击到来时
 点击在声明控件的地方处理：`f.Button(...).Clicked()`，或者 `Hit` 盒子上的 `Clicked()`，示例里列表的行就是这样。两个窗格之间的拖动也不需要处理函数：`f.Splitter` 会捕获指针、显示调整大小的光标，并让两个窗格都不小于各自的最小尺寸，示例只需要把第一个窗格的宽度设为 `m.split.Pos`。
 
 `OnPointer` 负责剩下的部分。它收到按下、移动、抬起和离开事件，坐标是逻辑窗口像素，`Target` 是指针下方控件的标识。一次按下会在之后的移动和抬起事件中保持原来的目标，此时 `Captured` 为真，这正是你自己实现的拖动在指针离开控件后仍然有效的原因。示例用它处理行上的次按钮按下，也就是右键菜单的起点。
+
+拖动过程中的移动事件可能被合并为队列里最新的位置（平台原生也会这样处理），因此处理逻辑应当依赖坐标而不是调用次数：按按下点到当前点的位移来拖动的实现，最终仍会停在指针所在的位置。
 
 `Button` 区分主按钮和次按钮。`ClickCount` 为相隔很近的同一按钮连续按下编号，单击是 1，双击的第二次是 2。`HitOptions.Cursor` 设置命中区域被悬停或拖动时的指针形状（`f.Splitter` 已经在用 `PointerCursorResizeHorizontal`）。
 

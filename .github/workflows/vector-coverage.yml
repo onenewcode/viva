@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - 'internal/platform/**/shaders/**'
-      - 'headless/vector_aa_test.go'
+      - 'headless/vector*_test.go'
       - '.github/workflows/vector-coverage.yml'
   pull_request:
     paths:
@@ -37,7 +37,7 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y glslc mesa-vulkan-drivers libvulkan1 libfontconfig1 libfreetype6 libharfbuzz0b
       - name: Native coverage with shipped shaders
-        run: go test -tags vivahead ./headless -run '^TestVectorCoverageAtDeviceScales$' -v -count=1
+        run: go test -tags vivahead ./headless -run '^TestVector' -v -count=1
       - name: Compile D3D11 shaders
         if: runner.os == 'Windows'
         run: go run ./tools/windows-shaders
@@ -50,7 +50,7 @@ jobs:
         if: runner.os == 'Linux'
         run: sh tools/generate_linux_shaders.sh
       - name: Native pixel coverage
-        run: go test -tags vivahead ./headless -run '^TestVectorCoverageAtDeviceScales$' -v -count=1
+        run: go test -tags vivahead ./headless -run '^TestVector' -v -count=1
       - name: Native static checks
         run: go vet -tags vivahead ./headless/... ./app/... ./internal/platform/...
       # Generated native binaries are checked in so applications need no shader

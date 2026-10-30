@@ -178,3 +178,26 @@ func TestMessageScrollStateAllocatesNothing(t *testing.T) {
 		t.Fatalf("allocations = %v", allocations)
 	}
 }
+
+func TestMessageScrollerMapsThumbBackToAnOffset(t *testing.T) {
+	geometry := BeginMessageScroller(nil, ui.LightTheme(), ui.Rect{X: 20, Y: 30, Width: 240, Height: 180}, 620, 0).Geometry()
+	if got := geometry.OffsetForThumb(geometry.Thumb.Y); got != 0 {
+		t.Fatalf("thumb at the top maps to %v", got)
+	}
+	end := geometry.Viewport.Y + geometry.Viewport.Height - geometry.Thumb.Height
+	if got := geometry.OffsetForThumb(end); got != geometry.MaxOffset {
+		t.Fatalf("thumb at the bottom maps to %v, want %v", got, geometry.MaxOffset)
+	}
+	mid := geometry.OffsetForThumb(geometry.Track.Y + (geometry.Track.Height-geometry.Thumb.Height)/2)
+	if mid <= 0 || mid >= geometry.MaxOffset {
+		t.Fatalf("mid track maps to %v", mid)
+	}
+	if got := geometry.OffsetForThumb(geometry.Thumb.Y + geometry.Track.Height); got != geometry.MaxOffset {
+		t.Fatalf("past the end maps to %v, want %v", got, geometry.MaxOffset)
+	}
+	// A full track has no travel: the offset is kept instead of jumping home.
+	full := BeginMessageScroller(nil, ui.LightTheme(), ui.Rect{X: 0, Y: 0, Width: 240, Height: 180}, 180, 0).Geometry()
+	if got := full.OffsetForThumb(120); got != full.Offset {
+		t.Fatalf("full track maps to %v, want %v", got, full.Offset)
+	}
+}

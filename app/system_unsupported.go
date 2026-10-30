@@ -26,6 +26,10 @@ func nativeStoreSecret(string, string, []byte) error           { return ErrSecre
 func nativeLoadSecret(string, string) ([]byte, error)          { return nil, ErrSecretStoreUnavailable }
 func nativeDeleteSecret(string, string) error                  { return ErrSecretStoreUnavailable }
 
+func nativeEnableCrashDumps(string) (string, error) { return "", ErrUnsupported }
+
+func nativeShowFatalError(string, string) {}
+
 func nativeMonospaceFamilies() []string { return nil }
 
 func nativeAppearance() Appearance { return AppearanceUnknown }

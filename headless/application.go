@@ -46,6 +46,9 @@ type applicationSession struct {
 	items    map[uint64]*applicationStatusItem
 	nextItem uint64
 	quit     bool
+	// badge is the label the Dock was asked to show beside the icon, which
+	// SetDockBadge records and the "dockbadge" command reports.
+	badge string
 	// openURL receives the links the "openurl" command delivers, as the system
 	// would deliver a registered scheme's link.
 	openURL func(string)
@@ -121,6 +124,14 @@ func (application *applicationSession) AddStatusItem(config app.StatusItemConfig
 func (application *applicationSession) SetOpenURLHandler(handler func(string)) {
 	application.mu.Lock()
 	application.openURL = handler
+	application.mu.Unlock()
+}
+
+// SetDockBadge implements app.Host: it keeps the label the Dock was asked to
+// show, which the "dockbadge" command reports.
+func (application *applicationSession) SetDockBadge(text string) {
+	application.mu.Lock()
+	application.badge = text
 	application.mu.Unlock()
 }
 
@@ -393,6 +404,14 @@ func executeApplication(application *applicationSession, line string) (string, b
 		}
 		fmt.Fprintf(&reply, "ok windows=%d active=%d\n", len(windows), active)
 		return reply.String(), false
+	case "dockbadge":
+		if rest != "" {
+			return "error dockbadge takes no arguments\n", false
+		}
+		application.mu.Lock()
+		label := application.badge
+		application.mu.Unlock()
+		return fmt.Sprintf("ok label=%q\n", label), false
 	case "openurl":
 		application.mu.Lock()
 		handler := application.openURL

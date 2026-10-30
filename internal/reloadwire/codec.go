@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	ProtocolVersion = 19
+	ProtocolVersion = 20
 	MaxFrameBytes   = 32 << 20
 	MaxStateBytes   = 8 << 20
 	maxItems        = 200_000
@@ -488,7 +488,7 @@ func encodeCanvas(value CanvasSnapshot) ([]byte, error) {
 		result.f32(text.Style.Weight)
 		encodeColor(&result, text.Style.Color)
 		result.bool(text.Style.Mono)
-		result.u8(uint8(text.Style.MonoFace))
+		result.u16(uint16(text.Style.MonoFace))
 		result.f32(text.CellWidth)
 		result.u32(uint32(text.RunFirst))
 		result.u32(uint32(text.RunCount))
@@ -590,7 +590,7 @@ func decodeCanvas(data []byte) (CanvasSnapshot, error) {
 			Style: ui.TextStyle{Size: value.f32(), Weight: value.f32(), Color: decodeColor(&value)},
 		}
 		text.Style.Mono = value.bool()
-		text.Style.MonoFace = ui.MonoFace(value.u8())
+		text.Style.MonoFace = ui.MonoFace(value.u16())
 		text.CellWidth = value.f32()
 		text.RunFirst, text.RunCount = int32(value.u32()), int32(value.u32())
 		if text.RunFirst < 0 || text.RunCount < 0 || int64(text.RunFirst)+int64(text.RunCount) > int64(runCount) {

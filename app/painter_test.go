@@ -2354,3 +2354,51 @@ func TestPainterDisablesTextInputOnSubpixelBounds(t *testing.T) {
 		t.Fatalf("expected TextInput update to report re-enabled, got %+v", frame.TextInput)
 	}
 }
+
+// A grid line's Block Elements reach the platform as rectangles, not as text a font would
+// draw with side bearings and a filtered edge.
+func TestGridLinesDrawBlockElementsAsRectanglesNotText(t *testing.T) {
+	var canvas ui.Canvas
+	color := ui.Color{Green: 1, Alpha: 1}
+	runs := []ui.TextRun{
+		{Bytes: 1, Cells: 1, Color: color},
+		{Column: 1, Bytes: 3, Cells: 1, Color: color},
+		{Column: 2, Bytes: 3, Cells: 1, Color: color},
+		{Column: 3, Bytes: 1, Cells: 1, Color: color},
+	}
+	config := Config{Title: "blocks", Width: 100, Height: 100}
+	config.Paint = func(canvas *ui.Canvas, size ui.Size) {
+		canvas.LabelRuns("a██b", ui.Rect{X: 2, Y: 2, Width: 28, Height: 12}, ui.TextStyle{Size: 12}, 7, runs)
+	}
+	painter := newTestPainter(t, &canvas, config)
+
+	for index := range runs {
+		runs[index].Color.Red = 0.5 // a repaint with a change, which the platform is given
+	}
+	frame, err := painter.resize(size(100, 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frame.TextLabels) != 1 || frame.TextLabels[0].Value != "a  b" {
+		t.Fatalf("the platform was given %+v, want the blocks as blank cells", frame.TextLabels)
+	}
+	label := frame.TextLabels[0]
+	if len(label.Runs) != 4 || label.Runs[1].Bytes != 1 || label.Runs[2].Column != 2 {
+		t.Fatalf("runs after replacing the blocks = %+v", label.Runs)
+	}
+	var blocks int
+	for _, rectangle := range frame.Rectangles {
+		if rectangle.Color.Green == 1 {
+			blocks++
+			if rectangle.Bounds.X != 9 || rectangle.Bounds.Width != 14 || rectangle.Bounds.Y != 2 || rectangle.Bounds.Height != 12 {
+				t.Fatalf("the two blocks are %+v, want one rectangle over cells 1 and 2", rectangle.Bounds)
+			}
+		}
+	}
+	if blocks != 1 {
+		t.Fatalf("%d block rectangles in %+v", blocks, frame.Rectangles)
+	}
+	if got := canvas.Texts()[0].Value; got != "a██b" {
+		t.Fatalf("the canvas's own text was rewritten: %q", got)
+	}
+}

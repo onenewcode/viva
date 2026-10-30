@@ -586,6 +586,13 @@ const (
 	menuLabelHeight     = float32(28)
 	menuSeparatorHeight = float32(9)
 	menuPadding         = float32(4)
+	// menuDescriptionGap is what separates an item's title from its description.
+	// It is a line leading, not a row gap: the two lines belong to one row.
+	menuDescriptionGap = float32(2)
+	// menuDescriptionPadding is the air above the title and below the description
+	// of a two-line item. It is larger than the gap between the lines so the pair
+	// reads as one item and not as two rows that happen to be close.
+	menuDescriptionPadding = float32(6)
 	// menuIconSize and menuIconGap place an item icon: the label moves right by
 	// their sum.
 	menuIconSize = 16
@@ -878,12 +885,17 @@ func menuItemWidth(canvas *ui.Canvas, theme ui.Theme, item menuItem, indicatorLe
 	return left + textWidth + right + 2*menuPadding
 }
 
+// menuLineHeight is the height one line of type occupies at size, using the
+// FontSize+7 line the field, alert and dialog components already share.
+func menuLineHeight(size float32) float32 { return size + 7 }
+
 func menuItemHeight(theme ui.Theme, item menuItem, rowHeight float32) float32 {
 	if rowHeight <= 0 {
 		rowHeight = menuRowHeight
 	}
 	if item.Description != "" {
-		rowHeight += theme.Metrics.FontSizeS + 6
+		lines := menuLineHeight(theme.Metrics.FontSizeM) + menuDescriptionGap + menuLineHeight(theme.Metrics.FontSizeS)
+		rowHeight = max(rowHeight, lines+2*menuDescriptionPadding)
 	}
 	return rowHeight
 }
@@ -912,6 +924,21 @@ func (menu *menuSurface) paintItem(bounds ui.Rect, item menuItem) {
 	if item.Disabled {
 		foreground.Alpha *= 0.50
 	}
+	// A row with a description is two lines of type, not a taller one-line row:
+	// the title keeps the system line height, the description follows one small
+	// gap below it, and the pair is centered in the row. The indicator, icon and
+	// trailing content anchor to the title line, so a check mark never floats
+	// between the two lines.
+	labelY, labelHeight := bounds.Y, bounds.Height
+	descriptionY, descriptionHeight := bounds.Y+bounds.Height, float32(0)
+	if item.Description != "" {
+		titleLine := menuLineHeight(theme.Metrics.FontSizeM)
+		detailLine := menuLineHeight(theme.Metrics.FontSizeS)
+		pad := max((bounds.Height-titleLine-menuDescriptionGap-detailLine)/2, 0)
+		labelY, labelHeight = bounds.Y+pad, titleLine
+		descriptionY = labelY + titleLine + menuDescriptionGap
+		descriptionHeight = min(detailLine, max(bounds.Height-(descriptionY-bounds.Y), 0))
+	}
 	indicator := item.Kind == menuCheckbox || item.Kind == menuRadio
 	left := float32(8)
 	if item.Inset || indicator && menu.options.indicatorLeft {
@@ -924,16 +951,16 @@ func (menu *menuSurface) paintItem(bounds ui.Rect, item menuItem) {
 		right += item.TrailingWidth + 8
 	case len(item.Keys) > 0:
 		keysWidth := menuKeysWidth(canvas, theme, item.Keys)
-		paintMenuKeys(canvas, theme, ui.Rect{X: bounds.X + bounds.Width - edge - keysWidth, Y: bounds.Y, Width: keysWidth, Height: bounds.Height}, item.Keys, item.Disabled)
+		paintMenuKeys(canvas, theme, ui.Rect{X: bounds.X + bounds.Width - edge - keysWidth, Y: labelY, Width: keysWidth, Height: labelHeight}, item.Keys, item.Disabled)
 		right += keysWidth + 12
 	case item.Shortcut != "":
 		shortcutWidth := canvas.TextWidth(item.Shortcut, theme.Metrics.FontSizeS)
-		canvas.Label(item.Shortcut, ui.Rect{X: bounds.X + bounds.Width - edge - shortcutWidth, Y: bounds.Y, Width: shortcutWidth, Height: bounds.Height}, ui.TextStyle{
+		canvas.Label(item.Shortcut, ui.Rect{X: bounds.X + bounds.Width - edge - shortcutWidth, Y: labelY, Width: shortcutWidth, Height: labelHeight}, ui.TextStyle{
 			Size: theme.Metrics.FontSizeS, Weight: ui.WeightRegular, Color: dropdownMenuOpacity(theme.MutedForeground, item.Disabled),
 		})
 		right += shortcutWidth + 12
 	case item.Kind == menuSubmenu:
-		paintChevron(canvas, &chevronRightIcon, ui.Rect{X: bounds.X + bounds.Width - 8 - menuIconSize, Y: bounds.Y, Width: menuIconSize, Height: bounds.Height}, foreground)
+		paintChevron(canvas, &chevronRightIcon, ui.Rect{X: bounds.X + bounds.Width - 8 - menuIconSize, Y: labelY, Width: menuIconSize, Height: labelHeight}, foreground)
 		right += menuIconSize + 4
 	}
 	if item.Kind == menuCheckbox && item.Checked || item.Kind == menuRadio && item.Selected {
@@ -941,18 +968,14 @@ func (menu *menuSurface) paintItem(bounds ui.Rect, item menuItem) {
 		if menu.options.indicatorLeft {
 			x = bounds.X + 8
 		}
-		paintCheck(canvas, ui.Rect{X: x, Y: bounds.Y, Width: menuIconSize, Height: bounds.Height}, menuIconSize, foreground)
+		paintCheck(canvas, ui.Rect{X: x, Y: labelY, Width: menuIconSize, Height: labelHeight}, menuIconSize, foreground)
 	}
 	if len(item.Icon.Commands) > 0 || len(item.Icon.Layers) > 0 {
-		side := min(menuIconSize, bounds.Height)
-		canvas.DrawIcon(item.Icon, ui.Rect{X: bounds.X + left, Y: bounds.Y + (bounds.Height-side)/2, Width: side, Height: side}, foreground)
+		side := min(menuIconSize, labelHeight)
+		canvas.DrawIcon(item.Icon, ui.Rect{X: bounds.X + left, Y: labelY + (labelHeight-side)/2, Width: side, Height: side}, foreground)
 		left += menuIconSize + menuIconGap
 	}
-	labelHeight := bounds.Height
-	if item.Description != "" {
-		labelHeight = menu.itemHeight()
-	}
-	canvas.Label(item.Label, ui.Rect{X: bounds.X + left, Y: bounds.Y, Width: max(0, bounds.Width-left-right), Height: labelHeight}, ui.TextStyle{
+	canvas.Label(item.Label, ui.Rect{X: bounds.X + left, Y: labelY, Width: max(0, bounds.Width-left-right), Height: labelHeight}, ui.TextStyle{
 		Size: theme.Metrics.FontSizeM, Weight: ui.WeightRegular, Color: foreground,
 	})
 	if item.Description != "" {
@@ -963,7 +986,7 @@ func (menu *menuSurface) paintItem(bounds ui.Rect, item menuItem) {
 		color = dropdownMenuOpacity(color, item.Disabled)
 		width := max(0, bounds.Width-left-right-menu.hitInset)
 		value := canvas.FitLine(item.Description, theme.Metrics.FontSizeS, ui.WeightRegular, width)
-		canvas.Label(value, ui.Rect{X: bounds.X + left, Y: bounds.Y + labelHeight, Width: width, Height: bounds.Height - labelHeight}, ui.TextStyle{
+		canvas.Label(value, ui.Rect{X: bounds.X + left, Y: descriptionY, Width: width, Height: descriptionHeight}, ui.TextStyle{
 			Size: theme.Metrics.FontSizeS, Weight: ui.WeightRegular, Color: color,
 		})
 	}

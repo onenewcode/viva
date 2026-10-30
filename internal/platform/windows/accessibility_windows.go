@@ -1,9 +1,8 @@
 package windows
 
 import (
-	"fmt"
 	"math"
-	"runtime"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -200,45 +199,107 @@ var safeArrayUnaccessData = automation.NewProc("SafeArrayUnaccessData")
 var systemAllocateString = automation.NewProc("SysAllocStringLen")
 var variantClear = automation.NewProc("VariantClear")
 
+var virtualQuery = systemDLL("kernel32.dll").NewProc("VirtualQuery")
+
+const (
+	memCommit            = 0x1000
+	pageReadWrite        = 0x04
+	pageWriteCopy        = 0x08
+	pageExecuteReadWrite = 0x40
+	pageExecuteWriteCopy = 0x80
+	pageGuard            = 0x100
+)
+
+// memoryBasicInformation is MEMORY_BASIC_INFORMATION. Windows 10 1903 and
+// later put PartitionId between AllocationProtect and RegionSize; the size is
+// 48 bytes on amd64 and arm64 either way.
+type memoryBasicInformation struct {
+	BaseAddress       uintptr
+	AllocationBase    uintptr
+	AllocationProtect uint32
+	PartitionID       uint16
+	RegionSize        uintptr
+	State             uint32
+	Protect           uint32
+	Type              uint32
+}
+
+// writableMemory reports whether size bytes at address are committed and may be
+// written. UI Automation passes the out-pointers of provider callbacks; a
+// corrupted or foreign caller can pass an address this process cannot write,
+// and a Go callback cannot recover from the resulting access violation because
+// it runs inside a libcall (Go's canpanic is false there). Checking the page
+// turns that process-ending fault into the E_POINTER the caller should receive.
+func writableMemory(address, size uintptr) bool {
+	if address == 0 || size == 0 {
+		return false
+	}
+	var information memoryBasicInformation
+	if result, _, _ := virtualQuery.Call(address, uintptr(unsafe.Pointer(&information)), unsafe.Sizeof(information)); result == 0 {
+		return false
+	}
+	if information.State != memCommit || information.Protect&pageGuard != 0 {
+		return false
+	}
+	switch information.Protect & 0xff {
+	case pageReadWrite, pageWriteCopy, pageExecuteReadWrite, pageExecuteWriteCopy:
+	default:
+		return false
+	}
+	offset := address - information.BaseAddress
+	return offset < information.RegionSize && size <= information.RegionSize-offset
+}
+
 var getWindowRectangle = user.NewProc("GetWindowRect")
 var clientToScreen = user.NewProc("ClientToScreen")
+
+// uiaFault names the boundary of a fault in a UI Automation callback.
+const uiaFault = "UI Automation provider"
 
 var uiaCallbackOnce sync.Once
 var uiaSimpleTable [7]uintptr
 var uiaFragmentTable [9]uintptr
-var uiaFragmentRootTable [11]uintptr
+var uiaFragmentRootTable [5]uintptr
 var uiaProviders sync.Map
 var uiaFromPointCallback uintptr
 
 func initializeUIACallbacks() bool {
+	// VIVA_ACCESSIBILITY=0 leaves the window without a UI Automation tree, as on
+	// Linux: a way to tell whether an assistive client is what a fault depends on.
+	if os.Getenv("VIVA_ACCESSIBILITY") == "0" {
+		return false
+	}
 	entry := uiaFromPointThunkAddress()
 	if entry == 0 {
 		return false
 	}
 	uiaCallbackOnce.Do(func() {
 		unknown := [...]uintptr{
-			syscall.NewCallback(uiaQueryInterface),
-			syscall.NewCallback(uiaAddReference),
-			syscall.NewCallback(uiaReleaseReference),
+			guarded3(uiaFault, uiaQueryInterface),
+			guarded1(uiaFault, uiaAddReference),
+			guarded1(uiaFault, uiaReleaseReference),
 		}
 		copy(uiaSimpleTable[:3], unknown[:])
-		uiaSimpleTable[3] = syscall.NewCallback(uiaGetProviderOptions)
-		uiaSimpleTable[4] = syscall.NewCallback(uiaGetPatternProvider)
-		uiaSimpleTable[5] = syscall.NewCallback(uiaGetPropertyValue)
-		uiaSimpleTable[6] = syscall.NewCallback(uiaGetHostProvider)
+		uiaSimpleTable[3] = guarded2(uiaFault, uiaGetProviderOptions)
+		uiaSimpleTable[4] = guarded3(uiaFault, uiaGetPatternProvider)
+		uiaSimpleTable[5] = guarded3(uiaFault, uiaGetPropertyValue)
+		uiaSimpleTable[6] = guarded2(uiaFault, uiaGetHostProvider)
 
 		copy(uiaFragmentTable[:3], unknown[:])
-		uiaFragmentTable[3] = syscall.NewCallback(uiaNavigate)
-		uiaFragmentTable[4] = syscall.NewCallback(uiaGetRuntimeID)
-		uiaFragmentTable[5] = syscall.NewCallback(uiaGetBoundingRectangle)
-		uiaFragmentTable[6] = syscall.NewCallback(uiaGetEmbeddedRoots)
-		uiaFragmentTable[7] = syscall.NewCallback(uiaSetFocus)
-		uiaFragmentTable[8] = syscall.NewCallback(uiaGetFragmentRoot)
+		uiaFragmentTable[3] = guarded3(uiaFault, uiaNavigate)
+		uiaFragmentTable[4] = guarded2(uiaFault, uiaGetRuntimeID)
+		uiaFragmentTable[5] = guarded2(uiaFault, uiaGetBoundingRectangle)
+		uiaFragmentTable[6] = guarded2(uiaFault, uiaGetEmbeddedRoots)
+		uiaFragmentTable[7] = guarded1(uiaFault, uiaSetFocus)
+		uiaFragmentTable[8] = guarded2(uiaFault, uiaGetFragmentRoot)
 
-		copy(uiaFragmentRootTable[:9], uiaFragmentTable[:])
-		uiaFromPointCallback = syscall.NewCallback(uiaElementProviderFromPointBits)
-		uiaFragmentRootTable[9] = entry
-		uiaFragmentRootTable[10] = syscall.NewCallback(uiaGetFocus)
+		// IRawElementProviderFragmentRoot derives from IUnknown, not from
+		// IRawElementProviderFragment: its two methods follow the IUnknown ones
+		// directly, so a client that calls slot 3 means ElementProviderFromPoint.
+		copy(uiaFragmentRootTable[:3], unknown[:])
+		uiaFromPointCallback = guarded4(uiaFault, uiaElementProviderFromPointBits)
+		uiaFragmentRootTable[3] = entry
+		uiaFragmentRootTable[4] = guarded2(uiaFault, uiaGetFocus)
 
 		initializePatternTables(unknown[:])
 	})
@@ -247,9 +308,9 @@ func initializeUIACallbacks() bool {
 
 func (tree *uiaTree) initialize(state *windowState, nodes []platform.AccessibilityNode) error {
 	if !initializeUIACallbacks() {
-		if len(nodes) != 0 {
-			return fmt.Errorf("windows: UI Automation is unsupported on %s", runtime.GOARCH)
-		}
+		// Where the callbacks cannot be built (arm64: the floating-point thunk
+		// exists for amd64 only) the window simply has no UI Automation tree.
+		// It is a missing capability, not a reason to refuse to open.
 		return nil
 	}
 	tree.mu.Lock()
@@ -318,9 +379,6 @@ func (tree *uiaTree) update(nodes []platform.AccessibilityNode) error {
 	}
 	if !tree.supported {
 		tree.mu.Unlock()
-		if len(nodes) != 0 {
-			return fmt.Errorf("windows: UI Automation is unsupported on %s", runtime.GOARCH)
-		}
 		return nil
 	}
 	if !tree.engaged {
@@ -604,11 +662,16 @@ func (provider *uiaProvider) simplePointer() uintptr {
 	return uintptr(unsafe.Pointer(&provider.Simple))
 }
 
+// fragmentPointer is the element's IRawElementProviderFragment, the type of every
+// element UI Automation is handed back, the window's own included.
 func (provider *uiaProvider) fragmentPointer() uintptr {
-	if provider.Root {
-		return uintptr(unsafe.Pointer(&provider.FragmentRoot))
-	}
 	return uintptr(unsafe.Pointer(&provider.Fragment))
+}
+
+// fragmentRootPointer is the window element's IRawElementProviderFragmentRoot,
+// a separate interface with its own table.
+func (provider *uiaProvider) fragmentRootPointer() uintptr {
+	return uintptr(unsafe.Pointer(&provider.FragmentRoot))
 }
 
 func (provider *uiaProvider) addReference() uint32 {
@@ -655,7 +718,7 @@ func uiaQueryInterface(this, requested, result uintptr) uintptr {
 		selected = provider.fragmentPointer()
 	case iidRawElementProviderFragmentRoot:
 		if provider.Root {
-			selected = provider.fragmentPointer()
+			selected = provider.fragmentRootPointer()
 		}
 	default:
 		if kind, ok := patternKindForIID(id); ok && provider.supports(kind) {
@@ -807,7 +870,7 @@ func uiaGetHostProvider(this, result uintptr) uintptr {
 }
 
 func uiaNavigate(this, direction, result uintptr) uintptr {
-	if result == 0 {
+	if !writableMemory(result, unsafe.Sizeof(uintptr(0))) {
 		return windowsResult(resultPointer)
 	}
 	*(*uintptr)(pointer(result)) = 0
@@ -943,7 +1006,7 @@ func uiaGetFragmentRoot(this, result uintptr) uintptr {
 	closed := provider.Tree.closed
 	if !closed && root != nil {
 		root.addReference()
-		*(*uintptr)(pointer(result)) = root.fragmentPointer()
+		*(*uintptr)(pointer(result)) = root.fragmentRootPointer()
 	}
 	provider.Tree.mu.RUnlock()
 	if closed || root == nil {

@@ -30,6 +30,10 @@ import (
 // (checked against dwrite.h and dwrite_2.h).
 const (
 	writeFactoryGetSystemFontFallback = 26
+	writeFactoryCreateFallbackBuilder = 27
+	writeBuilderAddMapping            = 3
+	writeBuilderAddMappings           = 4
+	writeBuilderCreateFontFallback    = 5
 	writeFormatSetFontFallback        = 34
 	writeHitTestTextPosition          = 65
 	writeHitTestTextRange             = 66
@@ -133,6 +137,20 @@ func (engine *textEngine) initialize() error {
 	return nil
 }
 
+// setFontFallback makes format take the characters its font lacks from fallback, an
+// IDWriteFontFallback. It does nothing without one, or before Windows 8.1, which
+// has no IDWriteTextFormat1.
+func setFontFallback(format, fallback uintptr) {
+	if fallback == 0 {
+		return
+	}
+	var format1 uintptr
+	if comCall(format, 0, uintptr(unsafe.Pointer(&writeTextFormat1IID)), uintptr(unsafe.Pointer(&format1))) == 0 && format1 != 0 {
+		comCall(format1, writeFormatSetFontFallback, fallback)
+		release(&format1)
+	}
+}
+
 // forget drops every shaped line: the installed fonts or the text settings changed.
 func (engine *textEngine) forget() {
 	engine.mu.Lock()
@@ -167,13 +185,7 @@ func (engine *textEngine) shape(value string, size, weight float32) (*shapedLine
 		return nil, err
 	}
 	defer release(&format)
-	if engine.fallback != 0 {
-		var format1 uintptr
-		if comCall(format, 0, uintptr(unsafe.Pointer(&writeTextFormat1IID)), uintptr(unsafe.Pointer(&format1))) == 0 && format1 != 0 {
-			comCall(format1, writeFormatSetFontFallback, engine.fallback)
-			release(&format1)
-		}
-	}
+	setFontFallback(format, engine.fallback)
 	var layout uintptr
 	if err := hresult(engine.services.createLayout(engine.services.write, &units[0], uint32(len(units)), format, 1<<20, 1<<20, &layout)); err != nil {
 		return nil, fmt.Errorf("windows: lay out text: %w", err)

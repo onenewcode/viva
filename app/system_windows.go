@@ -82,6 +82,12 @@ func nativeDeleteSecret(service, account string) error {
 	return secretError(windowsplatform.DeleteSecret(service, account))
 }
 
+func nativeEnableCrashDumps(relativeDir string) (string, error) {
+	return windowsplatform.EnableCrashDumps(relativeDir)
+}
+
+func nativeShowFatalError(title, message string) { windowsplatform.ShowFatalError(title, message) }
+
 func nativeMonospaceFamilies() []string { return windowsplatform.MonospaceFamilies() }
 
 func nativeAppearance() Appearance { return appearanceOf(windowsplatform.DarkAppearance()) }

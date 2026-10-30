@@ -68,6 +68,7 @@ type colorSpan struct {
 // pixel the ClearType filter spills over.
 func (rasterizer *directRasterizer) gridLCD(pixels []byte, label platform.TextLabel, size float32, width, height int) error {
 	family := monoFamily(label.MonoFace)
+	fallback := rasterizer.fontFallback(label.MonoFace)
 	pitch := label.CellWidth * float32(size/label.FontSize)
 	baseline := float32(platform.LabelBaseline(height, float64(size)))
 	pieces := rasterizer.gridPieces(label, pitch)
@@ -97,7 +98,7 @@ func (rasterizer *directRasterizer) gridLCD(pixels []byte, label platform.TextLa
 			if isLight(piece.color) != drawLight {
 				continue
 			}
-			if err := rasterizer.drawRun(rasterizer.opaque, family, size, piece.weight, piece.run, piece.text, piece.left, piece.span, pitch, baseline); err != nil && drawErr == nil {
+			if err := rasterizer.drawRun(rasterizer.opaque, family, fallback, size, piece.weight, piece.run, piece.text, piece.left, piece.span, pitch, baseline); err != nil && drawErr == nil {
 				drawErr = err
 			}
 		}

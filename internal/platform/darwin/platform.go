@@ -70,6 +70,7 @@ const (
 	TextCommandEvent                = platform.TextCommandEvent
 	TextSetSelection                = platform.TextSetSelection
 	TextPaste                       = platform.TextPaste
+	TextPasteNoText                 = platform.TextPasteNoText
 	TextDeleteBackward              = platform.TextDeleteBackward
 	TextDeleteForward               = platform.TextDeleteForward
 	TextMoveLeft                    = platform.TextMoveLeft

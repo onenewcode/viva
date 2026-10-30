@@ -22,6 +22,8 @@ The `app` package exposes a small, synchronous set of system integrations. An op
 | Secrets | `app.StoreSecret`, `app.LoadSecret`, `app.DeleteSecret` |
 | Status-area icons and panels | `Application.AddStatusItem`, `app.WindowPanel` |
 | Fixed-pitch fonts | `app.MonospaceFamilies` |
+| Dock badge | `Application.SetDockBadge` |
+| The icon the file manager shows for a file or folder | `app.FileIcon` |
 
 ## What each platform uses
 
@@ -47,4 +49,5 @@ Callers compare with `errors.Is`, never with strings:
 - In the browser, the clipboard and file pickers return `ErrAsyncRequired` by design. Returning early would lie about success, and waiting would deadlock the WebAssembly event loop.
 - To follow the system's light or dark look, read `app.SystemAppearance` while painting and call `app.WatchSystemAppearance` once with a function that requests a redraw. It is called on the event-loop thread, only when the look really changed. Linux listens to the desktop portal's signal while something watches, falls back to the XSETTINGS manager, `GTK_THEME` and the GTK and KDE configuration files, and answers `AppearanceUnknown` when none gives a preference; a headless `Driver` answers `AppearanceUnknown` until `SetSystemAppearance` says otherwise.
 - If the user can pick light or dark regardless of the system, call `app.SetNativeAppearance` with that pick so macOS's own window buttons, menus, file dialogs and native text editing match the window; `AppearanceUnknown` hands them back to the system, and `SystemAppearance` keeps reporting the system's look meanwhile.
+- The Dock badge is macOS's own: a label in the red badge at the corner of the application's Dock tile, which the system draws and sizes. Windows and Linux have no Dock tile and do nothing with it; an empty label removes the badge.
 - Linux clipboard reads have a three-second deadline and add no idle worker or polling loop.

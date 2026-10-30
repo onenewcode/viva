@@ -2,12 +2,17 @@ package components
 
 import "github.com/vivaui/viva/ui"
 
-// SelectSize selects the default or compact trigger height.
+// SelectSize selects the height of the trigger and, for the extra-small one, the
+// type step of its value.
 type SelectSize uint8
 
 const (
 	SelectSizeDefault SelectSize = iota
 	SelectSizeSmall
+	// SelectSizeXSmall is the chip step: eight pixels shorter than a control and
+	// one type step below the body, like ButtonSizeXSmall. The options in its
+	// popup stay at body size, as a compact control's menu does on the desktop.
+	SelectSizeXSmall
 )
 
 // SelectOptions describes application-owned trigger and popup state.
@@ -69,6 +74,19 @@ const (
 	selectIconGap  = 8
 )
 
+// selectTriggerSize is the height of a trigger and the type step of its value.
+// Only the extra-small step changes the type, as in Button: a compact control
+// keeps the body size and just gets shorter.
+func selectTriggerSize(metrics ui.Metrics, size SelectSize) (height, textSize float32) {
+	switch size {
+	case SelectSizeSmall:
+		return metrics.ControlHeight - 4, metrics.FontSizeM
+	case SelectSizeXSmall:
+		return metrics.ControlHeight - 8, metrics.FontSizeS
+	}
+	return metrics.ControlHeight, metrics.FontSizeM
+}
+
 // Select paints a typed native select trigger and, when open, its source-owned
 // popup. Value ownership and popup placement remain application state.
 type Select struct {
@@ -77,6 +95,9 @@ type Select struct {
 	triggerBounds ui.Rect
 	contentBounds ui.Rect
 	options       SelectOptions
+	// textSize is the type step of the value in the trigger; the popup's rows
+	// stay at body size.
+	textSize float32
 	// rows lays the popup's rows out, scrolled when the options have a Scroll.
 	rows menuSurface
 	open bool
@@ -84,15 +105,12 @@ type Select struct {
 
 // BeginSelect paints the trigger and optional open popup.
 func BeginSelect(canvas *ui.Canvas, theme ui.Theme, triggerBounds ui.Rect, options SelectOptions) Select {
-	height := theme.Metrics.ControlHeight
-	if options.Size == SelectSizeSmall {
-		height -= 4
-	}
+	height, textSize := selectTriggerSize(theme.Metrics, options.Size)
 	if triggerBounds.Height <= 0 {
 		triggerBounds.Height = height
 	}
 	selectControl := Select{
-		canvas: canvas, theme: theme, triggerBounds: triggerBounds,
+		canvas: canvas, theme: theme, triggerBounds: triggerBounds, textSize: textSize,
 		options: options, open: canvas != nil && options.Open,
 	}
 	if canvas == nil || triggerBounds.Width <= 0 || triggerBounds.Height <= 0 {
@@ -247,12 +265,12 @@ func (selectControl Select) paintTrigger() {
 	// Vega: pl-2.5 and pr-2 inside the border, gap-1.5 before the 16px chevron.
 	const chevronSpan = 1 + 8 + selectIconSize
 	textX, textWidth := bounds.X+inputInsetX, bounds.Width-inputInsetX-chevronSpan-6
-	if paintSelectIcon(canvas, options.Icon, options.IconImage, options.IconText, ui.Rect{X: textX, Y: bounds.Y, Width: selectIconSize, Height: bounds.Height}, foreground, selectControl.theme.Metrics.FontSizeM) {
+	if paintSelectIcon(canvas, options.Icon, options.IconImage, options.IconText, ui.Rect{X: textX, Y: bounds.Y, Width: selectIconSize, Height: bounds.Height}, foreground, selectControl.textSize) {
 		textX += selectIconSize + selectIconGap
 		textWidth -= selectIconSize + selectIconGap
 	}
 	canvas.Label(value, ui.Rect{X: textX, Y: bounds.Y, Width: selectMax(0, textWidth), Height: bounds.Height}, ui.TextStyle{
-		Size: selectControl.theme.Metrics.FontSizeM, Weight: ui.WeightRegular, Color: foreground,
+		Size: selectControl.textSize, Weight: ui.WeightRegular, Color: foreground,
 	})
 	iconColor := selectControl.theme.MutedForeground
 	if options.Disabled {

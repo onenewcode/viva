@@ -81,7 +81,8 @@ const siteFiles = () => ({
 
       // llms.txt: the map an assistant reads instead of crawling every page. The
       // summaries are the pages' own descriptions, so the index says exactly what
-      // the page says. Component detail pages are left to the catalog entry.
+      // the page says. Component detail pages are left to the catalog entry, and
+      // the showcase is one entry: applications built on the framework.
       const entryOf = async pathname => {
         const html = await readFile(new URL(`${pathname}index.html`, dir), 'utf8');
         const title = text(html.match(/<title>([^<]*)<\/title>/)?.[1] ?? pathname).replace(/ · Viva$/, '');
@@ -90,6 +91,7 @@ const siteFiles = () => ({
       const english = indexable.filter(entry => entry.locale === 'en');
       const guides = english.filter(entry => entry.pathname.startsWith('en/docs/') && entry.pathname !== 'en/docs/');
       const catalog = english.filter(entry => entry.pathname === 'en/components/' || entry.pathname === 'en/api/');
+      const showcase = english.filter(entry => entry.pathname === 'en/showcase/');
       const llms = [
         '# Viva',
         '',
@@ -113,6 +115,10 @@ const siteFiles = () => ({
         '## Reference',
         '',
         ...await Promise.all(catalog.map(entry => entryOf(entry.pathname))),
+        '',
+        '## Showcase',
+        '',
+        ...await Promise.all(showcase.map(entry => entryOf(entry.pathname))),
         '',
         '## Optional',
         '',

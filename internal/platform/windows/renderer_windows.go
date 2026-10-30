@@ -3,6 +3,7 @@ package windows
 import (
 	"fmt"
 	"math"
+	"os"
 	"slices"
 	"unsafe"
 
@@ -180,7 +181,9 @@ func groupCompositingLayers(rectangles []render.Batch, labels []labelTexture, la
 
 func (renderer *renderer) initialize(window uintptr, color platform.Color) error {
 	renderer.window, renderer.color = window, color
-	return renderer.createDeviceAndResources(false)
+	// VIVA_SOFTWARE_RENDERING=1 skips the graphics driver and draws on the
+	// software rasterizer (WARP): a way to tell whether a fault is the driver's.
+	return renderer.createDeviceAndResources(os.Getenv("VIVA_SOFTWARE_RENDERING") == "1")
 }
 
 // createDeviceAndResources makes the Direct3D device, the window's swap chain and
