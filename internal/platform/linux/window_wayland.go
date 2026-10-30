@@ -105,24 +105,25 @@ type waylandWindow struct {
 	geometryDirty bool
 	lastFrame     ui.Rect
 
-	pendingSerial        uint32
-	pendingWidth         int32
-	pendingHeight        int32
-	configured           bool
-	awaitingConfigure    bool
-	firstConfigureDone   bool
-	initialResizePending bool
-	resizeDeferred       bool
-	framePending         bool
-	frameCallback        uintptr
-	needsRedraw          bool
-	forcePresent         bool
-	maximized            bool
-	fullscreen           bool
-	resizing             bool
-	activated            bool
-	hidden               bool
-	closed               atomic.Bool
+	pendingSerial            uint32
+	pendingWidth             int32
+	pendingHeight            int32
+	toplevelConfigurePending bool
+	configured               bool
+	awaitingConfigure        bool
+	firstConfigureDone       bool
+	initialResizePending     bool
+	resizeDeferred           bool
+	framePending             bool
+	frameCallback            uintptr
+	needsRedraw              bool
+	forcePresent             bool
+	maximized                bool
+	fullscreen               bool
+	resizing                 bool
+	activated                bool
+	hidden                   bool
+	closed                   atomic.Bool
 
 	pointerX, pointerY float32
 	lastClickTime      uint32
@@ -285,6 +286,10 @@ func (win *waylandWindow) presentInputFrame(frame platform.Frame) error {
 		return err
 	}
 	win.needsRedraw = true
+	if win.toplevelConfigurePending {
+		win.resizeDeferred = true
+		return nil
+	}
 	if win.hidden || win.awaitingConfigure || win.framePending {
 		return nil
 	}
@@ -309,6 +314,11 @@ func (win *waylandWindow) presentInputFrame(frame platform.Frame) error {
 // only when either the scene changed or a protocol transition requires a frame.
 func (win *waylandWindow) renderFrame() {
 	if win.closed.Load() || win.surface == 0 || win.state == nil {
+		return
+	}
+	if win.toplevelConfigurePending {
+		win.resizeDeferred = true
+		win.needsRedraw = true
 		return
 	}
 	if win.awaitingConfigure || win.hidden {
@@ -474,13 +484,21 @@ func (win *waylandWindow) handleXdgToplevelConfigure(width, height int32, states
 
 	win.pendingWidth = width
 	win.pendingHeight = height
+	win.toplevelConfigurePending = true
 }
 
 func (win *waylandWindow) applyPendingResize() {
 	if win.closed.Load() || win.surface == 0 {
 		return
 	}
+	if win.toplevelConfigurePending {
+		// A toplevel configure is incomplete until xdg_surface.configure supplies
+		// its serial. Scale changes must not present the new geometry before then.
+		win.resizeDeferred = true
+		return
+	}
 	if win.hidden || win.awaitingConfigure {
+		win.resizeDeferred = true
 		win.needsRedraw = true
 		return
 	}
@@ -618,6 +636,7 @@ func (win *waylandWindow) applyPendingResize() {
 }
 
 func (win *waylandWindow) handleXdgSurfaceConfigure(serial uint32) {
+	win.toplevelConfigurePending = false
 	win.pendingSerial = serial
 	win.configured = true
 	win.awaitingConfigure = false

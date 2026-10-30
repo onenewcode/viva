@@ -238,8 +238,8 @@ func (win *waylandWindow) applyScale(scale float32) {
 
 	logicalW := float32(contentSize(win.width, win.margin)) / oldScale
 	logicalH := float32(contentSize(win.height, win.margin)) / oldScale
-	if win.resizeDeferred {
-		// A deferred configure owns the latest logical geometry. The current
+	if win.toplevelConfigurePending || win.pendingSerial != 0 || win.resizeDeferred {
+		// An uncommitted configure owns the latest logical geometry. The current
 		// device size still describes the previous commit and must not replace it.
 		w, h := win.pendingLogicalSize()
 		if w > 0 && h > 0 {

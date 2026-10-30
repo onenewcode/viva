@@ -1,7 +1,7 @@
 # Wayland 待实施任务
 
 - 修订日期：2026-10-30
-- 当前基线：`7111746`
+- 当前基线：`b6e6087` + Task 1 当前 diff
 - 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
 - 当前审查：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 
@@ -18,26 +18,6 @@
 7. 每个任务提交前必须同步 `01`、`02` 和 `task.md`：记录基线提交与当前任务 diff、实现状态和验证证据，移除已完成 findings/待办且不重排历史任务编号，保留仍未完成的差距。Task 4 是阶段一致性检查，不替代逐任务同步。
 
 ## P0：修正当前正确性与公开契约
-
-### Task 1：分离 compositor configure 与 scale 派生几何
-
-- 对应 finding：F1
-- 目标：scale 变化不得覆盖尚未由 `xdg_surface.configure` 闭合的 compositor 最新几何。
-- 主要文件：
-  - `internal/platform/linux/window_wayland.go`
-  - `internal/platform/linux/wayland_scale.go`
-  - `internal/platform/linux/wayland_window_test.go`
-  - `internal/platform/linux/wayland_scale_test.go`
-- 实施要点：
-  - 区分 compositor configure 快照、scale 派生尺寸和已经提交的设备尺寸；
-  - 不依赖 `resizeDeferred` 推断是否存在未闭合的 toplevel configure；
-  - 明确 configure 代际，连续 configure 只提交最新有效状态；
-  - scale 只改变坐标换算，不得把旧已提交几何写回 compositor pending 快照。
-- 验收条件：
-  - 400×300 → toplevel 800×600 → scale 变化 → xdg_surface configure 后，最终使用 800×600 对应的逻辑与新设备尺寸；
-  - 上述顺序在 `resizeDeferred=false` 和 `true` 时均保持最新几何；
-  - `OnResize` 收到正确尺寸，不错误重复或丢失；ACK 对应正确 serial；
-  - 连续 configure/scale 交错时，旧 savedLogical 不覆盖 compositor 最新值。
 
 ### Task 2：让 Wayland `Frame()` 满足任意 goroutine 契约
 

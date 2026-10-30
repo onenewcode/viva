@@ -1307,6 +1307,139 @@ func TestWaylandDeferredConfigureKeepsGeometryAcrossScale(t *testing.T) {
 	}
 }
 
+func TestWaylandScaleBeforeConfigureSerialKeepsToplevelGeometry(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		framePending bool
+		trigger      string
+	}{
+		{name: "visible redraw", trigger: "redraw"},
+		{name: "visible input", trigger: "input"},
+		{name: "frame pending", framePending: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var acked []uint32
+			frameRequests := 0
+			app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+			win := &waylandWindow{
+				app: app, surface: 1, xdgSurface: 2, configured: true,
+				width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+				framePending: test.framePending, frameCallback: 99,
+			}
+			win.storeScale(1)
+			renderer := newWaylandPresentTestRenderer(1600, 1200)
+			var resized platform.Size
+			resizeCallbacks := 0
+			redraws := 0
+			win.state = &waylandWindowState{
+				app: app, win: win, renderer: renderer,
+				config: platform.Config{
+					OnResize: func(size platform.Size) (platform.Frame, error) {
+						resizeCallbacks++
+						resized = size
+						return platform.Frame{}, nil
+					},
+					OnRedraw: func() (platform.Frame, error) {
+						redraws++
+						return platform.Frame{}, nil
+					},
+				},
+				applyFrame: func(platform.Frame) (bool, error) { return test.trigger == "input", nil },
+			}
+
+			win.handleXdgToplevelConfigure(800, 600, nil)
+			win.applyScale(2)
+			switch test.trigger {
+			case "redraw":
+				win.renderFrame()
+			case "input":
+				if err := win.presentInputFrame(platform.Frame{}); err != nil {
+					t.Fatalf("present input before configure serial: %v", err)
+				}
+			}
+			if win.pendingWidth != 800 || win.pendingHeight != 600 {
+				t.Fatalf("scale replaced toplevel geometry with %dx%d", win.pendingWidth, win.pendingHeight)
+			}
+			if !win.resizeDeferred || resizeCallbacks != 0 || renderer.submissions != 0 || frameRequests != 0 || len(acked) != 0 {
+				t.Fatalf("scale completed before its configure serial: deferred=%v resize=%d submissions=%d requests=%d ack=%v", win.resizeDeferred, resizeCallbacks, renderer.submissions, frameRequests, acked)
+			}
+
+			win.handleXdgSurfaceConfigure(42)
+			if test.framePending {
+				if resizeCallbacks != 0 || renderer.submissions != 0 || frameRequests != 0 {
+					t.Fatal("frame-pending configure advanced before its callback")
+				}
+				win.onFrameDone(99, 0)
+			}
+			if win.width != 1600 || win.height != 1200 || resized.Width != 800 || resized.Height != 600 || resized.Scale != 2 {
+				t.Fatalf("completed geometry device=%dx%d resize=%+v", win.width, win.height, resized)
+			}
+			if resizeCallbacks != 1 || redraws != 0 || renderer.submissions != 1 || frameRequests != 1 {
+				t.Fatalf("completed configure resize=%d redraw=%d submissions=%d requests=%d", resizeCallbacks, redraws, renderer.submissions, frameRequests)
+			}
+			if len(acked) != 1 || acked[0] != 42 || win.pendingSerial != 0 {
+				t.Fatalf("configure ACK = %v, pending serial = %d", acked, win.pendingSerial)
+			}
+			if win.toplevelConfigurePending || win.resizeDeferred {
+				t.Fatal("completed configure retained pending geometry state")
+			}
+		})
+	}
+}
+
+func TestWaylandHiddenConfigureKeepsGeometryAcrossScaleAndRemap(t *testing.T) {
+	var acked []uint32
+	frameRequests := 0
+	app := &waylandApplication{api: newWaylandPresentTestAPI(&acked, &frameRequests)}
+	win := &waylandWindow{
+		app: app, surface: 1, xdgSurface: 2, configured: true,
+		width: 400, height: 300, savedLogicalW: 400, savedLogicalH: 300,
+		hidden: true,
+	}
+	win.storeScale(1)
+	renderer := newWaylandPresentTestRenderer(1600, 1200)
+	var resized platform.Size
+	resizeCallbacks := 0
+	redraws := 0
+	win.state = &waylandWindowState{
+		app: app, win: win, renderer: renderer,
+		config: platform.Config{
+			OnResize: func(size platform.Size) (platform.Frame, error) {
+				resizeCallbacks++
+				resized = size
+				return platform.Frame{}, nil
+			},
+			OnRedraw: func() (platform.Frame, error) {
+				redraws++
+				return platform.Frame{}, nil
+			},
+		},
+		applyFrame: func(platform.Frame) (bool, error) { return false, nil },
+	}
+
+	win.handleXdgToplevelConfigure(800, 600, nil)
+	win.handleXdgSurfaceConfigure(42)
+	win.applyScale(2)
+	if win.pendingWidth != 800 || win.pendingHeight != 600 || !win.resizeDeferred {
+		t.Fatalf("hidden scale lost configure geometry: %dx%d deferred=%v", win.pendingWidth, win.pendingHeight, win.resizeDeferred)
+	}
+	if resizeCallbacks != 0 || renderer.submissions != 0 || frameRequests != 0 || len(acked) != 0 {
+		t.Fatal("hidden configure presented or acknowledged early")
+	}
+
+	win.Show()
+	win.handleXdgSurfaceConfigure(43)
+	if win.width != 1600 || win.height != 1200 || resized.Width != 800 || resized.Height != 600 || resized.Scale != 2 {
+		t.Fatalf("remapped geometry device=%dx%d resize=%+v", win.width, win.height, resized)
+	}
+	if resizeCallbacks != 1 || redraws != 0 || renderer.submissions != 1 || frameRequests != 1 {
+		t.Fatalf("remap resize=%d redraw=%d submissions=%d requests=%d", resizeCallbacks, redraws, renderer.submissions, frameRequests)
+	}
+	if len(acked) != 1 || acked[0] != 43 || win.pendingSerial != 0 {
+		t.Fatalf("remap ACK = %v, pending serial = %d", acked, win.pendingSerial)
+	}
+}
+
 func TestWaylandDeferredRestoreKeepsGeometryAcrossScale(t *testing.T) {
 	var acked []uint32
 	frameRequests := 0
