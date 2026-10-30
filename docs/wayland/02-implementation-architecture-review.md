@@ -1,7 +1,7 @@
 # Linux/Wayland 当前实现与架构复核
 
 - 修订日期：2026-10-30
-- 审查基准：`7f82260` + Task 5 当前 diff
+- 审查基准：`1cafe6f` + Task 6 当前 diff
 - 适用分支：`docs/linux-render-refresh-flicker`
 - 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
 - 待实施任务：[task.md](task.md)
@@ -12,11 +12,11 @@
 
 ## 1. 结论
 
-**宏观架构合理，不需要推倒重写；当前主路径实现与目标设计基本一致。Tasks 1–3 已处理本轮三个具体实现问题，Task 5 已收敛后端探测副作用与错误链，剩余为明确的目标架构和验证差距。**
+**宏观架构合理，不需要推倒重写；当前主路径实现与目标设计基本一致。Tasks 1–3 已处理本轮三个具体实现问题，Task 5 已收敛后端探测副作用与错误链，Task 6 已落地标准读取流程和 auxiliary event-source，剩余为明确的目标架构和验证差距。**
 
-Task 3 将 registry 保留为 application/globals 级对象，使 discovery 后的 output 增删能够进入现有跟踪路径；真实热插拔仍需后续实机验收。Task 5 将 Wayland 的全局运行时状态和 desktop watcher 延后到 `Run`，自动后备记录 Wayland 初始化原因，无 X11 时保留下层错误链。
+Task 3 将 registry 保留为 application/globals 级对象，使 discovery 后的 output 增删能够进入现有跟踪路径；真实热插拔仍需后续实机验收。Task 5 将 Wayland 的全局运行时状态和 desktop watcher 延后到 `Run`，自动后备记录 Wayland 初始化原因，无 X11 时保留下层错误链。Task 6 为 prepare 成功后的每条路径配对 read/cancel，并将服务 FD 与 callback 合并为带 Interest/Dispatch 契约的 source。
 
-这些问题不需要改变 Wayland-first、PureGo、共享 Vulkan、eventfd 命令队列或 frame-callback 背压等主干设计。应优先修正状态所有权和公开契约，再继续 prepare/read、完整状态机和桌面服务抽象等结构性迁移。
+这些问题不需要改变 Wayland-first、PureGo、共享 Vulkan、eventfd 命令队列或 frame-callback 背压等主干设计。应优先修正状态所有权和公开契约，再继续完整状态机和桌面服务抽象等结构性迁移。
 
 ## 2. 当前 findings
 
@@ -28,9 +28,9 @@ Task 3 将 registry 保留为 application/globals 级对象，使 discovery 后�
 
 Wayland-first、强制后端不静默降级、X11 后备，以及共享场景、输入路由和 Vulkan 核心的边界可以继续保留。PureGo 动态绑定也不需要因当前问题改变。Task 5 已保留自动后备诊断和无 X11 时的下层错误链，并将全局 hook、活动应用指针及 desktop watcher 收敛到 `Run`/`close` 生命周期。
 
-### 3.2 事件循环：主干合理，继续收敛标准读取流程
+### 3.2 事件循环：标准读取流程已落地，真实时序待验收
 
-eventfd 命令队列、主线程执行、FD 异常 readiness、flush POLLOUT 和最近 deadline 调度是合适的职责划分。后续 prepare/read 迁移应保持这些已有行为，重点补齐 `prepare_read` 与 `read_events/cancel_read` 的配对，而不是重新引入平行 ticker 或另一套 FD 所有权。Task 2 也将 `Frame` 改为只读主线程发布的不可变几何快照，避免后台直接读取窗口字段。
+eventfd 命令队列、主线程执行、FD 异常 readiness、flush POLLOUT 和最近 deadline 调度保持原有职责划分。Task 6 已在 poll 前排空 pending，按 EAGAIN 语义重试 prepare，并为成功 prepare 严格配对 read/cancel；服务 FD 不再通过平行切片关联 callback。Task 2 的 `Frame` 仍只读主线程发布的不可变几何快照。真实 compositor 下的协议时序仍需后续验收。
 
 ### 3.3 Surface/configure/呈现：事务方向正确，几何所有权仍需集中
 
@@ -52,9 +52,7 @@ fractional-scale + viewport、整数 preferred scale 和 output scale 的优先�
 
 | 能力 | 当前缺口 |
 | :--- | :--- |
-| libwayland prepare/read 标准流程 | 尚未形成完整 prepare/read/cancel 配对 |
 | 显式 surface/configure 状态机 | serial、ACK、几何和提交事务仍需进一步集中 |
-| 通用 event-source 抽象 | FD 与 callback 的具体实现尚未统一为带 Interest/Dispatch 契约的接口 |
 | 桌面服务公共生命周期 | 协议核心部分共享，连接和重连状态机仍有后端分叉 |
 | 托盘/后台常驻 | 完整 keep-alive 产品契约尚未实现 |
 | 原生 Linux race 验证 | Task 2 并发快照测试已交叉编译，尚未在 Linux/race detector 下执行 |
@@ -68,19 +66,19 @@ fractional-scale + viewport、整数 preferred scale 和 output scale 的优先�
 
 ```sh
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-  go test -c -o /tmp/viva-linux-platform-task5.test ./internal/platform/linux
+  go test -c -o /tmp/viva-linux-platform-task6.test ./internal/platform/linux
 
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
   go vet ./internal/platform/... ./app
 ```
 
-另在当前 macOS 环境执行 `go test ./internal/platform/... ./app`：557 个测试通过、1 个跳过，既有 `app/TestDesktopThemeDetectionAndStyling` 仍失败（KDE/GNOME 样式识别得到 0）。全仓 `go test ./...` 为 5537 个测试通过、23 个跳过，仍只有同一失败。该失败在 Task 5 前已存在，且本次代码修改均位于 Linux build-tag 文件；未将这些命令记为全部通过。当前平台的 `go test -race ./internal/platform/...` 另有 300 个测试通过，但不覆盖 Linux 后端。
+当前 macOS 平台的 `go test ./internal/platform/...` 有 302 个测试通过，`go test -race ./internal/platform/...` 有 300 个测试通过，但均不覆盖 Linux 后端。全仓 `go test ./...` 为 5537 个测试通过、23 个跳过，全仓 `go test -race ./...` 为 5533 个测试通过、27 个跳过；两者的唯一失败均为既有 `app/TestDesktopThemeDetectionAndStyling`（KDE/GNOME 样式识别得到 0），未将这些命令记为全部通过。
 
-这些结果只证明相关 Linux 测试可交叉编译、静态检查通过。Task 5 新增的无 X11 错误链、自动后备诊断、强制模式、设备错误传播和 `Run` 前后全局 hook 生命周期测试均包含在上述测试包中，但没有原生执行。Task 3 的 registry 与 output 热插拔测试也只在当前环境交叉编译，没有真实热插拔验收。本次没有执行 Linux 测试二进制、Linux race detector、compositor、Vulkan WSI/validation 或真实桌面/性能验收；原生 Linux race 验证已列入 Task 8。
+这些结果只证明相关 Linux 测试可交叉编译、静态检查通过。Task 6 新增的 prepare/read/cancel 配对、EAGAIN 重试、flush/poll/read 失败、event-source Interest/Dispatch 和 ERR/HUP/NVAL 测试均包含在上述 Linux 测试包中，但没有原生执行。既有 eventfd、Quit、deadline 和服务 FD 清理回归测试也只完成交叉编译。本次没有执行 Linux 测试二进制、Linux race detector、compositor、Vulkan WSI/validation 或真实桌面/性能验收；原生 Linux race 验证已列入 Task 8。
 
 ## 6. 建议优先级
 
-1. **P2：继续结构性收敛**：prepare/read、统一 event-source、显式 surface/configure 状态机。
+1. **P2：继续结构性收敛**：显式 surface/configure 状态机。
 2. **P3：补真实验证层次**：原生 Linux race、headless compositor、validation/lavapipe、真实 GNOME/KDE/Sway 和性能矩阵。
 
-最终判断：**保留现有架构主干；Tasks 1–3 和 Task 5 已实现，Task 4 文档检查已通过各自 review，但不能称为已完成原生 race、真实 compositor、热插拔或 Vulkan/桌面矩阵验收。**
+最终判断：**保留现有架构主干；Tasks 1–3、Task 5 和 Task 6 的实现及 Task 4 文档同步已反映在当前基线，但不能称为已完成原生 Linux race、真实 compositor、热插拔或 Vulkan/桌面矩阵验收。**

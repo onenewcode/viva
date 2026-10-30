@@ -20,6 +20,9 @@ type waylandAPI struct {
 	displayGetError        func(display uintptr) int32
 	displayDispatch        func(display uintptr) int32
 	displayDispatchPending func(display uintptr) int32
+	displayPrepareRead     func(display uintptr) int32
+	displayReadEvents      func(display uintptr) int32
+	displayCancelRead      func(display uintptr)
 	displayFlush           func(display uintptr) int32
 	displayRoundtrip       func(display uintptr) int32
 
@@ -43,6 +46,9 @@ func loadWaylandClient() (*waylandAPI, error) {
 	purego.RegisterLibFunc(&api.displayGetError, library, "wl_display_get_error")
 	purego.RegisterLibFunc(&api.displayDispatch, library, "wl_display_dispatch")
 	purego.RegisterLibFunc(&api.displayDispatchPending, library, "wl_display_dispatch_pending")
+	purego.RegisterLibFunc(&api.displayPrepareRead, library, "wl_display_prepare_read")
+	purego.RegisterLibFunc(&api.displayReadEvents, library, "wl_display_read_events")
+	purego.RegisterLibFunc(&api.displayCancelRead, library, "wl_display_cancel_read")
 	purego.RegisterLibFunc(&api.displayFlush, library, "wl_display_flush")
 	purego.RegisterLibFunc(&api.displayRoundtrip, library, "wl_display_roundtrip")
 	purego.RegisterLibFunc(&api.proxyMarshalFlags, library, "wl_proxy_marshal_flags")

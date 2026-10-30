@@ -954,6 +954,21 @@ func TestWaylandRegistryDiscoveryFailureReleasesRegistry(t *testing.T) {
 	}
 }
 
+func installWaylandLoopReadTestCallbacks(api *waylandAPI) {
+	if api.displayPrepareRead == nil {
+		api.displayPrepareRead = func(uintptr) int32 { return 0 }
+	}
+	if api.displayReadEvents == nil {
+		api.displayReadEvents = func(uintptr) int32 { return 0 }
+	}
+	if api.displayCancelRead == nil {
+		api.displayCancelRead = func(uintptr) {}
+	}
+	if api.displayDispatchPending == nil {
+		api.displayDispatchPending = func(uintptr) int32 { return 0 }
+	}
+}
+
 func TestWaylandLoopWaker(t *testing.T) {
 	var executed atomic.Bool
 	wakeCh := make(chan struct{}, 1)
@@ -989,6 +1004,7 @@ func TestWaylandLoopWaker(t *testing.T) {
 		waylandFD: 10,
 		wakeFD:    11,
 	}
+	installWaylandLoopReadTestCallbacks(loop.wayland)
 	loop.running.Store(true)
 	loop.rebuildPollFDs()
 
@@ -1068,6 +1084,7 @@ func TestWaylandLoopPollErrorStopsUnlessInterrupted(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			errno := int32(test.errno)
 			calls := 0
+			cancels := 0
 			loop := &waylandLoop{
 				libc: &libcAPI{
 					poll: func(fds *pollFD, nfds uintptr, timeout int32) int32 {
@@ -1076,9 +1093,10 @@ func TestWaylandLoopPollErrorStopsUnlessInterrupted(t *testing.T) {
 					},
 					errnoLocation: func() *int32 { return &errno },
 				},
-				waylandFD: 10,
-				wakeFD:    11,
+				wayland: &waylandAPI{displayCancelRead: func(uintptr) { cancels++ }},
+				display: 1, waylandFD: 10, wakeFD: 11,
 			}
+			installWaylandLoopReadTestCallbacks(loop.wayland)
 			loop.running.Store(true)
 			loop.rebuildPollFDs()
 
@@ -1093,6 +1111,9 @@ func TestWaylandLoopPollErrorStopsUnlessInterrupted(t *testing.T) {
 			}
 			if !test.running && loop.err == nil {
 				t.Fatalf("%v stopped the loop without recording an error", test.errno)
+			}
+			if cancels != 1 {
+				t.Fatalf("cancel read calls after %v = %d, want 1", test.errno, cancels)
 			}
 			if loop.step(0) != test.running {
 				t.Fatalf("second step disagrees about whether the loop remains active")
@@ -1124,8 +1145,9 @@ func TestWaylandLoopExtraFDErrorsAreOneShot(t *testing.T) {
 					}
 					return 0
 				}},
-				wayland: &waylandAPI{}, waylandFD: 10, wakeFD: 11,
+				wayland: &waylandAPI{}, display: 1, waylandFD: 10, wakeFD: 11,
 			}
+			installWaylandLoopReadTestCallbacks(loop.wayland)
 			loop.running.Store(true)
 			loop.rebuildPollFDs()
 			loop.addExtraFD(42, func() { callbacks++ })
@@ -1133,8 +1155,8 @@ func TestWaylandLoopExtraFDErrorsAreOneShot(t *testing.T) {
 			if !loop.step(0) {
 				t.Fatal("extra FD failure stopped the whole Wayland loop")
 			}
-			if callbacks != 1 || len(loop.extraFDs) != 0 || len(loop.pollFDs) != 2 {
-				t.Fatalf("failed source callbacks=%d extraFDs=%v pollFDs=%d", callbacks, loop.extraFDs, len(loop.pollFDs))
+			if callbacks != 1 || len(loop.extraSources) != 0 || len(loop.pollFDs) != 2 {
+				t.Fatalf("failed source callbacks=%d extraSources=%v pollFDs=%d", callbacks, loop.extraSources, len(loop.pollFDs))
 			}
 			if !loop.step(0) || callbacks != 1 {
 				t.Fatal("failed source remained registered or dispatched twice")
@@ -1178,6 +1200,7 @@ func TestWaylandLoopFlushBackpressureUsesPollOut(t *testing.T) {
 		waylandFD: 10,
 		wakeFD:    11,
 	}
+	installWaylandLoopReadTestCallbacks(loop.wayland)
 	loop.running.Store(true)
 	loop.rebuildPollFDs()
 
@@ -1201,6 +1224,207 @@ func TestWaylandLoopFlushBackpressureUsesPollOut(t *testing.T) {
 	}
 }
 
+func TestWaylandLoopReadAndCancelPairing(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		revents     int16
+		wantReads   int
+		wantCancels int
+	}{
+		{name: "readable", revents: pollIn, wantReads: 1},
+		{name: "timeout", wantCancels: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reads, cancels, dispatches := 0, 0, 0
+			api := &waylandAPI{
+				displayReadEvents: func(uintptr) int32 { reads++; return 0 },
+				displayCancelRead: func(uintptr) { cancels++ },
+				displayDispatchPending: func(uintptr) int32 {
+					dispatches++
+					return 0
+				},
+			}
+			installWaylandLoopReadTestCallbacks(api)
+			loop := &waylandLoop{
+				libc: &libcAPI{poll: func(fds *pollFD, _ uintptr, _ int32) int32 {
+					fds.REvents = test.revents
+					if test.revents != 0 {
+						return 1
+					}
+					return 0
+				}},
+				wayland: api, display: 1, waylandFD: 10, wakeFD: 11,
+			}
+			loop.running.Store(true)
+			loop.rebuildPollFDs()
+
+			if !loop.step(0) {
+				t.Fatalf("step stopped: %v", loop.err)
+			}
+			if reads != test.wantReads || cancels != test.wantCancels {
+				t.Fatalf("reads=%d cancels=%d, want %d/%d", reads, cancels, test.wantReads, test.wantCancels)
+			}
+			if dispatches != 2 {
+				t.Fatalf("pending dispatches=%d, want before and after poll", dispatches)
+			}
+		})
+	}
+}
+
+func TestWaylandLoopPrepareReadRetriesEagain(t *testing.T) {
+	errno := int32(0)
+	prepares, dispatches, cancels := 0, 0, 0
+	api := &waylandAPI{
+		displayPrepareRead: func(uintptr) int32 {
+			prepares++
+			if prepares == 1 {
+				errno = int32(syscall.EAGAIN)
+				return -1
+			}
+			errno = 0
+			return 0
+		},
+		displayDispatchPending: func(uintptr) int32 { dispatches++; return 0 },
+		displayCancelRead:      func(uintptr) { cancels++ },
+	}
+	installWaylandLoopReadTestCallbacks(api)
+	loop := &waylandLoop{
+		libc: &libcAPI{
+			poll:          func(*pollFD, uintptr, int32) int32 { return 0 },
+			errnoLocation: func() *int32 { return &errno },
+		},
+		wayland: api, display: 1, waylandFD: 10, wakeFD: 11,
+	}
+	loop.running.Store(true)
+	loop.rebuildPollFDs()
+
+	if !loop.step(0) {
+		t.Fatalf("EAGAIN retry stopped the loop: %v", loop.err)
+	}
+	if prepares != 2 || dispatches != 3 || cancels != 1 {
+		t.Fatalf("prepares=%d dispatches=%d cancels=%d, want 2/3/1", prepares, dispatches, cancels)
+	}
+}
+
+func TestWaylandLoopReadProtocolFailures(t *testing.T) {
+	t.Run("prepare error", func(t *testing.T) {
+		errno := int32(syscall.EIO)
+		polls, cancels := 0, 0
+		api := &waylandAPI{
+			displayPrepareRead: func(uintptr) int32 { return -1 },
+			displayCancelRead:  func(uintptr) { cancels++ },
+		}
+		installWaylandLoopReadTestCallbacks(api)
+		loop := &waylandLoop{
+			libc: &libcAPI{
+				poll:          func(*pollFD, uintptr, int32) int32 { polls++; return 0 },
+				errnoLocation: func() *int32 { return &errno },
+			},
+			wayland: api, display: 1, waylandFD: 10, wakeFD: 11,
+		}
+		loop.running.Store(true)
+		loop.rebuildPollFDs()
+		if loop.step(0) || !errors.Is(loop.err, syscall.EIO) {
+			t.Fatalf("prepare failure running=%v error=%v", loop.running.Load(), loop.err)
+		}
+		if polls != 0 || cancels != 0 {
+			t.Fatalf("failed prepare polled=%d canceled=%d, want 0/0", polls, cancels)
+		}
+	})
+
+	t.Run("flush error cancels", func(t *testing.T) {
+		errno := int32(syscall.EPIPE)
+		polls, cancels := 0, 0
+		api := &waylandAPI{
+			displayFlush:      func(uintptr) int32 { return -1 },
+			displayCancelRead: func(uintptr) { cancels++ },
+		}
+		installWaylandLoopReadTestCallbacks(api)
+		loop := &waylandLoop{
+			libc: &libcAPI{
+				poll:          func(*pollFD, uintptr, int32) int32 { polls++; return 0 },
+				errnoLocation: func() *int32 { return &errno },
+			},
+			wayland: api, display: 1, waylandFD: 10, wakeFD: 11,
+		}
+		loop.running.Store(true)
+		loop.rebuildPollFDs()
+		if loop.step(0) || !errors.Is(loop.err, syscall.EPIPE) {
+			t.Fatalf("flush failure running=%v error=%v", loop.running.Load(), loop.err)
+		}
+		if polls != 0 || cancels != 1 {
+			t.Fatalf("flush failure polled=%d canceled=%d, want 0/1", polls, cancels)
+		}
+	})
+
+	t.Run("read error does not cancel", func(t *testing.T) {
+		errno := int32(syscall.EPIPE)
+		cancels := 0
+		api := &waylandAPI{
+			displayReadEvents: func(uintptr) int32 { return -1 },
+			displayCancelRead: func(uintptr) { cancels++ },
+		}
+		installWaylandLoopReadTestCallbacks(api)
+		loop := &waylandLoop{
+			libc: &libcAPI{
+				poll: func(fds *pollFD, _ uintptr, _ int32) int32 {
+					fds.REvents = pollIn
+					return 1
+				},
+				errnoLocation: func() *int32 { return &errno },
+			},
+			wayland: api, display: 1, waylandFD: 10, wakeFD: 11,
+		}
+		loop.running.Store(true)
+		loop.rebuildPollFDs()
+		if loop.step(0) || !errors.Is(loop.err, syscall.EPIPE) {
+			t.Fatalf("read failure running=%v error=%v", loop.running.Load(), loop.err)
+		}
+		if cancels != 0 {
+			t.Fatalf("read failure called cancel %d times", cancels)
+		}
+	})
+}
+
+func TestWaylandLoopEventSourceContract(t *testing.T) {
+	dispatchErr := errors.New("source dispatch failed")
+	var gotRevents uint16
+	source := &waylandExtraSource{
+		fd:       42,
+		interest: pollIn | pollOut,
+		dispatch: func(revents uint16) error {
+			gotRevents = revents
+			return dispatchErr
+		},
+	}
+	api := &waylandAPI{}
+	installWaylandLoopReadTestCallbacks(api)
+	loop := &waylandLoop{
+		libc: &libcAPI{poll: func(fds *pollFD, nfds uintptr, _ int32) int32 {
+			slice := unsafe.Slice(fds, int(nfds))
+			if slice[2].Events != pollIn|pollOut {
+				t.Fatalf("source poll interest=%d, want POLLIN|POLLOUT", slice[2].Events)
+			}
+			slice[2].REvents = pollOut | 0x0008
+			return 1
+		}},
+		wayland: api, display: 1, waylandFD: 10, wakeFD: 11,
+	}
+	loop.running.Store(true)
+	loop.rebuildPollFDs()
+	loop.addEventSource(source)
+
+	if loop.step(0) || !errors.Is(loop.err, dispatchErr) {
+		t.Fatalf("source failure running=%v error=%v", loop.running.Load(), loop.err)
+	}
+	if gotRevents != pollOut|0x0008 {
+		t.Fatalf("dispatch revents=%#x, want POLLOUT|POLLERR", gotRevents)
+	}
+	if len(loop.extraSources) != 0 {
+		t.Fatal("failed event source remained registered")
+	}
+}
+
 func TestWaylandLoopTransportFailuresRecordErrors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1218,13 +1442,13 @@ func TestWaylandLoopTransportFailuresRecordErrors(t *testing.T) {
 			want:  "flush",
 		},
 		{
-			name: "dispatch",
+			name: "read events",
 			api: &waylandAPI{
-				displayDispatch: func(display uintptr) int32 { return -1 },
-				displayGetError: func(display uintptr) int32 { return int32(syscall.EPIPE) },
+				displayReadEvents: func(display uintptr) int32 { return -1 },
+				displayGetError:   func(display uintptr) int32 { return int32(syscall.EPIPE) },
 			},
 			revents: 1,
-			want:    "dispatch",
+			want:    "read events",
 		},
 		{
 			name: "dispatch pending",
@@ -1256,6 +1480,7 @@ func TestWaylandLoopTransportFailuresRecordErrors(t *testing.T) {
 				waylandFD: 10,
 				wakeFD:    11,
 			}
+			installWaylandLoopReadTestCallbacks(loop.wayland)
 			loop.running.Store(true)
 			loop.rebuildPollFDs()
 
@@ -1302,6 +1527,7 @@ func TestApplicationPostWithoutWindows(t *testing.T) {
 		waylandFD: 10,
 		wakeFD:    11,
 	}
+	installWaylandLoopReadTestCallbacks(loop.wayland)
 	loop.running.Store(true)
 	loop.rebuildPollFDs()
 

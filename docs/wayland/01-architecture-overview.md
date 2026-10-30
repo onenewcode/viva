@@ -1,7 +1,7 @@
 # Viva Linux/Wayland 架构：目标设计与实施契约
 
 - 更新日期：2026-10-30
-- 审查基准：`7f82260` + Task 5 当前 diff
+- 审查基准：`1cafe6f` + Task 6 当前 diff
 - 适用分支：`docs/linux-render-refresh-flicker`
 - 文档性质：架构目标、协议约束和迁移方向；不代表全部能力已经实现或验收
 
@@ -128,7 +128,7 @@ Calloop 的 `EventSource`、Generic FD source 和 Timer 是这一方向的成熟
 
 ### 4.3 libwayland 标准读取流程
 
-目标事件循环采用 libwayland 推荐的 prepare/read 模式：
+当前事件循环采用 libwayland 推荐的 prepare/read 模式：
 
 ```text
 dispatch pending commands
@@ -156,8 +156,9 @@ while true:
 - `prepare_read` 返回 -1 时，只有 `errno == EAGAIN` 才能通过 `dispatch_pending` 排空事件后重试；其他错误必须终止本轮并进入统一错误路径；
 - 进入 `poll` 前先排空已缓冲事件，避免内存队列非空却仍挂起等待 socket；
 - `flush` 对 `EINTR` 重试，对 `EAGAIN` 启用 `POLLOUT`，其他错误终止事件循环；
-- 持续的非 EINTR `poll` 错误必须返回，不能形成忙循环；
-- 当前较简单的单线程 dispatch 实现不应被描述为已经具备完整的 prepare/read 契约。
+- 持续的非 EINTR `poll` 错误必须返回，不能形成忙循环。
+
+当前 auxiliary event source 已按 `FD`/`Interest`/`Dispatch(revents)` 统一注册，source owner 负责注销后的 FD 关闭；Wayland display 和 eventfd 保留各自专用的读取与命令分发流程。
 
 ### 4.4 eventfd 命令总线
 
@@ -385,8 +386,9 @@ Vulkan fake 至少跟踪：
 | PureGo 动态绑定 | 已具备 | 继续用 ABI/协议测试保护 |
 | 共享 Vulkan 和 eventRouter | 已具备 | 收敛资源所有权和 present 契约 |
 | eventfd 命令队列 | 已具备基础，EINTR 与关闭同步已修复 | 代际检查和长期错误模型仍需收敛 |
-| flush POLLOUT 恢复 | 已具备 | 纳入统一 event-source 错误模型 |
-| prepare/read 标准流程 | 尚未完整实现 | 按 libwayland 推荐流程收敛 |
+| flush POLLOUT 恢复 | 已具备 | 保持 EAGAIN、恢复后取消监听和失败清理测试 |
+| 统一 auxiliary event-source | 已具备 FD/Interest/Dispatch 和明确 FD 所有权 | 保持 ERR/HUP/NVAL 一次性注销、POLLOUT 和服务清理回归测试 |
+| prepare/read 标准流程 | 已实现 prepare/read/cancel 配对和 EAGAIN 重试 | 保持 readable、timeout、EINTR 和失败路径测试，补真实 compositor 验收 |
 | 键盘 repeat 与 IBus deadline 主循环调度 | 已实现 | 纳入统一 event-source 错误模型并保持回归测试 |
 | 显式 surface/configure 状态机 | 首次/remap 门限已修复 | 继续集中 serial、ACK 和完整状态机 |
 | configure/scale 几何所有权 | 已覆盖 serial 前、ACK 前及 hidden/frame-pending 交错 | 保持几何与 OnResize/ACK 回归测试并做真实 compositor 验收 |
@@ -405,10 +407,9 @@ Vulkan fake 至少跟踪：
 
 后续工作按以下顺序推进，不重复已经落地的呈现、输入调度、缩放往返、swapchain 和 CI 修复：
 
-1. **收敛事件循环**：统一 event source，补齐 prepare/read/cancel，保持现有 ERR/HUP、POLLOUT、eventfd 和 deadline 行为。
-2. **完善显式窗口状态机**：减少布尔组合，集中 configure 事务、ACK、frame callback 和 surface 映射状态。
-3. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉，并明确 keep-alive 产品契约。
-4. **补验证体系**：在现有 Linux 原生单元测试之上，增加原生 race、headless compositor、Vulkan validation/lavapipe、真实桌面和性能验收。
+1. **完善显式窗口状态机**：减少布尔组合，集中 configure 事务、ACK、frame callback 和 surface 映射状态。
+2. **抽取桌面服务公共生命周期**：在不改变协议核心的前提下减少 X11/Wayland 分叉，并明确 keep-alive 产品契约。
+3. **补验证体系**：在现有 Linux 原生单元测试之上，增加原生 race、headless compositor、Vulkan validation/lavapipe、真实桌面和性能验收。
 
 该顺序保留现有后端调度、PureGo、共享渲染和协议核心，不要求推倒重写。
 

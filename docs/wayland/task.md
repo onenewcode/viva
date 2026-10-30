@@ -1,7 +1,7 @@
 # Wayland 待实施任务
 
 - 修订日期：2026-10-30
-- 当前基线：`7f82260` + Task 5 当前 diff
+- 当前基线：`1cafe6f` + Task 6 当前 diff
 - 目标架构：[01-architecture-overview.md](01-architecture-overview.md)
 - 当前审查：[02-implementation-architecture-review.md](02-implementation-architecture-review.md)
 
@@ -18,25 +18,6 @@
 7. 每个任务提交前必须同步 `01`、`02` 和 `task.md`：记录基线提交与当前任务 diff、实现状态和验证证据，移除已完成 findings/待办且不重排历史任务编号，保留仍未完成的差距。Task 4 是阶段一致性检查，不替代逐任务同步。
 
 ## P2：继续目标架构收敛
-
-### Task 6：补齐 libwayland prepare/read 与统一 event-source 契约
-
-- 目标：在不改变现有命令队列、flush 背压、FD 异常处理和 deadline 行为的前提下，完成标准读取流程。
-- 主要文件：
-  - `internal/platform/linux/wayland_loop.go`
-  - `internal/platform/linux/wayland_client.go`
-  - `internal/platform/linux/wayland_app.go`
-  - 相关 loop/service 测试
-- 实施要点：
-  - `prepare_read` 成功返回 0 后严格配对 `read_events` 或 `cancel_read`；
-  - poll 前排空 pending；`prepare_read` 返回 -1 且 `errno == EAGAIN` 时继续 dispatch，其他失败进入统一错误路径；
-  - 保留 flush EINTR/EAGAIN、POLLOUT 恢复和持续 poll 错误退出；
-  - event-source 明确 FD、Interest、Dispatch(revents) 和关闭所有权，不使用平行切片隐式关联作为最终契约；
-  - 保留主循环 IBus/repeat deadline，不重新引入独立 ticker goroutine。
-- 验收条件：
-  - readable、timeout、EINTR、EAGAIN、ERR/HUP/NVAL 和 cancel 路径均有行为测试；
-  - eventfd 唤醒、Quit、服务 FD 清理及最近 deadline 不回归；
-  - prepare/read 任一步骤失败都进入统一错误与清理路径。
 
 ### Task 7：集中 surface/configure 状态与提交事务
 

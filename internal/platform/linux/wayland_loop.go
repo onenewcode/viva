@@ -17,10 +17,32 @@ import (
 const (
 	efdCloexec    = 0x80000
 	efdNonblock   = 0x800
+	pollIn        = 0x0001
+	pollOut       = 0x0004
 	pollErrorBits = 0x0008 | 0x0010 | 0x0020 // POLLERR | POLLHUP | POLLNVAL
 )
 
 type waylandCommand func()
+
+// waylandEventSource is an auxiliary descriptor in the main loop. The source
+// owner closes the descriptor after unregistering it; the loop never closes it.
+type waylandEventSource interface {
+	FD() int32
+	Interest() uint16
+	Dispatch(revents uint16) error
+}
+
+type waylandExtraSource struct {
+	fd       int32
+	interest uint16
+	dispatch func(revents uint16) error
+}
+
+func (source *waylandExtraSource) FD() int32        { return source.fd }
+func (source *waylandExtraSource) Interest() uint16 { return source.interest }
+func (source *waylandExtraSource) Dispatch(revents uint16) error {
+	return source.dispatch(revents)
+}
 
 type libcAPI struct {
 	library       uintptr
@@ -78,8 +100,7 @@ type waylandLoop struct {
 
 	pollMu       sync.Mutex
 	pollFDs      []pollFD
-	extraFDs     []int32
-	extraCBs     []func()
+	extraSources []waylandEventSource
 	flushPending bool
 }
 
@@ -128,19 +149,19 @@ func newWaylandLoop(api *waylandAPI, display uintptr, libc *libcAPI) (*waylandLo
 }
 
 func (l *waylandLoop) rebuildPollFDsLocked() {
-	total := 2 + len(l.extraFDs)
+	total := 2 + len(l.extraSources)
 	if cap(l.pollFDs) >= total {
 		l.pollFDs = l.pollFDs[:total]
 	} else {
 		l.pollFDs = make([]pollFD, total)
 	}
-	l.pollFDs[0] = pollFD{FD: l.waylandFD, Events: 1} // POLLIN = 1
+	l.pollFDs[0] = pollFD{FD: l.waylandFD, Events: pollIn}
 	if l.flushPending {
-		l.pollFDs[0].Events |= 4 // POLLOUT = 4
+		l.pollFDs[0].Events |= pollOut
 	}
-	l.pollFDs[1] = pollFD{FD: l.wakeFD, Events: 1}
-	for i, fd := range l.extraFDs {
-		l.pollFDs[2+i] = pollFD{FD: fd, Events: 1}
+	l.pollFDs[1] = pollFD{FD: l.wakeFD, Events: pollIn}
+	for i, source := range l.extraSources {
+		l.pollFDs[2+i] = pollFD{FD: source.FD(), Events: int16(source.Interest())}
 	}
 }
 
@@ -150,15 +171,27 @@ func (l *waylandLoop) rebuildPollFDs() {
 	l.rebuildPollFDsLocked()
 }
 
-func (l *waylandLoop) addExtraFD(fd int32, onReady func()) {
-	if fd < 0 {
+func (l *waylandLoop) addEventSource(source waylandEventSource) {
+	if source == nil || source.FD() < 0 {
 		return
 	}
 	l.pollMu.Lock()
 	defer l.pollMu.Unlock()
-	l.extraFDs = append(l.extraFDs, fd)
-	l.extraCBs = append(l.extraCBs, onReady)
+	l.extraSources = append(l.extraSources, source)
 	l.rebuildPollFDsLocked()
+}
+
+func (l *waylandLoop) addExtraFD(fd int32, onReady func()) {
+	l.addEventSource(&waylandExtraSource{
+		fd:       fd,
+		interest: pollIn,
+		dispatch: func(uint16) error {
+			if onReady != nil {
+				onReady()
+			}
+			return nil
+		},
+	})
 }
 
 func (l *waylandLoop) removeExtraFD(fd int32) {
@@ -167,10 +200,9 @@ func (l *waylandLoop) removeExtraFD(fd int32) {
 	}
 	l.pollMu.Lock()
 	defer l.pollMu.Unlock()
-	for i, f := range l.extraFDs {
-		if f == fd {
-			l.extraFDs = append(l.extraFDs[:i], l.extraFDs[i+1:]...)
-			l.extraCBs = append(l.extraCBs[:i], l.extraCBs[i+1:]...)
+	for i, source := range l.extraSources {
+		if source.FD() == fd {
+			l.extraSources = append(l.extraSources[:i], l.extraSources[i+1:]...)
 			break
 		}
 	}
@@ -218,9 +250,9 @@ func (l *waylandLoop) setFlushPending(pending bool) {
 	l.flushPending = pending
 	if len(l.pollFDs) > 0 {
 		if pending {
-			l.pollFDs[0].Events |= 4 // POLLOUT = 4
+			l.pollFDs[0].Events |= pollOut
 		} else {
-			l.pollFDs[0].Events &^= 4
+			l.pollFDs[0].Events &^= pollOut
 		}
 	}
 	l.pollMu.Unlock()
@@ -274,6 +306,65 @@ func (l *waylandLoop) step(timeoutMs int32) bool {
 	return l.stepWithTimeout(func() int32 { return timeoutMs })
 }
 
+func (l *waylandLoop) dispatchPending() bool {
+	if l.wayland == nil || l.wayland.displayDispatchPending == nil {
+		return true
+	}
+	if l.wayland.displayDispatchPending(l.display) < 0 {
+		l.fail(l.displayError("dispatch pending events"))
+		return false
+	}
+	return true
+}
+
+func (l *waylandLoop) prepareRead() (prepared, ok bool) {
+	if l.wayland == nil || l.wayland.displayPrepareRead == nil {
+		l.fail(errors.New("linux: Wayland prepare read is unavailable"))
+		return false, false
+	}
+	for {
+		if l.wayland.displayPrepareRead(l.display) == 0 {
+			return true, true
+		}
+		if l.libc.errno() != syscall.EAGAIN {
+			l.fail(l.displayError("prepare read"))
+			return false, false
+		}
+		if !l.dispatchPending() {
+			return false, false
+		}
+	}
+}
+
+func (l *waylandLoop) cancelRead(prepared bool) {
+	if prepared && l.wayland != nil && l.wayland.displayCancelRead != nil {
+		l.wayland.displayCancelRead(l.display)
+	}
+}
+
+func (l *waylandLoop) finishRead(prepared, readable bool) bool {
+	if !prepared {
+		return true
+	}
+	if readable {
+		if l.wayland.displayReadEvents == nil {
+			l.fail(errors.New("linux: Wayland read events is unavailable"))
+			return false
+		}
+		if l.wayland.displayReadEvents(l.display) < 0 {
+			l.fail(l.displayError("read events"))
+			return false
+		}
+		return true
+	}
+	if l.wayland.displayCancelRead == nil {
+		l.fail(errors.New("linux: Wayland cancel read is unavailable"))
+		return false
+	}
+	l.wayland.displayCancelRead(l.display)
+	return true
+}
+
 func (l *waylandLoop) stepWithTimeout(timeout func() int32) bool {
 	if !l.running.Load() {
 		return false
@@ -284,21 +375,20 @@ func (l *waylandLoop) stepWithTimeout(timeout func() int32) bool {
 		return false
 	}
 
-	// 1. Dispatch any pending Wayland events already in the client library buffer BEFORE polling!
-	// This prevents hanging in poll if events were already read into memory.
-	if l.wayland != nil && l.wayland.displayDispatchPending != nil {
-		if l.wayland.displayDispatchPending(l.display) < 0 {
-			l.fail(l.displayError("dispatch pending events"))
-			return false
-		}
+	// Empty the client-side queue before waiting, then pair every successful
+	// prepare with exactly one read or cancel, including all poll error paths.
+	if !l.dispatchPending() {
+		return false
 	}
-
-	// 2. Flush outgoing requests to Wayland display socket
+	prepared, ok := l.prepareRead()
+	if !ok {
+		return false
+	}
 	if !l.flush() {
+		l.cancelRead(prepared)
 		return false
 	}
 
-	// 3. Poll for readiness
 	l.pollMu.Lock()
 	nfds := uintptr(len(l.pollFDs))
 	pfd := &l.pollFDs[0]
@@ -312,6 +402,7 @@ func (l *waylandLoop) stepWithTimeout(timeout func() int32) bool {
 		ret := l.libc.poll(pfd, nfds, timeoutMs)
 		if ret < 0 {
 			errno := l.libc.errno()
+			l.cancelRead(prepared)
 			if errno == syscall.EINTR {
 				return l.running.Load()
 			}
@@ -320,9 +411,13 @@ func (l *waylandLoop) stepWithTimeout(timeout func() int32) bool {
 		}
 	}
 
-	// 4. Inspect revents under pollMu
+	type readySource struct {
+		source  waylandEventSource
+		revents uint16
+	}
+
 	l.pollMu.Lock()
-	woken := len(l.pollFDs) > 1 && l.pollFDs[1].REvents&1 != 0
+	woken := len(l.pollFDs) > 1 && l.pollFDs[1].REvents&pollIn != 0
 	if woken {
 		var val [8]byte
 		if l.libc != nil && l.libc.read != nil && l.wakeFD >= 0 {
@@ -330,57 +425,48 @@ func (l *waylandLoop) stepWithTimeout(timeout func() int32) bool {
 		}
 	}
 
-	// Snapshot ready extra callbacks and failed registrations.
-	var readyCBs []func()
+	var readySources []readySource
 	var failedFDs []int32
-	for i, cb := range l.extraCBs {
+	for i, source := range l.extraSources {
 		if len(l.pollFDs) <= 2+i {
 			continue
 		}
 		revents := l.pollFDs[2+i].REvents
 		if revents&pollErrorBits != 0 {
-			failedFDs = append(failedFDs, l.extraFDs[i])
+			failedFDs = append(failedFDs, source.FD())
 		}
-		if revents&(1|pollErrorBits) != 0 && cb != nil {
-			readyCBs = append(readyCBs, cb)
+		if revents != 0 {
+			readySources = append(readySources, readySource{source: source, revents: uint16(revents)})
 		}
 	}
 
-	waylandIn := len(l.pollFDs) > 0 && l.pollFDs[0].REvents&1 != 0
-	waylandErr := len(l.pollFDs) > 0 && l.pollFDs[0].REvents&(0x0008|0x0010) != 0
+	waylandIn := len(l.pollFDs) > 0 && l.pollFDs[0].REvents&pollIn != 0
+	waylandErr := len(l.pollFDs) > 0 && l.pollFDs[0].REvents&pollErrorBits != 0
 	l.pollMu.Unlock()
+
+	if !l.finishRead(prepared, waylandIn) {
+		return false
+	}
 
 	// Failed sources are one-shot: unregister before dispatch so a closed FD
 	// cannot immediately trigger poll again while the service cleans up.
 	for _, fd := range failedFDs {
 		l.removeExtraFD(fd)
 	}
-
-	// 5. Execute commands and extra callbacks with pollMu unlocked!
 	if woken {
 		l.drainCommands()
 	}
-
-	for _, cb := range readyCBs {
-		cb()
-	}
-
-	// 6. Process incoming Wayland socket events
-	if waylandIn {
-		if l.wayland != nil && l.wayland.displayDispatch != nil {
-			if l.wayland.displayDispatch(l.display) < 0 {
-				l.fail(l.displayError("dispatch"))
-				return false
-			}
-		}
-	} else if l.wayland != nil && l.wayland.displayDispatchPending != nil {
-		if l.wayland.displayDispatchPending(l.display) < 0 {
-			l.fail(l.displayError("dispatch pending events"))
+	for _, ready := range readySources {
+		if err := ready.source.Dispatch(ready.revents); err != nil {
+			l.removeExtraFD(ready.source.FD())
+			l.fail(fmt.Errorf("linux: Wayland event source %d failed: %w", ready.source.FD(), err))
 			return false
 		}
 	}
 
-	// 7. Check for hangup / error on Wayland socket
+	if !l.dispatchPending() {
+		return false
+	}
 	if waylandErr {
 		l.fail(errors.New("linux: Wayland socket error or hangup"))
 		return false
