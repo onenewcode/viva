@@ -416,9 +416,14 @@ type vulkanRenderer struct {
 	// no surface and is not rebuilt. recoveries counts the rebuilds.
 	provider            vulkanSurfaceProvider
 	swapchainSuboptimal bool
-	connection          uintptr
-	window              uint32
-	recoveries          uint64
+	// swapchainSuboptimalRebuilt means the current swapchain was recreated
+	// after SUBOPTIMAL was reported and still reports it. Further frames
+	// present it instead of recreating it again until a frame reports a
+	// healthy status or the swapchain is recreated for another reason.
+	swapchainSuboptimalRebuilt bool
+	connection                 uintptr
+	window                     uint32
+	recoveries                 uint64
 	// frame is the window frame the renderer draws, if any (vulkan_frame_linux.go).
 	frame vulkanFrame
 }
@@ -784,6 +789,7 @@ func (renderer *vulkanRenderer) createSwapchainWithOld(oldSwapchain uintptr) (er
 	}
 	renderer.width, renderer.height, renderer.format = extent.Width, extent.Height, selected.Format
 	renderer.swapchainSuboptimal = false
+	renderer.swapchainSuboptimalRebuilt = false
 	return nil
 }
 
@@ -991,11 +997,20 @@ func (renderer *vulkanRenderer) presentRebuilding() error {
 		if err != nil {
 			return err
 		}
-		if !rebuild && (!renderer.swapchainSuboptimal || attempt == 1) {
-			// The recreated swapchain has presented, even if its driver still
-			// reports SUBOPTIMAL. A later frame may rebuild it, but repeatedly
-			// recreating a usable swapchain cannot make that status converge.
-			return nil
+		if !rebuild {
+			if !renderer.swapchainSuboptimal {
+				// A healthy frame ends any SUBOPTIMAL episode; a later
+				// SUBOPTIMAL is a fresh signal that may rebuild once.
+				renderer.swapchainSuboptimalRebuilt = false
+				return nil
+			}
+			if renderer.swapchainSuboptimalRebuilt || attempt == 1 {
+				// SUBOPTIMAL presents the frame. Once the swapchain has been
+				// recreated for it, recreating again cannot make the status
+				// converge; present this swapchain until the status clears.
+				renderer.swapchainSuboptimalRebuilt = true
+				return nil
+			}
 		}
 		if attempt == 1 {
 			break
@@ -1006,7 +1021,7 @@ func (renderer *vulkanRenderer) presentRebuilding() error {
 			return err
 		}
 	}
-	return fmt.Errorf("linux: Vulkan swapchain remained out of date or suboptimal after recreation")
+	return fmt.Errorf("linux: Vulkan swapchain remained out of date after recreation")
 }
 
 func (renderer *vulkanRenderer) presentOnce() (bool, error) {
@@ -1021,10 +1036,10 @@ func (renderer *vulkanRenderer) presentOnce() (bool, error) {
 	if status != vkSuccess && status != vkSuboptimal {
 		return false, vkCheck(status, "acquire swapchain image")
 	}
-	if status == vkSuboptimal {
+	suboptimal := status == vkSuboptimal
+	if suboptimal {
 		renderer.swapchainSuboptimal = true
 	}
-	rebuild := swapchainNeedsRebuild(status)
 	image := scratch.image
 	if image >= uint32(len(renderer.commands)) {
 		return false, fmt.Errorf("linux: Vulkan acquired invalid image %d", image)
@@ -1042,12 +1057,18 @@ func (renderer *vulkanRenderer) presentOnce() (bool, error) {
 	status = renderer.api.queuePresent(renderer.queue, &scratch.present)
 	if status == vkSuboptimal {
 		renderer.swapchainSuboptimal = true
+		suboptimal = true
 	}
 	if status != vkSuccess && !swapchainNeedsRebuild(status) && status != vkSuboptimal {
 		return false, vkCheck(status, "present swapchain image")
 	}
+	if !suboptimal {
+		// The swapchain presented at its preferred configuration. A later
+		// SUBOPTIMAL is new information and may rebuild it once.
+		renderer.swapchainSuboptimal = false
+	}
 	renderer.submissions++
-	return rebuild || swapchainNeedsRebuild(status), nil
+	return swapchainNeedsRebuild(status), nil
 }
 
 // apply takes a frame into the renderer's scene. A frame is idempotent, so one
