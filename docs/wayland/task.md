@@ -18,11 +18,11 @@
 
 ## P1
 
-- **Task 14：Wayland IME context 生命周期（F6）。** 窗口销毁/移除时调用 `router.ime.close()`，与 X11 的关闭路径一致；回归测试覆盖关闭窗口后守护进程收到 `Context.Close`，以及关闭后新窗口文本输入仍正常。失焦通知的去重与能力移除路径已在 Task 13 的收尾修复中完成并有测试。
 - **Task 15：Vulkan SUBOPTIMAL 收敛（F5）。** 重建后再次呈现得到的 `VK_SUBOPTIMAL_KHR` 不得作为下一帧重建的依据；`OUT_OF_DATE` 的恢复路径保持不变。回归测试覆盖：fake 驱动持续返回 SUBOPTIMAL 时 `deviceWaitIdle`/swapchain 重建只发生一次；持续 `OUT_OF_DATE` 仍按现有有界恢复重建。
 
 ## 尚未排期
 
+- 收尾评审发现的既有问题（详见 02 文档 §2.2）：wl_pointer/wl_keyboard/wl_data_device 对象版本固定为 1（滚动、客户端按键重复与部分 release/finish 请求受影响）、IBus 断线后不重连、`checkInputMethod` 持锁回调可能死锁、Wayland `Window.Frame` 恒返回 false、主题检测在绘制路径每帧解析环境变量。需要在单独任务中修复并补测试。
 - 受限环境验收：GNOME、Sway/wlroots、真实 ibus-daemon/窗口级 IME 注入、拖放、AT-SPI、真实 session bus/portal 重启、device loss 注入和运行时 output 热插拔。Fcitx5 的 IBus 兼容接口可能通过 `IBUS_ADDRESS=<session bus>` 接入，但尚未在真实窗口验证，不能替代 ibus-daemon 或 native text-input 验收。需要解锁的真实会话或可控测试机，完成前不得以 fake 或 headless 结果替代。
 - 桌面服务公共连接/重连抽象：待真实服务重连验收后实施，保留各后端 FD 与显示连接适配。
 - 托盘和显式后台常驻：先明确 keep-alive 产品契约，避免普通 watcher 意外延长应用生命周期。

@@ -8,7 +8,7 @@
 
 ## 1. 结论
 
-**宏观架构合理，不需要推倒重写；当前仍有 3 个未修复 finding（F1、F5、F6，§2），集中在拖放测试、IME context 生命周期和 swapchain 状态机。** 主循环的 prepare/read、surface/configure 事务、frame-callback 背压、系统 API 的主线程调用边界、Vulkan 恢复边界和桌面服务重连边界可以保留。Task 11 的入口和 KWin、Weston 两个 headless compositor 的原生验收已完成（lavapipe + validation），Weston 复跑暴露的 remap 缺陷已修复并有回归测试，任务关闭。Task 8 已在本机可执行范围内完成：新增 scale、多输出、事件交错和性能测量，受限项（GNOME/Sway、真实 ibus-daemon 会话、真实 portal 重启、device loss 注入、运行时 output 热插拔）按 §4.5 记录为限制，未声称验证。本机运行 Fcitx5 5.1.12 并通过会话总线提供 `org.freedesktop.IBus` 兼容接口，但 viva 默认的 IBus 客户端只读取 `IBUS_ADDRESS`/libibus 地址文件，二者默认不连通，见 §4.6。评审期间曾发现按定时器对所有 compositor 生效的 remap 兜底会让 KWin 在竞态下以 `unconfigured_buffer` 终止，已改为只对识别出的 Weston 启用（见 4.3）。
+**宏观架构合理，不需要推倒重写；当前仍有 2 个未修复 finding（F1、F5，§2），集中在拖放测试和 swapchain 状态机；另有收尾评审发现的既有问题记录在 §2.2，未排期。** 主循环的 prepare/read、surface/configure 事务、frame-callback 背压、系统 API 的主线程调用边界、Vulkan 恢复边界和桌面服务重连边界可以保留。Task 11 的入口和 KWin、Weston 两个 headless compositor 的原生验收已完成（lavapipe + validation），Weston 复跑暴露的 remap 缺陷已修复并有回归测试，任务关闭。Task 8 已在本机可执行范围内完成：新增 scale、多输出、事件交错和性能测量，受限项（GNOME/Sway、真实 ibus-daemon 会话、真实 portal 重启、device loss 注入、运行时 output 热插拔）按 §4.5 记录为限制，未声称验证。本机运行 Fcitx5 5.1.12 并通过会话总线提供 `org.freedesktop.IBus` 兼容接口，但 viva 默认的 IBus 客户端只读取 `IBUS_ADDRESS`/libibus 地址文件，二者默认不连通，见 §4.6。评审期间曾发现按定时器对所有 compositor 生效的 remap 兜底会让 KWin 在竞态下以 `unconfigured_buffer` 终止，已改为只对识别出的 Weston 启用（见 4.3）。
 
 “源码确认”表示控制流中存在问题，不表示已在真实 Linux/compositor/GPU 上复现可见症状；真实环境结果只在第 4 节按层记录。
 
@@ -33,10 +33,20 @@
 **F5（新增）：`swapchainSuboptimal` 残留导致每帧重建 swapchain。**
 `presentRebuilding`（`vulkan_linux.go:994`）在重建后的第 1 次呈现返回，但 `presentOnce` 会在 acquire/present 返回 `VK_SUBOPTIMAL_KHR` 时再次置位 `swapchainSuboptimal`（`:1025`、`:1044`），只有 `createSwapchain` 会清除它（`:786`）。下一帧 attempt 0 看到残留标志又进入重建分支。若驱动/合成器持续返回 `VK_SUBOPTIMAL_KHR`（例如 Wayland surface 的 buffer scale 与输出不一致），每帧都会 `deviceWaitIdle` 并销毁重建 command pool、render pass、scene pipelines、image views 和 framebuffers，表现为帧率骤降和持续闪烁，而不是注释承诺的“只重建一次”。
 
-**F6（新增）：Wayland 窗口销毁不关闭 IBus context。**
-`waylandWindow.destroy` 只关闭 `state.text`（`window_wayland.go:891`），随后 `removeWindow` 丢弃 state；`state.router.ime` 从未 `close()`。X11 的关闭路径会调用 `target.router.ime.close()`（`window_linux.go:543`），向守护进程发送 `Context.Close`。结果是：关闭曾获得焦点的文本框窗口后，IBus 中残留 focused context，其 handler 闭包仍引用已销毁的窗口和已关闭的 `linuxTextInput`；反复开关窗口会累积泄漏，守护进程还可能向死窗口投递 preedit/commit，影响后续窗口的输入。
-
 没有其他已知源码阻断项。真实 session bus/portal 的终止、重启和设置更新仍未执行，不能用 fake 回归测试替代 Task 8 的真实服务恢复验收。
+
+### 2.2 收尾评审发现的既有问题（未排期）
+
+以下问题由收尾任务的独立评审发现，均先于本轮任务存在，不属于 Task 14–16 的改动，按用户要求不在本轮修复，记录备查（行号基于 `33ba7d6`）：
+
+- **wl_pointer / wl_keyboard 对象版本固定为 1**：`seatGetPointer`（`wayland_registry.go:1128`）和 `seatGetKeyboard`（`:1151`）用版本 1 创建对象，导致 `wl_pointer.frame`（v5）和 `wl_keyboard.repeat_info`（v4）不会到达，滚动事件只在 frame 回调里派发，键盘客户端重复因 `repeatRate == 0` 不启动；release 请求（v3）对 v1 对象也非法。需要在创建时使用 seat 的版本并补集成测试。
+- **wl_data_device 对象版本固定为 1**：`getDataDevice`（`wayland_registry.go:1216`）忽略 manager 版本，而 `wayland_data.go:283`、`:461` 按 manager 版本发送 finish/release，可能对 v1 对象发非法请求。
+- **IBus 断线后不会重连**：`checkInputMethod`（`wayland_app.go:707`）清掉 bus 后 `ibusTried` 仍为真，`inputMethodBus` 不再拨号；守护进程重启后本进程永久失去 IME。
+- **checkInputMethod 持锁回调**：`wayland_app.go:713` 在持有 `app.mu` 时调用 `ime.lost()`，其呈现失败路径会经 `app.fail` → `closeAll` 再次加锁，`sync.Mutex` 不可重入，可能死锁。
+- **Wayland `Window.Frame` 恒返回 false**：`window_wayland.go:1037` 计算了尺寸却总是 `ok=false`，与公开契约（只有关闭窗口才 false）不符。
+- **主题检测在绘制路径**：`app/window_controls.go:190` 每帧读取并解析 `XDG_CURRENT_DESKTOP`，应缓存。
+
+这些项已加入任务清单的“尚未排期”，在真实会话或单独任务中处理。
 
 ## 3. 已核对的主干
 
@@ -215,6 +225,8 @@ go test -race -skip TestAFileDragFromAnotherClientIsAcceptedAndDropped ./interna
 ### 4.7 收尾任务验证
 
 三个收尾任务在独立 worktree 中由子 agent 实现并各自完成 code-review(high)；主导只做审核合并、复验和文档同步。基线为 `33ba7d6`。
+
+**Task 14（F6，IME context 生命周期）。** 分支 `task14`，合并后 `38ea532`。`waylandWindow.destroy` 在解绑 Waker 之后、关闭 renderer/text 之前调用 `state.router.ime.close()` 并清空指针，与 X11 的关闭顺序一致；`nil` IME、无 state 和二次 destroy 均安全，关闭只发生一次。`TestDestroyingAWaylandWindowClosesItsIMEContextOnce`、`TestDestroyingAWaylandWindowWithoutAnIMEIsSafe`、`TestClosingAWaylandWindowsIMEContextLeavesAnotherWindowUsable` 覆盖计数、空 IME 和窗口间隔离。合并后 gofmt、`git diff --check`、双架构 vet、原生测试 `ok 7.7s`、race `ok 6.8s`、双架构测试包编译全部通过。
 
 **Task 16（F4，PressMoveOnDrag）。** 分支 `task16`，合并后 `739cb67`。Wayland 的 `PressMoveOnDrag` 现在先把 `PointerDown` 投递给应用并返回 false，记录 press serial 与逻辑坐标；指针移动超过 4 逻辑像素 slop 后才以原 press serial 开始移动并补发 `PointerExit`；pending 状态在主键按下/释放、pointer leave 和 `teardownPointer` 清除；`PressMove`、边角 resize 与双击最大化保持原语义。`TestWaylandPressMoveOnDragDeliversPressBeforeMoving` 覆盖 press 投递、slop 内不移动、越过 slop 移动一次、未拖动不移动和双击最大化。合并后 gofmt、`git diff --check`、amd64 vet 通过，原生测试 `ok 7.8s`。真实 compositor 会话未执行，按 §4.5 记录。
 
