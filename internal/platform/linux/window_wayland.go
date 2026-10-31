@@ -895,6 +895,13 @@ func (win *waylandWindow) destroy() {
 		if win.state.config.Waker != nil && win.state.config.OnRedraw != nil {
 			win.state.config.Waker.Unbind()
 		}
+		// The engine keeps this window's context focused, and its handler closures
+		// point at the field and router that are about to go away. Close it first,
+		// as the X11 close path does, so the daemon stops sending to a dead window.
+		if win.state.router.ime != nil {
+			win.state.router.ime.close()
+			win.state.router.ime = nil
+		}
 		if win.state.renderer != nil {
 			win.state.renderer.close()
 			win.state.renderer = nil
