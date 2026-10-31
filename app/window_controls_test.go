@@ -2,6 +2,7 @@ package app
 
 import (
 	"os"
+	"runtime"
 	"testing"
 
 	"github.com/vivaui/viva/internal/platform"
@@ -170,6 +171,9 @@ func TestWindowButtonsPaintHoverPressedAndTheCloseColor(t *testing.T) {
 }
 
 func TestDesktopThemeDetectionAndStyling(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("desktop theme detection reads XDG_CURRENT_DESKTOP only on Linux")
+	}
 	orig := os.Getenv("XDG_CURRENT_DESKTOP")
 	defer os.Setenv("XDG_CURRENT_DESKTOP", orig)
 
