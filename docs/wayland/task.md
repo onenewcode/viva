@@ -16,10 +16,6 @@
 5. 同步更新三份文档的基线、findings 和验证证据；完成项从当前清单删除，不保留修复流水账。
 6. 原生单元测试、race、headless compositor、Vulkan validation 和真实桌面结果分别记录，不能互相替代。
 
-## P1
-
-- **Task 15：Vulkan SUBOPTIMAL 收敛（F5）。** 重建后再次呈现得到的 `VK_SUBOPTIMAL_KHR` 不得作为下一帧重建的依据；`OUT_OF_DATE` 的恢复路径保持不变。回归测试覆盖：fake 驱动持续返回 SUBOPTIMAL 时 `deviceWaitIdle`/swapchain 重建只发生一次；持续 `OUT_OF_DATE` 仍按现有有界恢复重建。
-
 ## 尚未排期
 
 - 收尾评审发现的既有问题（详见 02 文档 §2.2）：wl_pointer/wl_keyboard/wl_data_device 对象版本固定为 1（滚动、客户端按键重复与部分 release/finish 请求受影响）、IBus 断线后不重连、`checkInputMethod` 持锁回调可能死锁、Wayland `Window.Frame` 恒返回 false、主题检测在绘制路径每帧解析环境变量。需要在单独任务中修复并补测试。

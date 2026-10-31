@@ -8,7 +8,7 @@
 
 ## 1. 结论
 
-**宏观架构合理，不需要推倒重写；当前仍有 2 个未修复 finding（F1、F5，§2），集中在拖放测试和 swapchain 状态机；另有收尾评审发现的既有问题记录在 §2.2，未排期。** 主循环的 prepare/read、surface/configure 事务、frame-callback 背压、系统 API 的主线程调用边界、Vulkan 恢复边界和桌面服务重连边界可以保留。Task 11 的入口和 KWin、Weston 两个 headless compositor 的原生验收已完成（lavapipe + validation），Weston 复跑暴露的 remap 缺陷已修复并有回归测试，任务关闭。Task 8 已在本机可执行范围内完成：新增 scale、多输出、事件交错和性能测量，受限项（GNOME/Sway、真实 ibus-daemon 会话、真实 portal 重启、device loss 注入、运行时 output 热插拔）按 §4.5 记录为限制，未声称验证。本机运行 Fcitx5 5.1.12 并通过会话总线提供 `org.freedesktop.IBus` 兼容接口，但 viva 默认的 IBus 客户端只读取 `IBUS_ADDRESS`/libibus 地址文件，二者默认不连通，见 §4.6。评审期间曾发现按定时器对所有 compositor 生效的 remap 兜底会让 KWin 在竞态下以 `unconfigured_buffer` 终止，已改为只对识别出的 Weston 启用（见 4.3）。
+**宏观架构合理，不需要推倒重写；当前仍有 1 个未修复 finding（F1，§2），即 X11 拖放集成测试的固有偶发；另有收尾评审发现的既有问题记录在 §2.2，未排期。** 主循环的 prepare/read、surface/configure 事务、frame-callback 背压、系统 API 的主线程调用边界、Vulkan 恢复边界和桌面服务重连边界可以保留。Task 11 的入口和 KWin、Weston 两个 headless compositor 的原生验收已完成（lavapipe + validation），Weston 复跑暴露的 remap 缺陷已修复并有回归测试，任务关闭。Task 8 已在本机可执行范围内完成：新增 scale、多输出、事件交错和性能测量，受限项（GNOME/Sway、真实 ibus-daemon 会话、真实 portal 重启、device loss 注入、运行时 output 热插拔）按 §4.5 记录为限制，未声称验证。本机运行 Fcitx5 5.1.12 并通过会话总线提供 `org.freedesktop.IBus` 兼容接口，但 viva 默认的 IBus 客户端只读取 `IBUS_ADDRESS`/libibus 地址文件，二者默认不连通，见 §4.6。评审期间曾发现按定时器对所有 compositor 生效的 remap 兜底会让 KWin 在竞态下以 `unconfigured_buffer` 终止，已改为只对识别出的 Weston 启用（见 4.3）。
 
 “源码确认”表示控制流中存在问题，不表示已在真实 Linux/compositor/GPU 上复现可见症状；真实环境结果只在第 4 节按层记录。
 
@@ -29,9 +29,6 @@
 ### 2.1 本轮 Wayland 源码复核（新增）
 
 以下 findings 由当前分支的只读源码复核产生，行号基于 `2e3b8ce`。它们表示控制流中可确认的偏差，未在真实 Wayland/compositor 会话中复现可见症状。以下只列出仍未修复的项；已完成项按 §6 删除。
-
-**F5（新增）：`swapchainSuboptimal` 残留导致每帧重建 swapchain。**
-`presentRebuilding`（`vulkan_linux.go:994`）在重建后的第 1 次呈现返回，但 `presentOnce` 会在 acquire/present 返回 `VK_SUBOPTIMAL_KHR` 时再次置位 `swapchainSuboptimal`（`:1025`、`:1044`），只有 `createSwapchain` 会清除它（`:786`）。下一帧 attempt 0 看到残留标志又进入重建分支。若驱动/合成器持续返回 `VK_SUBOPTIMAL_KHR`（例如 Wayland surface 的 buffer scale 与输出不一致），每帧都会 `deviceWaitIdle` 并销毁重建 command pool、render pass、scene pipelines、image views 和 framebuffers，表现为帧率骤降和持续闪烁，而不是注释承诺的“只重建一次”。
 
 没有其他已知源码阻断项。真实 session bus/portal 的终止、重启和设置更新仍未执行，不能用 fake 回归测试替代 Task 8 的真实服务恢复验收。
 
@@ -227,6 +224,8 @@ go test -race -skip TestAFileDragFromAnotherClientIsAcceptedAndDropped ./interna
 三个收尾任务在独立 worktree 中由子 agent 实现并各自完成 code-review(high)；主导只做审核合并、复验和文档同步。基线为 `33ba7d6`。
 
 **Task 14（F6，IME context 生命周期）。** 分支 `task14`，合并后 `38ea532`。`waylandWindow.destroy` 在解绑 Waker 之后、关闭 renderer/text 之前调用 `state.router.ime.close()` 并清空指针，与 X11 的关闭顺序一致；`nil` IME、无 state 和二次 destroy 均安全，关闭只发生一次。`TestDestroyingAWaylandWindowClosesItsIMEContextOnce`、`TestDestroyingAWaylandWindowWithoutAnIMEIsSafe`、`TestClosingAWaylandWindowsIMEContextLeavesAnotherWindowUsable` 覆盖计数、空 IME 和窗口间隔离。合并后 gofmt、`git diff --check`、双架构 vet、原生测试 `ok 7.7s`、race `ok 6.8s`、双架构测试包编译全部通过。
+
+**Task 15（F5，Vulkan SUBOPTIMAL 收敛）。** 分支 `task15`，合并后 `5271107`。`presentRebuilding` 增加独立的 epoch 标记 `swapchainSuboptimalRebuilt`：只有一次重建事务以接受残留 SUBOPTIMAL 结束时才置位，持续 SUBOPTIMAL 的驱动每帧不再重建；健康帧清除标记，使全新一次 SUBOPTIMAL 仍可触发一次重建；`createSwapchainWithOld` 清除标记，resize/scale/设备恢复后的重建开启新 epoch。`OUT_OF_DATE` 恢复路径保持一次有界重建后报错。回归测试覆盖 acquire/present/双侧持续 SUBOPTIMAL 三帧只重建一次、健康帧后新 SUBOPTIMAL 再重建一次、持续 OUT_OF_DATE 一次重建后报错、OUT_OF_DATE 恢复中残留 SUBOPTIMAL 被接受。合并后 gofmt、`git diff --check`、双架构 vet、原生测试 `ok 7.7s`、race `ok 7.0s`、双架构测试包编译全部通过。真实驱动/合成器会话未执行。
 
 **Task 16（F4，PressMoveOnDrag）。** 分支 `task16`，合并后 `739cb67`。Wayland 的 `PressMoveOnDrag` 现在先把 `PointerDown` 投递给应用并返回 false，记录 press serial 与逻辑坐标；指针移动超过 4 逻辑像素 slop 后才以原 press serial 开始移动并补发 `PointerExit`；pending 状态在主键按下/释放、pointer leave 和 `teardownPointer` 清除；`PressMove`、边角 resize 与双击最大化保持原语义。`TestWaylandPressMoveOnDragDeliversPressBeforeMoving` 覆盖 press 投递、slop 内不移动、越过 slop 移动一次、未拖动不移动和双击最大化。合并后 gofmt、`git diff --check`、amd64 vet 通过，原生测试 `ok 7.8s`。真实 compositor 会话未执行，按 §4.5 记录。
 
