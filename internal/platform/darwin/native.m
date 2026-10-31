@@ -1922,7 +1922,10 @@ static uint64_t viva_label_content_hash(viva_text_label config) {
         return NO;
     }
 
-    viva_prepare_text_context(context, scale);
+    // The bitmap is on the ceil(scale) grid and the texture is sampled down to the frame, so
+    // the context is scaled to that grid: scaling by the display scale draws the text too small
+    // wherever it is fractional.
+    viva_prepare_text_context(context, pixelScale);
     if (_runCount > 0) {
         [self drawRunsInContext:context pixelScale:pixelScale];
     } else {

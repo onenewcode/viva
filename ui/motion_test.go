@@ -481,3 +481,84 @@ func TestNextFrameSaysWhenToPaintAgain(t *testing.T) {
 		t.Fatal("a request outlived its frame")
 	}
 }
+
+// The built-in easings are these curves; the constructor has to agree with them
+// within rounding, or a motion that mixes the two would see its curve segments
+// step against the ones Animate eases.
+func TestCubicBezierMatchesTheBuiltInCurves(t *testing.T) {
+	cases := []struct {
+		easing Easing
+		curve  Curve
+	}{
+		{EaseInOut, CubicBezier(0.4, 0, 0.2, 1)},
+		{EaseOut, CubicBezier(0, 0, 0.2, 1)},
+		{EaseIn, CubicBezier(0.4, 0, 1, 1)},
+		{EaseCSS, CubicBezier(0.25, 0.1, 0.25, 1)},
+		{EaseEmphasized, CubicBezier(0.22, 1, 0.36, 1)},
+	}
+	for _, test := range cases {
+		for step := range 101 {
+			progress := float32(step) / 100
+			// The constructor takes its control points as float32, so the same
+			// curve built from the same numbers differs from the built-in one by
+			// the width of that conversion and by the solver's tolerance.
+			if got, want := test.curve(progress), test.easing.At(progress); math.Abs(float64(got-want)) > 1e-6 {
+				t.Fatalf("%v at %.2f = %v, want %v", test.easing, progress, got, want)
+			}
+		}
+	}
+}
+
+// A curve is asked for progress beyond its ends whenever a motion overshoots a
+// keyframe: the ends themselves must be exact, not solved for.
+func TestCubicBezierClampsItsEnds(t *testing.T) {
+	curve := CubicBezier(0.2, 0, 0.3, 1)
+	if got := curve(-2); got != 0 {
+		t.Fatalf("progress -2 = %v, want 0", got)
+	}
+	if got := curve(0); got != 0 {
+		t.Fatalf("progress 0 = %v, want 0", got)
+	}
+	if got := curve(1); got != 1 {
+		t.Fatalf("progress 1 = %v, want 1", got)
+	}
+	if got := curve(3); got != 1 {
+		t.Fatalf("progress 3 = %v, want 1", got)
+	}
+	// y is free, which is how a curve overshoots: a control point above 1 has to
+	// leave the eased value above the straight line.
+	overshoot := CubicBezier(0.1, 1.8, 0.9, 1)
+	if got := overshoot(0.15); got <= 0.3 {
+		t.Fatalf("an overshooting curve reached only %v at 0.15", got)
+	}
+}
+
+// A spring overshoots the value it moves to and settles back onto it, and a
+// calm spring does not overshoot at all.
+func TestSpringOvershootsAndSettles(t *testing.T) {
+	bouncy := Spring(1)
+	if got := bouncy(0); got != 0 {
+		t.Fatalf("a spring starts at %v, want 0", got)
+	}
+	if got := bouncy(1); got != 1 {
+		t.Fatalf("a spring ends at %v, want 1", got)
+	}
+	peak := float32(0)
+	for step := 0; step <= 200; step++ {
+		value := bouncy(float32(step) / 200)
+		if value < -0.05 {
+			t.Fatalf("a spring dips to %.3f at %.2f, want no visible undershoot", value, float32(step)/200)
+		}
+		peak = max(peak, value)
+	}
+	if peak < 1.05 {
+		t.Fatalf("a bouncy spring peaks at %.3f, want an overshoot past 1", peak)
+	}
+	calm := Spring(0)
+	for step := 0; step <= 200; step++ {
+		value := calm(float32(step) / 200)
+		if value > 1.001 || value < -0.001 {
+			t.Fatalf("a critically damped spring reaches %.4f at %.2f, want it to stay inside [0, 1]", value, float32(step)/200)
+		}
+	}
+}

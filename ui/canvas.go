@@ -539,7 +539,13 @@ type Canvas struct {
 	pathPoints    []Point
 	contourEnds   []int32
 	contourClosed []bool
-	pathBuilder   PathBuilder
+	// iconPartCenters is where each contour of an icon in motion turns and grows,
+	// rebuilt from the icon's own contour count on every painted frame.
+	iconPartCenters []Point
+	// iconContours holds the contours of an icon whose parts move, so a moving
+	// glyph does not allocate the slice on every frame.
+	iconContours []Icon
+	pathBuilder  PathBuilder
 	// gradientSource holds the flat triangles a path gradient recolors.
 	gradientSource []Triangle
 	// path and triangulation scratch survives Reset: reused every paint.
@@ -706,6 +712,8 @@ func (canvas *Canvas) Reset() {
 	canvas.pathPoints = canvas.pathPoints[:0]
 	canvas.contourEnds = canvas.contourEnds[:0]
 	canvas.contourClosed = canvas.contourClosed[:0]
+	canvas.iconPartCenters = canvas.iconPartCenters[:0]
+	canvas.iconContours = canvas.iconContours[:0]
 	canvas.motion.open = canvas.motion.open[:0]
 	canvas.trappedScope = ID{}
 	canvas.escapeTarget = ID{}

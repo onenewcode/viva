@@ -49,7 +49,7 @@ func (f *Frame) paint(i int32) {
 	case kindText:
 		f.paintText(n)
 	case kindIcon:
-		canvas.DrawIcon(extra.icon, ui.Rect{X: r.X, Y: r.Y, Width: n.pref[axisX], Height: n.pref[axisY]}, n.color)
+		canvas.DrawIconTransformed(extra.icon, ui.Rect{X: r.X, Y: r.Y, Width: n.pref[axisX], Height: n.pref[axisY]}, n.color, extra.iconTransform)
 	case kindImage:
 		canvas.DrawBitmap(f.images[n.aux], r)
 	case kindButton:

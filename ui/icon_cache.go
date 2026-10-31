@@ -1,6 +1,9 @@
 package ui
 
-import "slices"
+import (
+	"math"
+	"slices"
+)
 
 // Painting an icon means flattening its curves and triangulating its strokes and
 // fills, and an interface paints the same few icons at the same few sizes every
@@ -19,7 +22,9 @@ const iconCacheLimit = 512
 
 type iconKey struct {
 	commands *PathCommand
+	count    int // commands[0:count] is the glyph: a contour shares the slice's start
 	layers   *IconLayer
+	layerN   int
 	viewBox  float32
 	viewHigh float32
 	stroke   float32
@@ -103,12 +108,18 @@ func (canvas *Canvas) icons() *iconCache {
 }
 
 func newIconKey(icon Icon, fit, scale float32, tint Color) iconKey {
+	// A contour is a slice of its glyph's commands, so the start pointer alone does
+	// not identify an icon: the head of a glyph and the glyph itself begin at the
+	// same command when the contour is the first one. The length is part of the key
+	// for that reason.
 	key := iconKey{viewBox: icon.ViewBox, viewHigh: icon.height(), stroke: icon.Stroke, fit: fit, scale: scale, cap: icon.Cap, join: icon.Join, opaque: tint.Alpha >= 0.999}
 	if len(icon.Commands) > 0 {
 		key.commands = &icon.Commands[0]
+		key.count = len(icon.Commands)
 	}
 	if len(icon.Layers) > 0 {
 		key.layers = &icon.Layers[0]
+		key.layerN = len(icon.Layers)
 	}
 	return key
 }
@@ -162,6 +173,247 @@ func (canvas *Canvas) drawIconCached(icon Icon, fit float32, origin Point, tint 
 		canvas.triangles = append(canvas.triangles, triangle)
 	}
 	paints.put(paintKey, append([]Triangle(nil), canvas.triangles[start:]...))
+}
+
+// iconTriangles returns the icon's tessellation, tessellating it the first time.
+func (canvas *Canvas) iconTriangles(icon Icon, fit float32, tint Color) []iconTriangle {
+	return canvas.trianglesFor(newIconKey(icon, fit, canvas.PixelScale(), tint), icon, fit, tint)
+}
+
+// trianglesFor is iconTriangles for a caller that has already built the key.
+func (canvas *Canvas) trianglesFor(key iconKey, icon Icon, fit float32, tint Color) []iconTriangle {
+	cache := canvas.icons()
+	if triangles, ok := cache.entries[key]; ok {
+		return triangles
+	}
+	triangles := canvas.tessellateIcon(icon, fit, tint)
+	if cache.entries == nil || len(cache.entries) >= iconCacheLimit {
+		cache.entries = make(map[iconKey][]iconTriangle, 64)
+	}
+	cache.entries[key] = triangles
+	return triangles
+}
+
+// drawIconPlaced paints the icon's tessellation through place, which is how an
+// icon is drawn while it is in motion. Nothing is cached for it: the points move
+// on every frame, so the paint cache would never hit.
+func (canvas *Canvas) drawIconPlaced(icon Icon, fit float32, tint Color, place iconPlacement) {
+	state := canvas.iconPaintState()
+	triangles := canvas.iconTriangles(icon, fit, tint)
+	canvas.triangles = slices.Grow(canvas.triangles, len(triangles))
+	for index := range triangles {
+		cached := &triangles[index]
+		points := [3]Point{
+			place.apply(cached.points[0]),
+			place.apply(cached.points[1]),
+			place.apply(cached.points[2]),
+		}
+		triangle := Triangle{
+			Points: points, Color: tint, Layer: state.layer, EdgeMask: cached.edges,
+			ClipOf: state.clip, HasClip: state.hasClip, RectsBefore: state.rectsBefore,
+		}
+		if cached.layer >= 0 && !shadeIconTriangle(icon, tint, cached, &triangle) {
+			continue
+		}
+		canvas.triangles = append(canvas.triangles, triangle)
+	}
+}
+
+// iconPaintState is what every triangle of one icon shares: the layer it lands
+// in, the clip it was drawn under and how many rectangles came before it.
+type iconPaintState struct {
+	layer       uint16
+	clip        Rect
+	hasClip     bool
+	rectsBefore uint32
+}
+
+func (canvas *Canvas) iconPaintState() iconPaintState {
+	state := iconPaintState{layer: canvas.currentLayer(), rectsBefore: uint32(len(canvas.rectangles))}
+	state.clip, state.hasClip = canvas.clipSnapshot()
+	return state
+}
+
+// shadeIconTriangle applies the fill of the icon layer the triangle came from and
+// reports whether the triangle is visible. Only a multi-coloured icon has layers,
+// so the caller checks for one before it pays for the call.
+func shadeIconTriangle(icon Icon, tint Color, cached *iconTriangle, triangle *Triangle) bool {
+	source := &icon.Layers[cached.layer]
+	if source.Gradient != nil {
+		colorize(triangle, source.Gradient, cached.t, tint.Alpha)
+	} else {
+		triangle.Color = fade(source.Fill, tint.Alpha)
+	}
+	return triangle.visible()
+}
+
+// iconPlacement maps a tessellated icon, which is laid out from (0, 0), onto the
+// canvas. It is the six numbers of an affine map plus the origin the icon is
+// painted at, which keeps the mapping composable: a part of a glyph is placed by
+// its own matrix and then by the glyph's.
+type iconPlacement struct {
+	origin           Point
+	a, b, c, d, e, f float32
+}
+
+// stillPlacement places the tessellation unchanged at origin, the case the paint
+// cache can replay.
+func stillPlacement(origin Point) iconPlacement {
+	return iconPlacement{origin: origin, a: 1, d: 1}
+}
+
+// iconPlacementAt is the placement that scales by scale, turns by rotate radians
+// and then moves by offset, all about center — the glyph's center for the icon,
+// and the bounds' center for a part of it.
+func iconPlacementAt(center, offset Point, rotate, scale float32) iconPlacement {
+	sine, cosine := math.Sincos(float64(rotate))
+	s, c := float32(sine), float32(cosine)
+	a, b, c1, d := scale*c, scale*s, -scale*s, scale*c
+	return iconPlacement{
+		a: a, b: b, c: c1, d: d,
+		e: center.X - a*center.X - c1*center.Y + offset.X,
+		f: center.Y - b*center.X - d*center.Y + offset.Y,
+	}
+}
+
+// after composes the placements: this one first, then outer, as outer ∘ this.
+func (place iconPlacement) after(outer iconPlacement) iconPlacement {
+	x := outer.a*place.origin.X + outer.c*place.origin.Y + outer.e
+	y := outer.b*place.origin.X + outer.d*place.origin.Y + outer.f
+	return iconPlacement{
+		origin: Point{X: outer.origin.X + x, Y: outer.origin.Y + y},
+		a:      outer.a*place.a + outer.c*place.b,
+		b:      outer.b*place.a + outer.d*place.b,
+		c:      outer.a*place.c + outer.c*place.d,
+		d:      outer.b*place.c + outer.d*place.d,
+		e:      outer.a*place.e + outer.c*place.f + outer.e,
+		f:      outer.b*place.e + outer.d*place.f + outer.f,
+	}
+}
+
+// turns reports whether the placement does more than translate the icon.
+func (place iconPlacement) turns() bool {
+	return place.a != 1 || place.b != 0 || place.c != 0 || place.d != 1
+}
+
+// still reports whether the placement only moves the icon, so the paint cache
+// can replay it as it would any other origin.
+func (place iconPlacement) still() bool {
+	return !place.turns() && place.e == 0 && place.f == 0
+}
+
+// apply places one vertex of the tessellation.
+func (place iconPlacement) apply(point Point) Point {
+	return Point{
+		X: place.origin.X + place.a*point.X + place.c*point.Y + place.e,
+		Y: place.origin.Y + place.b*point.X + place.d*point.Y + place.f,
+	}
+}
+
+// drawIconParts paints the glyph contour by contour, each through the glyph's
+// placement composed with its own part. A contour nobody moves is drawn with the
+// glyph's placement, so the only cost of an unmoving part is that the glyph is
+// painted as several paths rather than one.
+//
+// Layers are not contours: a multi-color icon paints them once through the
+// glyph's placement, after the contours, in the order the whole glyph paints
+// them. A part that moves changes the stroked glyph only, never the layer colors.
+func (canvas *Canvas) drawIconParts(icon Icon, fit float32, tint Color, place iconPlacement, parts []IconPart) {
+	contours := icon.appendContours(canvas.iconContours[:0])
+	canvas.iconContours = contours
+	centers := canvas.iconPartCenters[:0]
+	for index := range contours {
+		var center Point
+		if part, ok := iconPartAt(parts, index); ok && part.moves() {
+			// A part that names an anchor turns about that point of the glyph, so
+			// its own bounds do not have to be measured.
+			if part.Anchor != nil {
+				center = iconAnchor(*part.Anchor, fit, icon.ViewBox)
+			} else {
+				center = iconCenter(canvas.iconTriangles(contours[index], fit, tint))
+			}
+		}
+		centers = append(centers, center)
+	}
+	canvas.iconPartCenters = centers
+	for index := range contours {
+		own := place
+		if part, ok := iconPartAt(parts, index); ok && part.moves() {
+			center := centers[index]
+			local := iconPlacementAt(center, part.Offset, part.Rotate, iconPartScale(part))
+			if part.stretches() {
+				local = squashPlacementAt(center, iconPartScaleX(part)).after(local)
+			}
+			own = local.after(place)
+		}
+		canvas.drawIconPlaced(contours[index], fit, tint, own)
+	}
+	if len(icon.Layers) > 0 {
+		layers := icon
+		layers.Commands = nil
+		canvas.drawIconPlaced(layers, fit, tint, place)
+	}
+}
+
+// squashPlacementAt scales horizontally about center, the way a page turning over
+// its spine or a meridian crossing a globe projects onto the plane.
+func squashPlacementAt(center Point, stretch float32) iconPlacement {
+	return iconPlacement{
+		a: stretch, d: 1,
+		e: center.X - stretch*center.X,
+	}
+}
+
+// iconAnchor places an anchor given in the icon's view-box units into the
+// tessellation, which is laid out from the origin at fit pixels per view box.
+func iconAnchor(anchor Point, fit float32, viewBox float32) Point {
+	unit := fit / viewBox
+	return Point{X: anchor.X * unit, Y: anchor.Y * unit}
+}
+
+// iconPartAt returns the part that moves the given contour.
+func iconPartAt(parts []IconPart, contour int) (IconPart, bool) {
+	for _, part := range parts {
+		if part.Contour == contour {
+			return part, true
+		}
+	}
+	return IconPart{}, false
+}
+
+// iconPartScale is a part's scale with zero read as 1.
+func iconPartScale(part IconPart) float32 {
+	if part.Scale == 0 {
+		return 1
+	}
+	return part.Scale
+}
+
+// iconPartScaleX is a part's horizontal stretch with zero read as 1.
+func iconPartScaleX(part IconPart) float32 {
+	if part.ScaleX == 0 {
+		return 1
+	}
+	return part.ScaleX
+}
+
+// iconCenter is the middle of the bounds of a tessellation: the point a part of
+// the glyph turns and grows about.
+func iconCenter(triangles []iconTriangle) Point {
+	if len(triangles) == 0 {
+		return Point{}
+	}
+	minimum := triangles[0].points[0]
+	maximum := minimum
+	for _, triangle := range triangles {
+		for _, point := range triangle.points {
+			minimum.X = min(minimum.X, point.X)
+			minimum.Y = min(minimum.Y, point.Y)
+			maximum.X = max(maximum.X, point.X)
+			maximum.Y = max(maximum.Y, point.Y)
+		}
+	}
+	return Point{X: (minimum.X + maximum.X) * 0.5, Y: (minimum.Y + maximum.Y) * 0.5}
 }
 
 // tessellateIcon paints the icon at the origin with the direct path and takes the

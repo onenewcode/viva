@@ -72,7 +72,7 @@ category = "public.app-category.productivity"
 entitlements = "app.entitlements"   # 可选：连同 hardened runtime 一起签进应用包
 ```
 
-文件按严格模式解析。未知的表或键、重复项、类型错误的值，都会报出带行号的错误，所以拼写错误不会悄悄改变构建结果。另外还有用于额外 `Info.plist` 字符串的 `[mac.info]`，以及供安装包使用的 `[windows]`（发布者、安装范围、网址）和 `[linux]`（菜单分类、说明、维护者、依赖、关键字）。
+文件按严格模式解析。未知的表或键、重复项、类型错误的值，都会报出带行号的错误，所以拼写错误不会悄悄改变构建结果。`[mac.dmg]` 决定 `.dmg` 打开时的窗口样子：`background`（PNG，2x 图片标 144 dpi；其点数尺寸就是窗口尺寸）、`icon_size`，以及 `app_position` / `applications_position`（`[x, y]`，从窗口左上角到图标中心的点数）。不设置时镜像以 540×380 的窗口打开，底色为浅色，并画有从应用指向 Applications 的箭头。另外还有用于额外 `Info.plist` 字符串的 `[mac.info]`，以及供安装包使用的 `[windows]`（发布者、安装范围、网址）和 `[linux]`（菜单分类、说明、维护者、依赖、关键字）。
 
 ## 发布构建
 

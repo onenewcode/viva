@@ -114,7 +114,28 @@ type Mac struct {
 	// Info holds extra Info.plist string entries, sorted by key, such as
 	// NSMicrophoneUsageDescription.
 	Info []InfoEntry
+	// DMG is how the disk image's window looks.
+	DMG DMG
 }
+
+// DMG holds the settings of the disk image's window. Every field may be left
+// unset.
+type DMG struct {
+	// Background is a PNG shown behind the icons, relative to viva.toml. Its
+	// size in points is the window's content size: the pixel size over the scale
+	// its resolution is tagged with, 144 dpi being 2x. Without one the window
+	// has a plain light ground and an arrow between the icons.
+	Background string
+	// IconSize is the size of the icons in points.
+	IconSize int
+	// App and Applications place the application and the shortcut to
+	// /Applications, from the top left of the window's content to the middle of
+	// the icon. They default to either side of the window's middle.
+	App, Applications *Point
+}
+
+// Point is a position in points.
+type Point struct{ X, Y int }
 
 // Windows holds settings of the Windows installer. See manifest_installer.go.
 type Windows struct {
@@ -218,6 +239,12 @@ type document struct {
 		Copyright    string            `toml:"copyright"`
 		Entitlements string            `toml:"entitlements"`
 		Info         map[string]string `toml:"info"`
+		DMG          struct {
+			Background   string `toml:"background"`
+			IconSize     int    `toml:"icon_size"`
+			App          []int  `toml:"app_position"`
+			Applications []int  `toml:"applications_position"`
+		} `toml:"dmg"`
 	} `toml:"mac"`
 	Windows struct {
 		Publisher string `toml:"publisher"`
@@ -240,7 +267,8 @@ var knownKeys = map[string][]string{
 	"app.file_types": {"extensions", "mime", "name"},
 	"build":          {"out", "tags"},
 	"web":            {"package"},
-	"mac":            {"category", "copyright", "entitlements", "info", "min_system"},
+	"mac":            {"category", "copyright", "dmg", "entitlements", "info", "min_system"},
+	"mac.dmg":        {"app_position", "applications_position", "background", "icon_size"},
 	"windows":        {"publisher", "scope", "url"},
 	"linux":          {"category", "comment", "depends", "homepage", "keywords", "maintainer"},
 }
@@ -277,6 +305,14 @@ func Parse(name, dir, source string) (*Manifest, error) {
 		MinSystem: orDefault(doc.Mac.MinSystem, base.Mac.MinSystem),
 		Category:  doc.Mac.Category, Copyright: doc.Mac.Copyright, Entitlements: doc.Mac.Entitlements,
 	}
+	manifest.Mac.DMG.Background, manifest.Mac.DMG.IconSize = doc.Mac.DMG.Background, doc.Mac.DMG.IconSize
+	var err error
+	if manifest.Mac.DMG.App, err = dmgPoint("app_position", doc.Mac.DMG.App); err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	if manifest.Mac.DMG.Applications, err = dmgPoint("applications_position", doc.Mac.DMG.Applications); err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
 	for key, value := range doc.Mac.Info {
 		manifest.Mac.Info = append(manifest.Mac.Info, InfoEntry{Key: key, Value: value})
 	}
@@ -291,6 +327,17 @@ func Parse(name, dir, source string) (*Manifest, error) {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	return manifest, nil
+}
+
+// dmgPoint reads a position given as [x, y]; nil is unset.
+func dmgPoint(key string, values []int) (*Point, error) {
+	if values == nil {
+		return nil, nil
+	}
+	if len(values) != 2 || values[0] < 0 || values[1] < 0 {
+		return nil, fmt.Errorf("[mac.dmg] %s: %v must be two numbers [x, y] of points from the top left of the window", key, values)
+	}
+	return &Point{values[0], values[1]}, nil
 }
 
 func orDefault(value, fallback string) string {
@@ -311,7 +358,7 @@ func describeKey(path []string) string {
 // expectedKind says what value a key takes, for the type-mismatch message.
 func expectedKind(path []string) string {
 	switch joined := strings.Join(path, "."); joined {
-	case "app", "build", "web", "mac", "mac.info", "windows", "linux":
+	case "app", "build", "web", "mac", "mac.dmg", "mac.info", "windows", "linux":
 		return "a table ([" + joined + "])"
 	case "app.file_types":
 		return "an array of tables ([[app.file_types]])"
@@ -319,6 +366,10 @@ func expectedKind(path []string) string {
 		return "an array of strings"
 	case "build.tags", "linux.depends", "linux.keywords", "app.url_schemes":
 		return "an array of strings"
+	case "mac.dmg.icon_size":
+		return "an integer"
+	case "mac.dmg.app_position", "mac.dmg.applications_position":
+		return "an array of two integers, [x, y]"
 	}
 	return "a string"
 }
@@ -332,13 +383,13 @@ func decodeError(name string, err error) error {
 		line, _ := first.Position()
 		key := first.Key()
 		if len(key) == 1 {
-			return fmt.Errorf("%s:%d: unknown table [%s]; known tables: [app], [build], [linux], [mac], [mac.info], [web], [windows]", name, line, key[0])
+			return fmt.Errorf("%s:%d: unknown table [%s]; known tables: [app], [build], [linux], [mac], [mac.dmg], [mac.info], [web], [windows]", name, line, key[0])
 		}
 		table := strings.Join(key[:len(key)-1], ".")
 		if keys, known := knownKeys[table]; known {
 			return fmt.Errorf("%s:%d: [%s] %s: is not a known key; [%s] has: %s", name, line, table, key[len(key)-1], table, strings.Join(keys, ", "))
 		}
-		return fmt.Errorf("%s:%d: unknown table [%s]; known tables: [app], [build], [linux], [mac], [mac.info], [web], [windows]", name, line, table)
+		return fmt.Errorf("%s:%d: unknown table [%s]; known tables: [app], [build], [linux], [mac], [mac.dmg], [mac.info], [web], [windows]", name, line, table)
 	}
 	var decode *toml.DecodeError
 	if errors.As(err, &decode) {
@@ -399,6 +450,9 @@ func (manifest *Manifest) validate() error {
 	}
 	if CompareVersions(mac.MinSystem, MacOSFloor) < 0 {
 		return fail("mac", "min_system", "%q is older than macOS %s, the oldest the Go toolchain supports", mac.MinSystem, MacOSFloor)
+	}
+	if size := mac.DMG.IconSize; size != 0 && (size < 16 || size > 512) {
+		return fail("mac.dmg", "icon_size", "%d must be between 16 and 512 points, the range the Finder shows", size)
 	}
 	for _, entry := range mac.Info {
 		if !plistKeyPattern.MatchString(entry.Key) {

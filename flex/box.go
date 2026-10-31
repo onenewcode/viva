@@ -185,6 +185,16 @@ func (b Box) Color(c ui.Color) Box {
 func (b Box) Muted() Box { return b.Color(b.f.theme.MutedForeground) }
 func (b Box) Mono() Box  { b.n().flags |= flagMono; return b }
 
+// IconTransform draws the icon scaled, turned and moved from the box it was laid
+// out in, without moving the layout or the hit region: a row keeps its size and
+// its target while the glyph moves inside it. Components use it to play the
+// short motion a press asks for; see ui.IconTransform for what it costs to turn
+// an icon off the pixel grid.
+func (b Box) IconTransform(transform ui.IconTransform) Box {
+	b.f.extra(b.i).iconTransform = transform
+	return b
+}
+
 // MonoFace picks the fixed-pitch family a Mono text is drawn in (ui.MonoClassic,
 // or one installed family named by ui.MonoFamily); the default is the system's.
 func (b Box) MonoFace(face ui.MonoFace) Box { n := b.n(); n.face = face; n.flags |= flagMono; return b }

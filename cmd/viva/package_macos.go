@@ -1,15 +1,14 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/vivaui/viva/tools/appbundle"
+	"github.com/vivaui/viva/tools/dmg"
 	"github.com/vivaui/viva/tools/manifest"
 )
 
@@ -112,7 +111,7 @@ func packageDarwin(request packageRequest) error {
 	}
 	if request.wants("dmg") {
 		image := filepath.Join(filepath.Dir(result.Path), stem+".dmg")
-		if err := makeDMG(result.Path, loaded.App.Name, image); err != nil {
+		if err := makeDMG(loaded, result.Path, image); err != nil {
 			return err
 		}
 		if signing.signs() {
@@ -205,49 +204,25 @@ func notarizeBundle(signing macSigning, bundle string, output io.Writer) error {
 }
 
 // makeDMG writes a compressed disk image holding the bundle and a shortcut to
-// /Applications, so opening it shows the usual drag-to-install window content.
-// It uses hdiutil, which every Mac has; the image is not byte-for-byte
-// reproducible (HFS+ records creation times), unlike the zip.
-func makeDMG(bundle, volume, image string) error {
-	staging, err := os.MkdirTemp("", "viva-dmg-")
+// /Applications, in the window [mac.dmg] describes, so opening it shows the
+// usual drag-to-install content.
+func makeDMG(loaded *manifest.Manifest, bundle, image string) error {
+	config := loaded.Mac.DMG
+	settings := dmg.Config{IconSize: config.IconSize}
+	if config.Background != "" {
+		settings.Background = loaded.Path(config.Background)
+	}
+	if config.App != nil {
+		settings.App = &dmg.Point{X: config.App.X, Y: config.App.Y}
+	}
+	if config.Applications != nil {
+		settings.Applications = &dmg.Point{X: config.Applications.X, Y: config.Applications.Y}
+	}
+	layout, err := dmg.Resolve(settings)
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(staging)
-	if err := copyBundle(bundle, filepath.Join(staging, filepath.Base(bundle))); err != nil {
-		return err
-	}
-	if err := os.Symlink("/Applications", filepath.Join(staging, "Applications")); err != nil {
-		return err
-	}
-	// hdiutil refuses to overwrite an image without -ov; write beside it first
-	// so a failure leaves the previous image alone.
-	temporary := image + ".viva-tmp"
-	_ = os.Remove(temporary)
-	command := exec.Command("hdiutil", "create", "-quiet", "-volname", volume, "-srcfolder", staging,
-		"-fs", "HFS+", "-format", "UDZO", "-imagekey", "zlib-level=9", "-ov", temporary)
-	if out, err := command.CombinedOutput(); err != nil {
-		_ = os.Remove(temporary)
-		if errors.Is(err, exec.ErrNotFound) {
-			return errors.New("a .dmg needs hdiutil, which ships with macOS")
-		}
-		return fmt.Errorf("hdiutil failed: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	// hdiutil appends .dmg when the name lacks it.
-	written := temporary
-	if _, err := os.Stat(written); err != nil {
-		written = temporary + ".dmg"
-	}
-	return os.Rename(written, image)
-}
-
-// copyBundle copies an application bundle with cp -R, which keeps symlinks and
-// modes exactly as the bundle has them.
-func copyBundle(from, to string) error {
-	if out, err := exec.Command("cp", "-R", from, to).CombinedOutput(); err != nil {
-		return fmt.Errorf("copying the bundle: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return dmg.Build(dmg.Options{Bundle: bundle, Volume: loaded.App.Name, Image: image, Layout: layout})
 }
 
 // reportArchive prints one archive line of the summary.

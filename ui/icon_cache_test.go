@@ -198,6 +198,31 @@ func BenchmarkDrawIconDirect(b *testing.B) {
 	}
 }
 
+// The transforming path is the one a motion runs every frame: it must not pile
+// up allocations, and it must stay close to the cached still path.
+func BenchmarkDrawIconTransformed(b *testing.B) {
+	bounds := Rect{X: 40, Y: 40, Width: 16, Height: 16}
+	tint := Color{Alpha: 1}
+	tests := []struct {
+		name      string
+		transform IconTransform
+	}{
+		{"rotate", IconTransform{Rotate: 0.4}},
+		{"reveal", IconTransform{Reveal: 0.5}},
+		{"parts", IconTransform{Parts: []IconPart{{Contour: 1, Offset: Point{Y: 2}}}}},
+	}
+	for _, test := range tests {
+		b.Run(test.name, func(b *testing.B) {
+			var canvas Canvas
+			b.ReportAllocs()
+			for b.Loop() {
+				canvas.Reset()
+				canvas.DrawIconTransformed(testStrokeIcon, bounds, tint, test.transform)
+			}
+		})
+	}
+}
+
 // The materialized cache is keyed by the canvas state its triangles carry, so a
 // paint after a rectangle, or inside a clip, must not reuse the plain one.
 func TestIconPaintCacheKeepsCanvasState(t *testing.T) {
@@ -233,5 +258,320 @@ func TestIconPaintCacheIsBounded(t *testing.T) {
 	}
 	if got := len(canvas.iconPaints().entries); got > iconPaintCacheLimit {
 		t.Fatalf("the paint cache holds %d entries, limit %d", got, iconPaintCacheLimit)
+	}
+}
+
+// triangleBounds is the box the canvas's triangles cover.
+func triangleBounds(canvas *Canvas) (minimum, maximum Point) {
+	minimum = Point{X: float32(math.Inf(1)), Y: float32(math.Inf(1))}
+	maximum = Point{X: float32(math.Inf(-1)), Y: float32(math.Inf(-1))}
+	for _, triangle := range canvas.Triangles() {
+		for _, point := range triangle.Points {
+			minimum.X, minimum.Y = min(minimum.X, point.X), min(minimum.Y, point.Y)
+			maximum.X, maximum.Y = max(maximum.X, point.X), max(maximum.Y, point.Y)
+		}
+	}
+	return minimum, maximum
+}
+
+// A transform at rest is the still icon, vertex for vertex: an animation starts
+// and ends on that frame, so anything else would make the icon jump.
+func TestIconTransformAtRestIsTheStillIcon(t *testing.T) {
+	bounds := Rect{X: 8, Y: 8, Width: 16, Height: 16}
+	tint := Color{Alpha: 1}
+	var still, zero, unit Canvas
+	still.DrawIcon(testStrokeIcon, bounds, tint)
+	zero.DrawIconTransformed(testStrokeIcon, bounds, tint, IconTransform{})
+	unit.DrawIconTransformed(testStrokeIcon, bounds, tint, IconTransform{Scale: 1})
+	want, got, scaled := still.Triangles(), zero.Triangles(), unit.Triangles()
+	if len(want) != len(got) || len(want) != len(scaled) {
+		t.Fatalf("still %d triangles, zero %d, scale 1 %d", len(want), len(got), len(scaled))
+	}
+	for index := range want {
+		if want[index].Points != got[index].Points {
+			t.Fatalf("triangle %d moved with a zero transform: %v then %v", index, want[index].Points, got[index].Points)
+		}
+		if want[index].Points != scaled[index].Points {
+			t.Fatalf("triangle %d moved with scale 1: %v then %v", index, want[index].Points, scaled[index].Points)
+		}
+	}
+}
+
+// Scale shrinks the glyph about the center of the box it was laid out in, so the
+// strokes and the space between them keep their proportion.
+func TestIconTransformScalesAboutTheCenter(t *testing.T) {
+	bounds := Rect{X: 8, Y: 8, Width: 16, Height: 16}
+	tint := Color{Alpha: 1}
+	var still, half Canvas
+	still.DrawIcon(testStrokeIcon, bounds, tint)
+	half.DrawIconTransformed(testStrokeIcon, bounds, tint, IconTransform{Scale: 0.5})
+	minimum, maximum := triangleBounds(&still)
+	// The glyph is not symmetric about its box: the center the transform uses is
+	// the box's, exactly as CSS turns an element about its center.
+	center := Point{X: bounds.X + bounds.Width/2, Y: bounds.Y + bounds.Height/2}
+	halved, halvedMaximum := triangleBounds(&half)
+	pairs := [4][2]float32{
+		{halved.X, center.X + (minimum.X-center.X)*0.5},
+		{halved.Y, center.Y + (minimum.Y-center.Y)*0.5},
+		{halvedMaximum.X, center.X + (maximum.X-center.X)*0.5},
+		{halvedMaximum.Y, center.Y + (maximum.Y-center.Y)*0.5},
+	}
+	for index, pair := range pairs {
+		if math.Abs(float64(pair[0]-pair[1])) > 1e-4 {
+			t.Fatalf("corner %d of half the icon is at %v, want %v", index, pair[0], pair[1])
+		}
+	}
+}
+
+// A half turn about the center leaves a box that is the original mirrored
+// through that center, whatever shape the glyph is.
+func TestIconTransformTurnsAboutTheCenter(t *testing.T) {
+	bounds := Rect{X: 8, Y: 8, Width: 16, Height: 16}
+	tint := Color{Alpha: 1}
+	var still, turned Canvas
+	still.DrawIcon(testStrokeIcon, bounds, tint)
+	turned.DrawIconTransformed(testStrokeIcon, bounds, tint, IconTransform{Rotate: float32(math.Pi)})
+	minimum, maximum := triangleBounds(&still)
+	center := Point{X: bounds.X + bounds.Width/2, Y: bounds.Y + bounds.Height/2}
+	turnedMinimum, turnedMaximum := triangleBounds(&turned)
+	pairs := [4][2]float32{
+		{turnedMinimum.X, 2*center.X - maximum.X},
+		{turnedMaximum.X, 2*center.X - minimum.X},
+		{turnedMinimum.Y, 2*center.Y - maximum.Y},
+		{turnedMaximum.Y, 2*center.Y - minimum.Y},
+	}
+	for index, pair := range pairs {
+		if math.Abs(float64(pair[0]-pair[1])) > 1e-3 {
+			t.Fatalf("edge %d of the turned icon is at %v, want %v", index, pair[0], pair[1])
+		}
+	}
+}
+
+// A stroked glyph splits into its contours, in drawing order, without losing or
+// reordering a command: the split is what lets a part of an icon move alone.
+func TestIconContoursCoverEveryCommand(t *testing.T) {
+	contours := testStrokeIcon.Contours()
+	if len(contours) != 3 {
+		t.Fatalf("the test icon made %d contours, want 3", len(contours))
+	}
+	total := 0
+	for index, contour := range contours {
+		if len(contour.Commands) == 0 || contour.Commands[0].Kind != PathCommandMove {
+			t.Fatalf("contour %d does not start at a move", index)
+		}
+		if contour.ViewBox != testStrokeIcon.ViewBox || contour.Stroke != testStrokeIcon.Stroke || contour.Cap != testStrokeIcon.Cap {
+			t.Fatalf("contour %d lost the glyph's view box, stroke or caps", index)
+		}
+		total += len(contour.Commands)
+	}
+	if total != len(testStrokeIcon.Commands) {
+		t.Fatalf("the contours hold %d commands, the glyph %d", total, len(testStrokeIcon.Commands))
+	}
+}
+
+// contourTriangles tessellates each contour on a canvas of its own, so a test
+// can compare one contour of a motion against the same contour at rest.
+func contourTriangles(icon Icon, bounds Rect, tint Color) [][]Triangle {
+	contours := icon.Contours()
+	out := make([][]Triangle, len(contours))
+	for index, contour := range contours {
+		var canvas Canvas
+		canvas.DrawIcon(contour, bounds, tint)
+		out[index] = canvas.Triangles()
+	}
+	return out
+}
+
+// partsTriangles paints the glyph contour by contour through the given parts
+// and returns the triangles of each contour, in drawing order.
+func partsTriangles(t *testing.T, icon Icon, bounds Rect, tint Color, parts []IconPart) [][]Triangle {
+	t.Helper()
+	var canvas Canvas
+	target, ok := canvas.iconTarget(icon, bounds)
+	if !ok {
+		t.Fatal("the icon fits nowhere")
+	}
+	continuous := contourTriangles(icon, bounds, tint)
+	counts := make([]int, len(continuous))
+	for index := range continuous {
+		counts[index] = len(continuous[index])
+	}
+	place := stillPlacement(Point{X: target.X, Y: target.Y})
+	canvas.drawIconParts(icon, target.Width, tint, place, parts)
+	triangles := canvas.Triangles()
+	out := make([][]Triangle, len(counts))
+	offset := 0
+	for index, count := range counts {
+		if offset+count > len(triangles) {
+			t.Fatalf("contour %d ends past the %d painted triangles", index, len(triangles))
+		}
+		out[index] = triangles[offset : offset+count]
+		offset += count
+	}
+	if offset != len(triangles) {
+		t.Fatalf("the contours painted %d of %d triangles", offset, len(triangles))
+	}
+	return out
+}
+
+// Painting a glyph contour by contour paints the same picture as painting it
+// whole while its parts stay put.
+func TestIconPartsAtRestDrawTheWholeGlyph(t *testing.T) {
+	bounds := Rect{X: 10, Y: 20, Width: 16, Height: 16}
+	tint := Color{Alpha: 1}
+	want := contourTriangles(testStrokeIcon, bounds, tint)
+	got := partsTriangles(t, testStrokeIcon, bounds, tint, nil)
+	for index := range want {
+		sameTriangles(t, got[index], want[index])
+	}
+}
+
+// Only the contour named by a moving part moves; its neighbours paint where
+// they always did.
+func TestOneMovingPartLeavesTheOthersAlone(t *testing.T) {
+	bounds := Rect{X: 10, Y: 20, Width: 16, Height: 16}
+	tint := Color{Alpha: 1}
+	// The test icon's first contour is a horizontal line at y 12; the others are
+	// the arrow head and the arc.
+	want := contourTriangles(testStrokeIcon, bounds, tint)
+	got := partsTriangles(t, testStrokeIcon, bounds, tint, []IconPart{{Contour: 0, Offset: Point{Y: 4}}})
+	for index := 1; index < len(want); index++ {
+		sameTriangles(t, got[index], want[index])
+	}
+	minimum, maximum := triangleBounds(&Canvas{triangles: got[0]})
+	restMinimum, restMaximum := triangleBounds(&Canvas{triangles: want[0]})
+	if math.Abs(float64(minimum.Y-restMinimum.Y-4)) > 0.01 || math.Abs(float64(maximum.Y-restMaximum.Y-4)) > 0.01 {
+		t.Fatalf("the moving contour spans y %.2f..%.2f, at rest %.2f..%.2f; want it four points lower",
+			minimum.Y, maximum.Y, restMinimum.Y, restMaximum.Y)
+	}
+}
+
+// A glyph's first contour starts at the same command the glyph does, so the two
+// icons share a start pointer. The caches must still tell them apart: a contour
+// painted after its glyph, or the other way round, is a different picture.
+func TestAContourAndItsGlyphCacheApart(t *testing.T) {
+	bounds := Rect{X: 10, Y: 20, Width: 16, Height: 16}
+	tint := Color{Alpha: 1}
+
+	var alone Canvas
+	alone.DrawIcon(testStrokeIcon, bounds, tint)
+	want := append([]Triangle(nil), alone.Triangles()...)
+
+	// The glyph is cached first, then its first contour is painted on the same
+	// canvas, then the glyph again: neither draw may serve the other's triangles.
+	var shared Canvas
+	shared.DrawIcon(testStrokeIcon, bounds, tint)
+	contour := testStrokeIcon.Contours()[0]
+	shared.DrawIcon(contour, bounds, tint)
+	shared.Reset()
+	shared.DrawIcon(testStrokeIcon, bounds, tint)
+	sameTriangles(t, shared.Triangles(), want)
+
+	// And the other way round: the contour cached first, then the glyph.
+	var reversed Canvas
+	reversed.DrawIcon(contour, bounds, tint)
+	reversed.Reset()
+	reversed.DrawIcon(testStrokeIcon, bounds, tint)
+	sameTriangles(t, reversed.Triangles(), want)
+}
+
+// A glyph's filled layers are not contours, so a part that moves must not drop
+// them: they paint once, through the glyph's placement, where the whole glyph
+// paints them.
+func TestAMovingPartKeepsTheGlyphLayers(t *testing.T) {
+	bounds := Rect{X: 10, Y: 20, Width: 16, Height: 16}
+	tint := Color{Alpha: 1}
+	layersOnly := testWideIcon
+	layersOnly.Commands = nil
+	var only Canvas
+	only.DrawIcon(layersOnly, bounds, tint)
+	layers := only.Triangles()
+	if len(layers) == 0 {
+		t.Fatal("the test icon has no layers to compare against")
+	}
+
+	var moved Canvas
+	target, ok := moved.iconTarget(testWideIcon, bounds)
+	if !ok {
+		t.Fatal("the icon fits nowhere")
+	}
+	moved.drawIconParts(testWideIcon, target.Width, tint, stillPlacement(Point{X: target.X, Y: target.Y}),
+		[]IconPart{{Contour: 0, Offset: Point{Y: 2}}})
+	got := moved.Triangles()
+	if len(got) < len(layers) {
+		t.Fatalf("the moving glyph painted %d triangles, fewer than its %d layer triangles", len(got), len(layers))
+	}
+	sameTriangles(t, got[len(got)-len(layers):], layers)
+}
+
+// A reveal writes the glyph on from its right edge: the triangles are the still
+// glyph's, clipped to the part already written, and a full reveal is the still
+// icon again.
+func TestIconRevealWritesTheGlyphFromItsRightEdge(t *testing.T) {
+	bounds := Rect{X: 10, Y: 20, Width: 16, Height: 16}
+	tint := Color{Alpha: 1}
+	var whole Canvas
+	whole.DrawIcon(testStrokeIcon, bounds, tint)
+	if whole.Triangles()[0].HasClip {
+		t.Fatal("the still icon paints with a clip")
+	}
+
+	var half Canvas
+	half.DrawIconTransformed(testStrokeIcon, bounds, tint, IconTransform{Reveal: 0.5})
+	triangles := half.Triangles()
+	if len(triangles) != len(whole.Triangles()) {
+		t.Fatalf("a half reveal painted %d triangles, the still icon %d", len(triangles), len(whole.Triangles()))
+	}
+	// Half of a 16 point box starting at 10 is 18, the middle of the icon.
+	if clip := triangles[0].ClipOf; !triangles[0].HasClip || clip.X != 18 || clip.Width != 8 || clip.Y != 20 || clip.Height != 16 {
+		t.Fatalf("a half reveal clips to %+v, want x 18 width 8 of the box", clip)
+	}
+	for index, triangle := range triangles {
+		if triangle.ClipOf != triangles[0].ClipOf || triangle.HasClip != triangles[0].HasClip {
+			t.Fatalf("triangle %d clips to %+v, triangle 0 to %+v", index, triangle.ClipOf, triangles[0].ClipOf)
+		}
+		if triangle.Points != whole.Triangles()[index].Points {
+			t.Fatalf("triangle %d moved: a reveal clips the glyph, it does not redraw it", index)
+		}
+	}
+
+	// A reveal that has written all of it, and one that has written none of it
+	// asked for, are both the still icon.
+	for _, reveal := range []float32{0, 1} {
+		var settled Canvas
+		settled.DrawIconTransformed(testStrokeIcon, bounds, tint, IconTransform{Reveal: reveal})
+		sameTriangles(t, settled.Triangles(), whole.Triangles())
+	}
+}
+
+// A part with an anchor turns and stretches about that point of the glyph rather
+// than about itself: a page stretched to minus one over the spine lands mirrored
+// on the other side of the book.
+func TestAPartStretchesAboutItsAnchor(t *testing.T) {
+	bounds := Rect{X: 10, Y: 20, Width: 16, Height: 16}
+	tint := Color{Alpha: 1}
+	spine := Point{X: 12, Y: 12} // the glyph's centre, which is the box's centre
+	rest := contourTriangles(testStrokeIcon, bounds, tint)
+	got := partsTriangles(t, testStrokeIcon, bounds, tint, []IconPart{{Contour: 2, ScaleX: -1, Anchor: &spine}})
+	if len(got[2]) != len(rest[2]) {
+		t.Fatalf("the turned page painted %d triangles, at rest %d", len(got[2]), len(rest[2]))
+	}
+	// The box is 16 points wide from 10, so the spine sits at 18.
+	for index := range rest[2] {
+		for corner := range rest[2][index].Points {
+			want := rest[2][index].Points[corner]
+			mirrored := 2*18 - want.X
+			if math.Abs(float64(got[2][index].Points[corner].X-mirrored)) > 0.01 ||
+				math.Abs(float64(got[2][index].Points[corner].Y-want.Y)) > 0.01 {
+				t.Fatalf("vertex %d of triangle %d is at %+v, want the rest vertex %+v mirrored over the spine",
+					corner, index, got[2][index].Points[corner], want)
+			}
+		}
+	}
+	for index := range rest {
+		if index == 2 {
+			continue
+		}
+		sameTriangles(t, got[index], rest[index])
 	}
 }

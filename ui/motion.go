@@ -112,6 +112,62 @@ func (easing Easing) At(progress float32) float32 {
 	return progress
 }
 
+// Curve maps linear progress in [0, 1] onto eased progress. It is the timing of
+// one segment of a motion a component runs itself: a keyframed animation whose
+// segments are eased differently is not one Easing, so it asks Animate for
+// linear progress and evaluates its keyframes with curves like CubicBezier.
+type Curve func(progress float32) float32
+
+// CubicBezier returns the CSS curve cubic-bezier(x1, y1, x2, y2), whose end
+// points are fixed at (0, 0) and (1, 1). x1 and x2 are clamped to [0, 1] so the
+// result stays a function of time; y is free, which is how a curve overshoots
+// or holds. Progress outside [0, 1] returns the exact end points.
+func CubicBezier(x1, y1, x2, y2 float32) Curve {
+	curve := bezier{
+		x1: float64(min(max(x1, 0), 1)), y1: float64(y1),
+		x2: float64(min(max(x2, 0), 1)), y2: float64(y2),
+	}
+	return func(progress float32) float32 {
+		switch {
+		case progress <= 0:
+			return 0
+		case progress >= 1:
+			return 1
+		}
+		return float32(curve.solve(float64(progress)))
+	}
+}
+
+// Spring returns the step response of a spring, as a curve over the progress of
+// one segment: it overshoots 1 and settles back onto it. bounce runs from 0, a
+// critically damped settle with no overshoot at all, to 1, a wide wobble that
+// takes most of the segment to calm down. The curve reaches exactly 1 at
+// progress 1, so a finished motion paints the still glyph.
+//
+// A spring is a function of the time a motion took rather than of the distance
+// it covered, so it belongs on the progress of one segment — the value a
+// keyframe segment eases from and to — which is what Curve is for.
+func Spring(bounce float32) Curve {
+	const angular = 12.0 // radians over the segment: a spring at rest well before 1
+	ratio := 1 - 0.65*float64(min(max(bounce, 0), 1))
+	decay := ratio * angular
+	damped := angular * math.Sqrt(max(1-ratio*ratio, 0))
+	return func(progress float32) float32 {
+		switch {
+		case progress <= 0:
+			return 0
+		case progress >= 1:
+			return 1
+		}
+		time := float64(progress)
+		envelope := math.Exp(-decay * time)
+		if damped == 0 {
+			return float32(1 - envelope*(1+decay*time))
+		}
+		return float32(1 - envelope*(math.Cos(damped*time)+decay/damped*math.Sin(damped*time)))
+	}
+}
+
 // Lerp interpolates from one scalar to another. t is clamped to [0, 1] and the
 // end points are returned exactly, so a finished transition paints the same
 // pixels as a static state.

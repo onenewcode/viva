@@ -37,6 +37,9 @@ func TestPackageMakesADiskImageHoldingTheBundleAndAnApplicationsLink(t *testing.
 	if target, err := os.Readlink(filepath.Join(mount, "Applications")); err != nil || target != "/Applications" {
 		t.Fatalf("Applications link = %q, %v", target, err)
 	}
+	if _, err := os.Stat(filepath.Join(mount, ".DS_Store")); err != nil {
+		t.Fatalf("the window layout is missing: %v", err)
+	}
 	if out, err := exec.Command("plutil", "-lint", filepath.Join(mount, "Fixture Notes.app", "Contents", "Info.plist")).CombinedOutput(); err != nil {
 		t.Fatalf("the bundle in the image is damaged: %v\n%s", err, out)
 	}

@@ -70,13 +70,24 @@ func TestParseAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestParseReadsTheDiskImageWindow(t *testing.T) {
+	manifest, err := Parse("viva.toml", "/p", "[mac.dmg]\nbackground = \"assets/dmg.png\"\nicon_size = 96\napp_position = [150, 180]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dmg := manifest.Mac.DMG
+	if dmg.Background != "assets/dmg.png" || dmg.IconSize != 96 || dmg.App == nil || *dmg.App != (Point{150, 180}) || dmg.Applications != nil {
+		t.Fatalf("dmg = %+v", dmg)
+	}
+}
+
 func TestParseRejectsWithTheLineNumber(t *testing.T) {
-	tables := "known tables: [app], [build], [linux], [mac], [mac.info], [web], [windows]"
+	tables := "known tables: [app], [build], [linux], [mac], [mac.dmg], [mac.info], [web], [windows]"
 	for _, test := range []struct{ name, source, want string }{
 		{"unknown table", "[ap]\nname = \"x\"\n", "viva.toml:1: unknown table [ap]; " + tables},
 		{"unknown empty table", "[app]\nname = \"x\"\n\n[wbe]\n", "viva.toml:4: unknown table [wbe]; " + tables},
 		{"unknown key", "[app]\nnmae = \"x\"\n", "viva.toml:2: [app] nmae: is not a known key; [app] has: executable, file_types, icon, id, name, package, url_schemes, version"},
-		{"unknown mac key", "[mac]\nfoo = \"x\"\n", "viva.toml:2: [mac] foo: is not a known key; [mac] has: category, copyright, entitlements, info, min_system"},
+		{"unknown mac key", "[mac]\nfoo = \"x\"\n", "viva.toml:2: [mac] foo: is not a known key; [mac] has: category, copyright, dmg, entitlements, info, min_system"},
 		{"key outside a table", "name = \"x\"\n", "viva.toml:1: unknown table [name]; " + tables},
 		{"a table written as a value", "app = \"x\"\n", "viva.toml:1: app: must be a table ([app])"},
 		{"wrong type", "[app]\nname = 3\n", "viva.toml:2: [app] name: must be a string"},
@@ -101,6 +112,9 @@ func TestParseRejectsWithTheLineNumber(t *testing.T) {
 		{"bad tag", "[build]\ntags = [\"a b\"]\n", `viva.toml: [build] tags: tag "a b" is not a valid build tag`},
 		{"below the floor", "[mac]\nmin_system = \"11.0\"\n", `viva.toml: [mac] min_system: "11.0" is older than macOS 12.0, the oldest the Go toolchain supports`},
 		{"min_system shape", "[mac]\nmin_system = \"monterey\"\n", "viva.toml: [mac] min_system:"},
+		{"dmg position shape", "[mac.dmg]\napp_position = [1]\n", "viva.toml: [mac.dmg] app_position: [1] must be two numbers"},
+		{"dmg position type", "[mac.dmg]\napplications_position = \"1,2\"\n", "viva.toml:2: [mac.dmg] applications_position: must be an array of two integers, [x, y]"},
+		{"dmg icon size", "[mac.dmg]\nicon_size = 4\n", "viva.toml: [mac.dmg] icon_size: 4 must be between 16 and 512"},
 		{"info key", "[mac.info]\n\"bad key\" = \"x\"\n", "viva.toml: [mac.info] bad key: is not a valid Info.plist key"},
 	} {
 		_, err := Parse("viva.toml", "/p", test.source)

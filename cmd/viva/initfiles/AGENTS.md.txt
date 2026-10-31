@@ -66,6 +66,14 @@ m.view.Draw(canvas, theme, bounds, func(f *flex.Frame) {
   `Justify(flex.Center|End|Between)` places what is left along it; `Center()` does both.
 - Look: `Background`, `HoverBackground`, `Radius`, `Border(width, color)`, `Shadow(ui.ShadowMD)` (a drop shadow under the fill; `ShadowXS` to `ShadowLG`), `Clip`. A circle (an avatar, a dot) is a
   square box with `Radius(size/2)` and `Center()`: `f.Row().Size(32, 32).Radius(16).Background(c).Center().Children(func() { f.Text("AB") })`.
+- Icons move inside their box, not the box: `f.Icon(glyph).IconTransform(ui.IconTransform{Rotate: radians, Scale: 0.9, Offset: ui.Point{X: 2, Y: 0}})`
+  turns and scales the glyph about the center of its box and moves it after that, while the row keeps its place, its
+  size and its hit region. The zero `ui.IconTransform` is the still icon, and a frame that passes one costs nothing.
+- A glyph's parts move on their own: `glyph.Contours()` splits the glyph into one icon per contour, and
+  `IconTransform.Parts` takes one `ui.IconPart` per contour that moves (`Contour: n`, `Offset: ui.Point{Y: 2}`), so
+  that contour moves while the others stay. Contours are numbered in drawing order, so a regenerated glyph can renumber
+  them; pin the contours you address with a test that paints the part and checks where it lands. Filled `Layers` are
+  not contours: they paint once, unchanged, while parts move.
 - Window: in a `WindowCustomTitlebar` window nothing moves the window unless you say where: `f.Row().Height(36).MovesWindow().Children(...)` on the top bar
   (controls inside it still take their own clicks; a menu or dialog open over it is dismissed by a click there and the window moves once the pointer drags).
 - Text: `FontSize`, `Weight`, `Bold`, `Color`, `Muted`, `Mono`, `MonoFace`, `TextCenter`, `TextEnd`, `TextDirection`, `LineHeight`;
@@ -255,7 +263,9 @@ Nothing runs by itself. A paint that must be followed by another (a progress bar
 window goes idle again. `canvas.Now()` is the animation clock (a `time.Duration`): store `began := canvas.Now()` when
 the thing starts and derive the state from `canvas.Now()-began` in Paint, never from a ticker or goroutine.
 `canvas.Animate(id, slot, target, ui.DefaultMotion())` eases a value toward a target for you (hover fades, sliding
-indicators).
+indicators). Ask it for `ui.EaseLinear` and it becomes a clock for a motion with keyframes of your own, each segment
+eased by `ui.CubicBezier(x1, y1, x2, y2)` (the CSS curve): a press that turns an icon and settles it back is one click,
+one slot and one map of stop times.
 
 ```go
 if m.running {

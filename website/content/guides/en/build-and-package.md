@@ -72,7 +72,7 @@ category = "public.app-category.productivity"
 entitlements = "app.entitlements"   # optional: signed into the bundle with the hardened runtime
 ```
 
-The file is decoded strictly. An unknown table or key, a duplicate or a value of the wrong type is an error that names the line, so a typo never changes what gets built. There are also `[mac.info]` for extra `Info.plist` strings, `[windows]` (publisher, install scope, URL) and `[linux]` (menu category, comment, maintainer, dependencies, keywords) for the installers.
+The file is decoded strictly. An unknown table or key, a duplicate or a value of the wrong type is an error that names the line, so a typo never changes what gets built. `[mac.dmg]` shapes the window the `.dmg` opens in: `background` (a PNG, tagged 144 dpi for a 2x picture; its size in points is the window's size), `icon_size`, and `app_position` / `applications_position` as `[x, y]` points from the window's top left to an icon's middle. Without it the image opens in a 540×380 window with a plain light ground and an arrow from the application to the Applications shortcut. There are also `[mac.info]` for extra `Info.plist` strings, `[windows]` (publisher, install scope, URL) and `[linux]` (menu category, comment, maintainer, dependencies, keywords) for the installers.
 
 ## Release builds
 

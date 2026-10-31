@@ -85,6 +85,156 @@ func (icon Icon) height() float32 {
 	return icon.ViewBox
 }
 
+// IconTransform moves a painted icon away from the box it was laid out in:
+// scale and rotation about the center of that box, then an offset. The zero
+// value is the icon exactly where the layout put it, so a still frame and the
+// end of a motion paint the same pixels.
+//
+// The glyph is drawn on whole device pixels (see DrawIcon), so a rotation that
+// does not finish on a right angle leaves it off that grid: motion that turns an
+// icon should end at the still icon, and only a glyph that is symmetric under
+// the angle it turns through stays crisp while it turns.
+type IconTransform struct {
+	// Rotate turns the icon clockwise, in radians, about the center of its box.
+	Rotate float32
+	// Scale grows the glyph, stroke included, about the center of its box. Zero
+	// is 1; a negative value mirrors it.
+	Scale float32
+	// Offset moves the icon in logical pixels after the rotation and scale: x to
+	// the right and y down.
+	Offset Point
+	// Parts move single contours of the glyph before the transform above, so a
+	// part's offset travels with the glyph when it grows. Listing a part that
+	// does not move costs nothing: the glyph is drawn whole until one of them
+	// does.
+	//
+	// A part is what one contour of the source is — a lock's shackle, a
+	// keyboard's keys — so parts allow a glyph's pieces to move relative to each
+	// other while it stays one icon in the layout.
+	Parts []IconPart
+	// Reveal writes the glyph on from its right edge instead of painting it
+	// whole: Reveal is the fraction written so far, one being all of it, and the
+	// rest is clipped away. Zero is the whole glyph, like the zero of every other
+	// field here, so a motion that writes a glyph on runs from just above zero to
+	// one and ends on the still icon.
+	//
+	// The cut is made at the icon's box, on whole device pixels, so a glyph that
+	// turns or grows out of that box is clipped with it.
+	Reveal float32
+}
+
+// IconPart moves one contour of an icon on its own. Contours are numbered in
+// drawing order from zero; Icon.Contours yields them as icons, which is how a
+// caller finds out which contour is which.
+//
+// The number is a handle on a particular drawing, not a name: regenerating a
+// glyph may insert, merge or reorder its contours, and the same index then moves
+// a different part. An index that no contour has, or a second part on the same
+// contour, is ignored rather than reported. A component that addresses contours
+// must therefore pin which one it means with a test that paints the glyph and
+// checks the part moves where it should.
+type IconPart struct {
+	// Contour is the index of the contour this part moves.
+	Contour int
+	// Rotate turns the part clockwise, in radians, about the center of its own
+	// bounds rather than the glyph's, so a part turned in place stays put.
+	Rotate float32
+	// Scale grows the part about the center of its own bounds. Zero is 1.
+	Scale float32
+	// ScaleX stretches the part horizontally, on top of Scale, about the same
+	// point. Zero is 1 and a negative value mirrors it: passing through zero is
+	// the halfway point of a page turning over, or of a meridian crossing a globe.
+	ScaleX float32
+	// Offset moves the part in logical pixels: x to the right and y down.
+	Offset Point
+	// Anchor is the point of the glyph a part turns and scales about, in the
+	// icon's own view-box units. Nil means the centre of the part's own bounds,
+	// so a part turned in place stays put; an anchor is how a page turns over a
+	// book's spine rather than twisting around itself.
+	Anchor *Point
+}
+
+// moves reports whether the part changes the painted contour.
+func (part IconPart) moves() bool {
+	return part.Rotate != 0 || part.Offset != (Point{}) || part.stretches() ||
+		part.Scale != 0 && part.Scale != 1
+}
+
+// stretches reports whether the part scales horizontally away from one.
+func (part IconPart) stretches() bool {
+	return part.ScaleX != 0 && part.ScaleX != 1
+}
+
+// Contours splits the icon into one icon per contour of its commands, in
+// drawing order. Each keeps the view box, the stroke and the caps of the whole
+// glyph, so it draws on the same box and differs only in which contour reaches
+// the canvas.
+//
+// Parts of a glyph are separate contours in the source — the shackle of a lock,
+// the keys of a keyboard — so moving one is a matter of drawing that contour
+// with its own transform. Filled layer colors belong to the whole glyph and are
+// left out of the contours.
+func (icon Icon) Contours() []Icon {
+	return icon.appendContours(nil)
+}
+
+// appendContours is Contours into a caller's own buffer, so a paint that runs
+// every frame does not allocate the slice again. The returned slice may share
+// dst's backing array.
+func (icon Icon) appendContours(dst []Icon) []Icon {
+	start := -1
+	for index, command := range icon.Commands {
+		if command.Kind != PathCommandMove {
+			continue
+		}
+		if start >= 0 {
+			dst = append(dst, icon.contour(start, index))
+		}
+		start = index
+	}
+	if start >= 0 {
+		dst = append(dst, icon.contour(start, len(icon.Commands)))
+	}
+	return dst
+}
+
+// contour is one slice of the icon's commands drawn as an icon of its own. The
+// slice is capped at its length, so a caller that appends to one contour cannot
+// overwrite the next.
+func (icon Icon) contour(from, to int) Icon {
+	part := icon
+	part.Commands = icon.Commands[from:to:to]
+	part.Layers = nil
+	return part
+}
+
+// paints reports whether the icon has anything to draw at this tint's alpha.
+func (icon Icon) paints(tint Color) bool {
+	return tint.Alpha > 0 && icon.ViewBox > 0 && (len(icon.Commands) > 0 || len(icon.Layers) > 0)
+}
+
+// moves reports whether the transform changes the painted icon.
+func (transform IconTransform) moves() bool {
+	return transform.Rotate != 0 || transform.Offset != (Point{}) || transform.Scale != 0 && transform.Scale != 1 ||
+		transform.partsMove() || transform.reveals()
+}
+
+// reveals reports whether the transform writes part of the glyph rather than all
+// of it. One is the whole glyph, which is what a motion ends on.
+func (transform IconTransform) reveals() bool {
+	return transform.Reveal > 0 && transform.Reveal < 1
+}
+
+// partsMove reports whether any listed contour moves on its own.
+func (transform IconTransform) partsMove() bool {
+	for _, part := range transform.Parts {
+		if part.moves() {
+			return true
+		}
+	}
+	return false
+}
+
 // DrawIcon paints one icon tinted with a single color, scaled uniformly
 // to fit bounds and centered. The icon strokes scale with the icon, but its size
 // and origin are rounded to whole device pixels and a stroke up to half a device
@@ -96,7 +246,7 @@ func (icon Icon) height() float32 {
 // A multi-color icon paints each of its layers in the layer's own color; the
 // tint's alpha fades the whole glyph and its color is not used.
 func (canvas *Canvas) DrawIcon(icon Icon, bounds Rect, tint Color) {
-	if tint.Alpha <= 0 || icon.ViewBox <= 0 || len(icon.Commands) == 0 && len(icon.Layers) == 0 {
+	if !icon.paints(tint) {
 		return
 	}
 	target, ok := canvas.iconTarget(icon, bounds)
@@ -104,6 +254,54 @@ func (canvas *Canvas) DrawIcon(icon Icon, bounds Rect, tint Color) {
 		return
 	}
 	canvas.drawIconCached(icon, target.Width, Point{X: target.X, Y: target.Y}, tint)
+}
+
+// DrawIconTransformed paints an icon like DrawIcon, moved by transform: scaled
+// and turned about the center of its box, then offset. The transform is applied
+// to the glyph's triangles, so a frame of motion costs the cached tessellation
+// and a transform per vertex, not a new icon.
+//
+// A zero transform is exactly DrawIcon, and that path stays on the paint cache:
+// an icon that is not in motion pays nothing for being able to move.
+func (canvas *Canvas) DrawIconTransformed(icon Icon, bounds Rect, tint Color, transform IconTransform) {
+	if !transform.moves() {
+		canvas.DrawIcon(icon, bounds, tint)
+		return
+	}
+	if !icon.paints(tint) {
+		return
+	}
+	target, ok := canvas.iconTarget(icon, bounds)
+	if !ok {
+		return
+	}
+	if transform.reveals() {
+		canvas.Clip(canvas.iconRevealClip(target, transform.Reveal))
+		defer canvas.Unclip()
+	}
+	scale := transform.Scale
+	if scale == 0 {
+		scale = 1
+	}
+	place := iconPlacementAt(
+		Point{X: target.Width * 0.5, Y: target.Width * icon.height() / icon.ViewBox * 0.5},
+		transform.Offset, transform.Rotate, scale,
+	)
+	place.origin = Point{X: target.X, Y: target.Y}
+	if transform.partsMove() {
+		canvas.drawIconParts(icon, target.Width, tint, place, transform.Parts)
+		return
+	}
+	canvas.drawIconPlaced(icon, target.Width, tint, place)
+}
+
+// iconRevealClip is the written part of an icon's box: from the edge the glyph is
+// being written up to, to the right of the box. The edge lands on whole device
+// pixels, which is the grid the glyph is painted on, so a reveal steps through as
+// many clips as the box is wide in pixels.
+func (canvas *Canvas) iconRevealClip(target Rect, reveal float32) Rect {
+	edge := canvas.snapToDevice(target.X + target.Width*(1-reveal))
+	return Rect{X: edge, Y: target.Y, Width: target.X + target.Width - edge, Height: target.Height}
 }
 
 // iconTarget is where and how large DrawIcon paints an icon in bounds, on whole device pixels.

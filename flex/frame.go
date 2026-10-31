@@ -171,17 +171,18 @@ const (
 // hit options of an interactive container, an icon, the hover fill, the border's
 // color and the shadow's level.
 type extra struct {
-	hit         ui.HitOptions
-	icon        ui.Icon
-	hover       ui.Color
-	border      ui.Color
-	shadow      ui.ShadowLevel
-	scrollState *ScrollState // the state a ScrollArea reports its extent to
-	maxPct      [2]float32   // MaxWidthPercent and MaxHeightPercent; zero is none
-	hitOut      [4]float32   // how far the hit region reaches beyond the rectangle: top, right, bottom, left
-	edges       [4]float32   // an absolute element's distance from its container's top, right, bottom, left
-	within      ui.Rect      // what a Popup is kept inside, when not the frame; empty for the frame
-	moves       bool         // the element's rectangle moves a custom-titlebar window (MovesWindow)
+	hit           ui.HitOptions
+	icon          ui.Icon
+	iconTransform ui.IconTransform // moves the icon inside its box without moving the box
+	hover         ui.Color
+	border        ui.Color
+	shadow        ui.ShadowLevel
+	scrollState   *ScrollState // the state a ScrollArea reports its extent to
+	maxPct        [2]float32   // MaxWidthPercent and MaxHeightPercent; zero is none
+	hitOut        [4]float32   // how far the hit region reaches beyond the rectangle: top, right, bottom, left
+	edges         [4]float32   // an absolute element's distance from its container's top, right, bottom, left
+	within        ui.Rect      // what a Popup is kept inside, when not the frame; empty for the frame
+	moves         bool         // the element's rectangle moves a custom-titlebar window (MovesWindow)
 }
 
 // Frame is one page being declared. It is handed to the function given to
