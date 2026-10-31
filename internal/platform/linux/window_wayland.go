@@ -157,6 +157,13 @@ type waylandWindow struct {
 
 	pointerX, pointerY float32
 	lastClickTime      uint32
+	// pendingMove records a press on a move region under a backdrop
+	// (PressMoveOnDrag). The application receives the press; the move starts
+	// only once the pointer drags past the slop, using the press serial.
+	pendingMove       bool
+	pendingMoveSerial uint32
+	pendingMoveX      float32
+	pendingMoveY      float32
 
 	pinner runtime.Pinner
 	pinned bool

@@ -63,6 +63,8 @@ func initPointerListeners() {
 			}
 			app := (*waylandApplication)(data)
 			if app.pointerFocus != nil && app.pointerFocus.state != nil {
+				// A press that left the surface can no longer drag the window.
+				app.pointerFocus.pendingMove = false
 				event := platform.PointerEvent{
 					Kind:      platform.PointerExit,
 					X:         app.pointerFocus.pointerX,
@@ -87,6 +89,13 @@ func initPointerListeners() {
 			x, y := win.pointerCoords(surfaceX, surfaceY)
 			win.pointerX, win.pointerY = x, y
 
+			if win.dragPendingMove(x, y) {
+				// The compositor takes the pointer for the move, so the
+				// application never sees this motion or the release.
+				app.fail(win.state.router.pointerExit())
+				return
+			}
+
 			event := platform.PointerEvent{
 				Kind:      platform.PointerMove,
 				X:         x,
@@ -110,6 +119,11 @@ func initPointerListeners() {
 			win := app.pointerFocus
 			btn := waylandPointerButton(button)
 			isDown := (state == 1)
+			if btn == ui.PointerButtonPrimary {
+				// A press or release starts a fresh interaction. Clearing here
+				// also disarms a press whose release was lost with the pointer.
+				win.pendingMove = false
+			}
 
 			if isDown && btn == ui.PointerButtonPrimary && win.state.config.WindowMode == platform.WindowCustomTitlebar {
 				if win.beginTitlebarInteraction(serial, win.pointerX, win.pointerY, timeMs) {
@@ -252,6 +266,10 @@ func (app *waylandApplication) teardownPointer() {
 	if app.pointer != 0 && app.api != nil {
 		app.api.pointerRelease(app.pointer)
 		app.pointer = 0
+		if app.pointerFocus != nil {
+			// No release will arrive for a press on a pointer that is gone.
+			app.pointerFocus.pendingMove = false
+		}
 		app.pointerFocus = nil
 	}
 }
@@ -294,6 +312,22 @@ func (win *waylandWindow) checkDoubleClick(timeMs uint32) bool {
 	return false
 }
 
+// dragPendingMove starts the move a PressMoveOnDrag press asked for once the
+// pointer has moved past the drag slop. x and y are logical content
+// coordinates, so the slop needs no display scaling.
+func (win *waylandWindow) dragPendingMove(x, y float32) bool {
+	if !win.pendingMove {
+		return false
+	}
+	dx, dy := x-win.pendingMoveX, y-win.pendingMoveY
+	if dx > -defaultDragSlop && dx < defaultDragSlop && dy > -defaultDragSlop && dy < defaultDragSlop {
+		return false
+	}
+	win.pendingMove = false
+	win.startMove(win.pendingMoveSerial)
+	return true
+}
+
 func (win *waylandWindow) beginTitlebarInteraction(serial uint32, x, y float32, timeMs uint32) bool {
 	if win.state == nil || win.state.config.WindowMode != platform.WindowCustomTitlebar {
 		return false
@@ -332,6 +366,15 @@ func (win *waylandWindow) beginTitlebarInteraction(serial uint32, x, y float32, 
 			if win.checkDoubleClick(timeMs) {
 				win.toggleMaximize()
 				return true
+			}
+			if press == platform.PressMoveOnDrag {
+				// The press belongs to the application: it may dismiss the
+				// backdrop. Remember it so motion past the slop can still move
+				// the window with this press's serial.
+				win.pendingMove = true
+				win.pendingMoveSerial = serial
+				win.pendingMoveX, win.pendingMoveY = x, y
+				return false
 			}
 			win.startMove(serial)
 			return true

@@ -8,6 +8,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ebitengine/purego"
 	"github.com/vivaui/viva/internal/input"
 	"github.com/vivaui/viva/internal/platform"
 	"github.com/vivaui/viva/ui"
@@ -159,6 +160,158 @@ func TestWaylandPointerTitlebarInteraction(t *testing.T) {
 		t.Fatalf("expected double-click to be handled without starting move, handled=%v, movedSerial=%d", handled, movedSerial)
 	}
 	_ = maximizedToggleCount
+}
+
+func TestWaylandPressMoveOnDragDeliversPressBeforeMoving(t *testing.T) {
+	var movedSerial uint32
+	var moves, maximizes int
+	api := &waylandAPI{
+		proxyMarshalFlags: func(proxy uintptr, opcode uint32, interfacePtr uintptr, version uint32, flags uint32, args ...any) uintptr {
+			switch opcode {
+			case xdgToplevelMoveOpcode:
+				moves++
+				if len(args) >= 2 {
+					if serial, ok := args[1].(uint32); ok {
+						movedSerial = serial
+					}
+				}
+			case xdgToplevelSetMaximizedOpcode:
+				maximizes++
+			}
+			return 0
+		},
+	}
+	app := &waylandApplication{
+		api:     api,
+		globals: waylandGlobals{seat: 99},
+	}
+	win := &waylandWindow{
+		app:         app,
+		xdgToplevel: 10,
+		width:       848, // 800 + 2*24
+		height:      648, // 600 + 2*24
+		margin:      24,
+	}
+	win.storeScale(1.0)
+
+	var events []platform.PointerEvent
+	state := &waylandWindowState{
+		app: app,
+		win: win,
+		config: platform.Config{
+			WindowMode:     platform.WindowCustomTitlebar,
+			TitlebarHeight: 40,
+			PressAt: func(x, y float32) platform.PressKind {
+				if y >= 0 && y < 40 {
+					if x >= 400 && x < 700 {
+						return platform.PressMoveOnDrag
+					}
+					return platform.PressMove
+				}
+				return platform.PressClient
+			},
+			OnPointer: func(event platform.PointerEvent) (platform.Frame, error) {
+				events = append(events, event)
+				return platform.Frame{}, nil
+			},
+		},
+	}
+	state.router = eventRouter{
+		config: state.config,
+		scale:  win.displayScale,
+		clicks: &input.ClickCounter{Interval: 500 * time.Millisecond, Distance: 4},
+	}
+	win.state = state
+	app.windows = []*waylandWindowState{state}
+	app.pointerFocus = win
+	initPointerListeners()
+
+	press := func(serial, timeMs uint32) {
+		purego.SyscallN(rawPointerListener[3], uintptr(unsafe.Pointer(app)), 0,
+			uintptr(serial), uintptr(timeMs), uintptr(btnLeft), 1)
+	}
+	release := func(serial, timeMs uint32) {
+		purego.SyscallN(rawPointerListener[3], uintptr(unsafe.Pointer(app)), 0,
+			uintptr(serial), uintptr(timeMs), uintptr(btnLeft), 0)
+	}
+	// Motion callbacks carry surface coordinates; the content sits at the
+	// margin offset inside the surface.
+	motion := func(x, y float32) {
+		puregoInvokeCallback5(rawPointerListener[2], unsafe.Pointer(app), 0, 0,
+			float64ToWlFixed(float64(x)+24), float64ToWlFixed(float64(y)+24))
+	}
+	lastEvent := func() platform.PointerEvent {
+		if len(events) == 0 {
+			t.Fatal("no pointer event reached the application")
+		}
+		return events[len(events)-1]
+	}
+
+	// A press on a move region under a backdrop returns false to the caller,
+	// so the application receives the press and no move starts yet.
+	win.pointerX, win.pointerY = 500, 20
+	press(300, 1000)
+	if !win.pendingMove || win.pendingMoveSerial != 300 {
+		t.Fatalf("press did not leave a pending move: pending=%v serial=%d", win.pendingMove, win.pendingMoveSerial)
+	}
+	if moves != 0 {
+		t.Fatalf("a PressMoveOnDrag press started %d moves", moves)
+	}
+	if ev := lastEvent(); ev.Kind != platform.PointerDown || ev.Button != ui.PointerButtonPrimary || ev.X != 500 || ev.Y != 20 {
+		t.Fatalf("application did not receive the press: %+v", ev)
+	}
+
+	// Motion within the slop stays the application's, and the window stays put.
+	motion(502, 21)
+	if moves != 0 || !win.pendingMove {
+		t.Fatalf("motion within the slop moved the window: moves=%d pending=%v", moves, win.pendingMove)
+	}
+	if ev := lastEvent(); ev.Kind != platform.PointerMove || ev.X != 502 || ev.Y != 21 {
+		t.Fatalf("motion within the slop was not delivered to the application: %+v", ev)
+	}
+
+	// Crossing the slop starts the move with the press serial and ends the
+	// application's press, which will not see the release.
+	motion(520, 21)
+	if moves != 1 || movedSerial != 300 || win.pendingMove {
+		t.Fatalf("drag did not start the move: moves=%d serial=%d pending=%v", moves, movedSerial, win.pendingMove)
+	}
+	if ev := lastEvent(); ev.Kind != platform.PointerExit {
+		t.Fatalf("application was not told its press ended: %+v", ev)
+	}
+
+	// The move is asked for once; later motion is still the application's.
+	motion(540, 40)
+	if moves != 1 {
+		t.Fatalf("a started move was asked for again: %d moves", moves)
+	}
+	if ev := lastEvent(); ev.Kind != platform.PointerMove {
+		t.Fatalf("motion after the move started was not delivered: %+v", ev)
+	}
+
+	// A press released without dragging never moves the window.
+	win.pointerX, win.pointerY = 500, 20
+	press(301, 5000)
+	release(301, 5001)
+	if win.pendingMove {
+		t.Fatal("release left a pending move")
+	}
+	motion(540, 40)
+	if moves != 1 {
+		t.Fatalf("a released press still started a move: %d moves", moves)
+	}
+
+	// A double click on the same region still toggles maximize and does not
+	// start a move or reach the application.
+	before := len(events)
+	win.pointerX, win.pointerY = 500, 20
+	press(302, 5100)
+	if maximizes != 1 || moves != 1 || win.pendingMove {
+		t.Fatalf("double click: maximizes=%d moves=%d pending=%v", maximizes, moves, win.pendingMove)
+	}
+	if len(events) != before {
+		t.Fatalf("double click reached the application: %d new events", len(events)-before)
+	}
 }
 
 func TestWaylandPointerEventsDispatch(t *testing.T) {
