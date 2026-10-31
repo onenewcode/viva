@@ -21,10 +21,6 @@
 - **Task 14：Wayland IME context 生命周期（F6）。** 窗口销毁/移除时调用 `router.ime.close()`，与 X11 的关闭路径一致；回归测试覆盖关闭窗口后守护进程收到 `Context.Close`，以及关闭后新窗口文本输入仍正常。失焦通知的去重与能力移除路径已在 Task 13 的收尾修复中完成并有测试。
 - **Task 15：Vulkan SUBOPTIMAL 收敛（F5）。** 重建后再次呈现得到的 `VK_SUBOPTIMAL_KHR` 不得作为下一帧重建的依据；`OUT_OF_DATE` 的恢复路径保持不变。回归测试覆盖：fake 驱动持续返回 SUBOPTIMAL 时 `deviceWaitIdle`/swapchain 重建只发生一次；持续 `OUT_OF_DATE` 仍按现有有界恢复重建。
 
-## P2
-
-- **Task 16：Wayland `PressMoveOnDrag` 投递语义（F4）。** 与 X11 对齐：标记 pending move、设置 `delivered=true` 并返回 false，让应用先收到 press；指针拖动超过 slop 后才开始窗口移动，双击最大化语义不变。回归测试覆盖：应用收到 press、未拖动不移动、拖动后移动、双击最大化。
-
 ## 尚未排期
 
 - 受限环境验收：GNOME、Sway/wlroots、真实 ibus-daemon/窗口级 IME 注入、拖放、AT-SPI、真实 session bus/portal 重启、device loss 注入和运行时 output 热插拔。Fcitx5 的 IBus 兼容接口可能通过 `IBUS_ADDRESS=<session bus>` 接入，但尚未在真实窗口验证，不能替代 ibus-daemon 或 native text-input 验收。需要解锁的真实会话或可控测试机，完成前不得以 fake 或 headless 结果替代。
