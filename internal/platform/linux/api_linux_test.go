@@ -657,7 +657,13 @@ func newSuboptimalTestRenderer(acquireStatus, presentStatus int32, recreations *
 				*swapchain = 99
 				return vkSuccess
 			},
-			destroySwapchain: func(uintptr, uintptr, unsafe.Pointer) {},
+			destroySwapchain:      func(uintptr, uintptr, unsafe.Pointer) {},
+			destroyImageView:      func(uintptr, uintptr, unsafe.Pointer) {},
+			destroyRenderPass:     func(uintptr, uintptr, unsafe.Pointer) {},
+			destroyFramebuffer:    func(uintptr, uintptr, unsafe.Pointer) {},
+			destroyCommandPool:    func(uintptr, uintptr, unsafe.Pointer) {},
+			destroyPipelineLayout: func(uintptr, uintptr, unsafe.Pointer) {},
+			destroyPipeline:       func(uintptr, uintptr, unsafe.Pointer) {},
 			getSwapchainImages: func(_, _ uintptr, count *uint32, images *uintptr) int32 {
 				if images == nil {
 					*count = 1
@@ -747,22 +753,158 @@ func TestSuboptimalRecreatesAfterCompletedFrame(t *testing.T) {
 	}
 }
 
-func TestSuboptimalPersistsAfterRecreationPresentsWithoutRetry(t *testing.T) {
+func TestSuboptimalRecreationConvergesAcrossFrames(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		acquireStatus int32
+		presentStatus int32
+		keepReporting func(*vulkanRenderer)
+	}{
+		{
+			name:          "acquire",
+			acquireStatus: vkSuboptimal,
+			presentStatus: vkSuccess,
+			keepReporting: func(renderer *vulkanRenderer) {
+				renderer.api.acquireNextImage = func(_, _ uintptr, _ uint64, _, _ uintptr, image *uint32) int32 {
+					*image = 0
+					return vkSuboptimal
+				}
+			},
+		},
+		{
+			name:          "present",
+			acquireStatus: vkSuccess,
+			presentStatus: vkSuboptimal,
+			keepReporting: func(renderer *vulkanRenderer) {
+				renderer.api.queuePresent = func(uintptr, *vkPresentInfo) int32 { return vkSuboptimal }
+			},
+		},
+		{
+			name:          "both",
+			acquireStatus: vkSuboptimal,
+			presentStatus: vkSuboptimal,
+			keepReporting: func(renderer *vulkanRenderer) {
+				renderer.api.acquireNextImage = func(_, _ uintptr, _ uint64, _, _ uintptr, image *uint32) int32 {
+					*image = 0
+					return vkSuboptimal
+				}
+				renderer.api.queuePresent = func(uintptr, *vkPresentInfo) int32 { return vkSuboptimal }
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recreations := 0
+			renderer := newSuboptimalTestRenderer(test.acquireStatus, test.presentStatus, &recreations)
+			test.keepReporting(renderer)
+
+			for frame := 0; frame < 3; frame++ {
+				if err := renderer.presentRebuilding(); err != nil {
+					t.Fatalf("frame %d: presentRebuilding returned error: %v", frame, err)
+				}
+				if recreations != 1 {
+					t.Fatalf("frame %d: swapchain recreations = %d, want 1", frame, recreations)
+				}
+				if renderer.swapchain != 99 {
+					t.Fatalf("frame %d: swapchain = %d, want recreated handle 99", frame, renderer.swapchain)
+				}
+				if !renderer.swapchainSuboptimal {
+					t.Fatalf("frame %d: accepted swapchain forgot its SUBOPTIMAL status", frame)
+				}
+			}
+			if renderer.submissions != 4 {
+				t.Fatalf("completed submissions = %d, want the old and recreated frame plus two later frames", renderer.submissions)
+			}
+		})
+	}
+}
+
+func TestSuboptimalStatusClearsAfterHealthyFrame(t *testing.T) {
 	recreations := 0
 	renderer := newSuboptimalTestRenderer(vkSuccess, vkSuboptimal, &recreations)
 	renderer.api.queuePresent = func(uintptr, *vkPresentInfo) int32 { return vkSuboptimal }
 
 	if err := renderer.presentRebuilding(); err != nil {
-		t.Fatalf("presentRebuilding rejected a usable recreated swapchain: %v", err)
+		t.Fatalf("presentRebuilding returned error: %v", err)
 	}
-	if renderer.submissions != 2 || recreations != 1 {
-		t.Fatalf("persistent recovery submissions=%d recreations=%d, want 2/1", renderer.submissions, recreations)
+	if recreations != 1 {
+		t.Fatalf("swapchain recreations = %d, want 1", recreations)
 	}
-	if renderer.swapchain != 99 {
-		t.Fatalf("persistent recovery swapchain = %d, want 99", renderer.swapchain)
+
+	// A healthy frame clears the accepted status without another recreation.
+	renderer.api.queuePresent = func(uintptr, *vkPresentInfo) int32 { return vkSuccess }
+	if err := renderer.presentRebuilding(); err != nil {
+		t.Fatalf("healthy frame returned error: %v", err)
+	}
+	if renderer.swapchainSuboptimal {
+		t.Fatal("healthy frame kept the accepted SUBOPTIMAL status")
+	}
+	if recreations != 1 {
+		t.Fatalf("healthy frame recreated the swapchain: recreations = %d, want 1", recreations)
+	}
+
+	// A later SUBOPTIMAL is a fresh signal and gets its own single rebuild.
+	renderer.api.queuePresent = func(uintptr, *vkPresentInfo) int32 { return vkSuboptimal }
+	if err := renderer.presentRebuilding(); err != nil {
+		t.Fatalf("SUBOPTIMAL after healthy frame returned error: %v", err)
+	}
+	if recreations != 2 {
+		t.Fatalf("swapchain recreations = %d, want 2 after a fresh SUBOPTIMAL", recreations)
 	}
 	if !renderer.swapchainSuboptimal {
-		t.Fatal("recreated swapchain lost its driver's suboptimal status")
+		t.Fatal("fresh SUBOPTIMAL was not recorded")
+	}
+}
+
+func TestOutOfDateRecoveryStaysBounded(t *testing.T) {
+	recreations := 0
+	renderer := newSuboptimalTestRenderer(vkErrorOutOfDate, vkSuccess, &recreations)
+	// The recreated swapchain is out of date as well.
+	renderer.api.acquireNextImage = func(_, _ uintptr, _ uint64, _, _ uintptr, image *uint32) int32 {
+		*image = 0
+		return vkErrorOutOfDate
+	}
+
+	if err := renderer.presentRebuilding(); err == nil {
+		t.Fatal("presentRebuilding accepted a swapchain that stayed out of date")
+	}
+	if recreations != 1 {
+		t.Fatalf("swapchain recreations = %d, want 1", recreations)
+	}
+	if renderer.swapchain != 99 {
+		t.Fatalf("swapchain = %d, want recreated handle 99", renderer.swapchain)
+	}
+	if renderer.submissions != 0 {
+		t.Fatalf("completed submissions = %d, want none for out-of-date frames", renderer.submissions)
+	}
+}
+
+func TestOutOfDateRecoveryAcceptsResidualSuboptimal(t *testing.T) {
+	recreations := 0
+	renderer := newSuboptimalTestRenderer(vkErrorOutOfDate, vkSuccess, &recreations)
+	// The old swapchain is out of date; the recreated one is suboptimal.
+	renderer.api.acquireNextImage = func(_, swapchain uintptr, _ uint64, _, _ uintptr, image *uint32) int32 {
+		*image = 0
+		if swapchain == 30 {
+			return vkErrorOutOfDate
+		}
+		return vkSuboptimal
+	}
+
+	if err := renderer.presentRebuilding(); err != nil {
+		t.Fatalf("presentRebuilding returned error: %v", err)
+	}
+	if recreations != 1 {
+		t.Fatalf("swapchain recreations = %d, want 1", recreations)
+	}
+	if !renderer.swapchainSuboptimal || !renderer.swapchainSuboptimalRebuilt {
+		t.Fatal("residual SUBOPTIMAL after OUT_OF_DATE recovery was not accepted")
+	}
+
+	if err := renderer.presentRebuilding(); err != nil {
+		t.Fatalf("residual SUBOPTIMAL frame returned error: %v", err)
+	}
+	if recreations != 1 {
+		t.Fatalf("residual SUBOPTIMAL recreated again: recreations = %d, want 1", recreations)
 	}
 }
 
