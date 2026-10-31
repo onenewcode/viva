@@ -71,10 +71,19 @@ type waylandApplication struct {
 	xkbContext       uintptr
 	xkbKeymap        uintptr
 	xkbState         uintptr
+	xkbShortcutState uintptr
+	xkbDepressed     uint32
+	xkbLatched       uint32
+	xkbLocked        uint32
+	xkbGroup         uint32
+	xkbShiftMask     uint32
+	xkbLockMask      uint32
+	xkbNumLockMask   uint32
+	xkbLevel3Mask    uint32
+	xkbLevels        map[uint32][][2]uint32
 	modifiers        input.Modifiers
 	repeatRate       int32
 	repeatDelay      int32
-	repeatKey        platform.KeyEvent
 	repeatScancode   uint32
 	repeatGeneration uint64
 	repeatWindow     *waylandWindow

@@ -1,14 +1,14 @@
 # Linux/Wayland 当前实现复核
 
 - 日期：2026-10-30
-- 基线：`4e77606` + Task 11 Weston 复跑与 remap 修复
+- 基线：`2e3b8ce`（`docs/linux-render-refresh-flicker`，本轮源码复核与 Task 13 验证）；§4.1–§4.5 的验收证据产生于 `4e77606` 时期
 - 类型：只读源码复核 + 原生 Linux 验收
 - 开发契约：[01-architecture-overview.md](01-architecture-overview.md)
 - 后续任务：[task.md](task.md)
 
 ## 1. 结论
 
-**宏观架构合理，不需要推倒重写；当前 diff 没有保留的源码 finding。** 主循环的 prepare/read、surface/configure 事务、frame-callback 背压、系统 API 的主线程调用边界、Vulkan 恢复边界和桌面服务重连边界可以保留。Task 11 的入口和 KWin、Weston 两个 headless compositor 的原生验收已完成（lavapipe + validation），Weston 复跑暴露的 remap 缺陷已修复并有回归测试，任务关闭。Task 8 已在本机可执行范围内完成：新增 scale、多输出、事件交错和性能测量，受限项（GNOME/Sway/IBus、真实 portal 重启、device loss 注入、运行时 output 热插拔）按 §4.5 记录为限制，未声称验证。评审期间曾发现按定时器对所有 compositor 生效的 remap 兜底会让 KWin 在竞态下以 `unconfigured_buffer` 终止，已改为只对识别出的 Weston 启用（见 4.3）。
+**宏观架构合理，不需要推倒重写；当前仍有 4 个未修复 finding（F1 与 F4–F6，§2），集中在拖放测试、press 投递、IME context 生命周期和 swapchain 状态机。** 主循环的 prepare/read、surface/configure 事务、frame-callback 背压、系统 API 的主线程调用边界、Vulkan 恢复边界和桌面服务重连边界可以保留。Task 11 的入口和 KWin、Weston 两个 headless compositor 的原生验收已完成（lavapipe + validation），Weston 复跑暴露的 remap 缺陷已修复并有回归测试，任务关闭。Task 8 已在本机可执行范围内完成：新增 scale、多输出、事件交错和性能测量，受限项（GNOME/Sway、真实 ibus-daemon 会话、真实 portal 重启、device loss 注入、运行时 output 热插拔）按 §4.5 记录为限制，未声称验证。本机运行 Fcitx5 5.1.12 并通过会话总线提供 `org.freedesktop.IBus` 兼容接口，但 viva 默认的 IBus 客户端只读取 `IBUS_ADDRESS`/libibus 地址文件，二者默认不连通，见 §4.6。评审期间曾发现按定时器对所有 compositor 生效的 remap 兜底会让 KWin 在竞态下以 `unconfigured_buffer` 终止，已改为只对识别出的 Weston 启用（见 4.3）。
 
 “源码确认”表示控制流中存在问题，不表示已在真实 Linux/compositor/GPU 上复现可见症状；真实环境结果只在第 4 节按层记录。
 
@@ -25,6 +25,19 @@
 - 换用 lavapipe（`VK_ICD_FILENAMES=lvp_icd.json`）仍然复现，与渲染驱动无关。
 
 结论：属于 Xwayland/KWin 下跨客户端 `SendEvent` 的投递异常，客户端侧没有可验证的修复点；与 Task 11 的 Wayland 改动无关。本次只把测试中 3 处无界 channel 接收改为 10s 有界等待（新增 `nextDropEvent` 帮助函数），避免失败时整包挂起到超时。该问题保留到 Task 8 的真实桌面矩阵继续跟踪，不属于本次 Task 11 修复范围。
+
+### 2.1 本轮 Wayland 源码复核（新增）
+
+以下 findings 由当前分支的只读源码复核产生，行号基于 `2e3b8ce`。它们表示控制流中可确认的偏差，未在真实 Wayland/compositor 会话中复现可见症状。以下只列出仍未修复的项；已完成项按 §6 删除。
+
+**F4（新增）：`PressMoveOnDrag` 在 Wayland 上吞掉应用 press。**
+`beginTitlebarInteraction`（`wayland_pointer.go:331`）把 `PressMove` 和 `PressMoveOnDrag` 同等对待：立即 `startMove` 并返回 true，调用方随即丢弃该 press（`:114-117`）。X11 的 `beginWindowMove`（`window_controls_linux.go:256`）对 `PressMoveOnDrag` 只标记 pending、设置 `delivered=true` 并返回 false，让应用先收到 press，只有指针拖动超过 slop 才开始移动窗口。因此在 Wayland 上，带 backdrop 的 move 区域（如可拖拽标签页、列表行）点击不选中、应用侧拖动无法启动，整窗直接进入交互移动。
+
+**F5（新增）：`swapchainSuboptimal` 残留导致每帧重建 swapchain。**
+`presentRebuilding`（`vulkan_linux.go:994`）在重建后的第 1 次呈现返回，但 `presentOnce` 会在 acquire/present 返回 `VK_SUBOPTIMAL_KHR` 时再次置位 `swapchainSuboptimal`（`:1025`、`:1044`），只有 `createSwapchain` 会清除它（`:786`）。下一帧 attempt 0 看到残留标志又进入重建分支。若驱动/合成器持续返回 `VK_SUBOPTIMAL_KHR`（例如 Wayland surface 的 buffer scale 与输出不一致），每帧都会 `deviceWaitIdle` 并销毁重建 command pool、render pass、scene pipelines、image views 和 framebuffers，表现为帧率骤降和持续闪烁，而不是注释承诺的“只重建一次”。
+
+**F6（新增）：Wayland 窗口销毁不关闭 IBus context。**
+`waylandWindow.destroy` 只关闭 `state.text`（`window_wayland.go:891`），随后 `removeWindow` 丢弃 state；`state.router.ime` 从未 `close()`。X11 的关闭路径会调用 `target.router.ime.close()`（`window_linux.go:543`），向守护进程发送 `Context.Close`。结果是：关闭曾获得焦点的文本框窗口后，IBus 中残留 focused context，其 handler 闭包仍引用已销毁的窗口和已关闭的 `linuxTextInput`；反复开关窗口会累积泄漏，守护进程还可能向死窗口投递 preedit/commit，影响后续窗口的输入。
 
 没有其他已知源码阻断项。真实 session bus/portal 的终止、重启和设置更新仍未执行，不能用 fake 回归测试替代 Task 8 的真实服务恢复验收。
 
@@ -174,8 +187,33 @@ Weston 用上方 scale 命令的环境变量运行同一 `-run`。代表结果�
 - Weston 兜底靠 registry 的 `weston_*` 全局识别，不是正式的能力协商：若某个 Weston 构建不暴露这类全局，行为退化为等待 configure（窗口保持隐藏），不会提前附加 buffer；若其他 compositor 暴露同名全局，则会误用 Weston 路径。目前只验证了 Weston 14.0.2，其他 Weston 版本和其他 compositor 未验证；
 - validation layer 不是发行版安装，且应用请求 Vulkan 1.0，未覆盖更高 API 版本的校验；测试不断言 validation 输出，只人工检查日志；
 - 多输出只验证了启动时创建（KWin `--output-count=2`）；headless compositor 没有稳定的运行时增删 output 接口，KScreen 会作用到锁定的真实会话，因此运行时热插拔未执行；KWin 虚拟后端的 `--scale` 不影响客户端观测值（见 4.4），小数缩放只有真实会话探针和 fake 测试证据；
-- 未覆盖 GNOME、Sway/wlroots、IBus、拖放、AT-SPI、session bus/portal 真实重启和 device loss 注入：本机没有这些软件或可用注入层，KDE 会话锁定；性能测量已由 4.4 覆盖，但只是进程内代理指标，不含驱动级 GPU wait；真实驱动只执行了第 5 节的先行片段；
+- 未覆盖 GNOME、Sway/wlroots、真实 ibus-daemon 会话、拖放、AT-SPI、session bus/portal 真实重启和 device loss 注入：本机没有 GNOME/Sway 或可用注入层，自动化验收时 KDE 会话锁定（本轮复核时 `LockedHint=no`，但未做自动化按键注入）；Fcitx5 的 IBus 兼容接口探针结果见 §4.6；性能测量已由 4.4 覆盖，但只是进程内代理指标，不含驱动级 GPU wait；真实驱动只执行了第 5 节的先行片段；
 - F1 使原生 race 门禁不是确定性的，结果按第 2 节记录，不视为已修复。
+
+### 4.6 Task 13 按键分发验证
+
+Task 13 修复的按键分发缺陷已从 §2 移除，不再单独编号：Wayland 现在先按 X11 顺序提供 `OnShortcut`（带 `ownsChord` 守卫），再交给 IME，最后经 `deliverTyped` 进入 Compose/dead key；Ctrl/Meta 的 `Text` 由 xkb 布局的 Latin 层解析（忽略 Level3/AltGr，考虑 Shift、latched Shift、Caps/Num Lock；Num Lock 的实际修饰位按 keymap 的 `modifier_map` 解析，解析不到时按 X11 回退 Mod2；扫描全部布局并缓存）；重复与否取 `xkb_keymap_key_repeats`，但修饰键和 lock 键永不重复，普通非重复键会停止旧重复；X11 与 Wayland 共用 `keyOrder`、`keyEventFor`、`pickLevel` 和修饰键按下判定。实现中还修正了评审指出的次级问题：修饰键按下不再取消已开始的重复、重复事件按当前修饰键/布局重建、成对修饰键释放时另一侧仍按住则保留修饰位（两个后端共用按键跟踪）、keymap 重载后重新应用并重算已按下的修饰符、失焦或键盘能力移除时向终端补发仍按下键的释放事件并清除遗留状态、终端 Control/Alt/Meta 组合键不设置 `Typed`、AltGr/Mode_switch 不当成 Alt 投递、快捷键回退路径也剔除 Level3/Mod5、释放事件走与按下相同的事件过滤且不提供快捷键。修饰键按下仍不进入 IME、释放照常转发，与 X11 既有行为一致（引擎用单独的 Shift 释放切换输入模式）。
+
+验证命令与结果（工作树，基线 `2e3b8ce`）：
+
+```sh
+gofmt -l internal/platform/linux
+git diff --check
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go vet ./internal/platform/... ./app
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go vet ./internal/platform/... ./app
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o /tmp/viva-task13-amd64.test ./internal/platform/linux
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c -o /tmp/viva-task13-arm64.test ./internal/platform/linux
+go test -skip TestAFileDragFromAnotherClientIsAcceptedAndDropped ./internal/platform/linux -count=1
+go test -race -skip TestAFileDragFromAnotherClientIsAcceptedAndDropped ./internal/platform/linux -count=1
+```
+
+`TestAFileDragFromAnotherClientIsAcceptedAndDropped` 是真实 X 服务器上的 X11 拖放集成测试，与本任务改动无关，且在本机固有偶发：基线 `2e3b8ce` 单独跑 12 次也失败 1 次（`the application never reported the drag`），因此其余测试用 `-skip` 取确定性结果，并把该偶发单独记录，不当作 Task 13 的回归。
+
+另做了一次手工 IBus 兼容探针（临时测试文件，未提交）：`IBUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" go test ./internal/ibus -run '^TestRealIBusProbe$' -v`，`CreateInputContext`、`FocusIn`、`ProcessKeyEvent` 均通过，Ctrl+S 返回 `handled=false`；未把该连接注入 viva 的真实窗口。
+
+结果：gofmt 无输出，`git diff --check` 通过，两种架构的 vet 和测试包交叉编译成功；原生测试 `ok 7.6s`，race `ok 6.6s`（均跳过上述固有偶发的 X11 拖放测试）。新增回归测试覆盖：IME 激活时快捷键先于 IME、文本框 ownsChord 不被应用级快捷键截获、dead key 合成、Latin 布局快捷键字符、Level3 忽略、latched Shift、NumLock 键位与 modifier_map 解析及 Mod2 回退、keymap 的不可重复标志、修饰键按住不重复且不取消其他键的重复、锁键即使 keymap 标记可重复也不重复、非重复普通键停止旧重复、终端修饰键只投递一次且释放不提供快捷键、成对修饰键释放保留另一侧、终端组合键不设置 `Typed`、键盘能力移除补发按键释放、无 shortcut state 时不读取实时布局、keymap 重载后重算修饰符、可选 xkb 符号缺失时安全降级、快捷键层级缓存、失焦补发按键释放（不冒充 IME 见过的按键，投递失败即停止）、Level3 掩码解析与回退剔除、Mode_switch 保持旧重复、teardown 投递失败不崩溃、X11 成对修饰键释放、释放读回按下时记录的修饰位。收尾轮补充的覆盖：释放事件按 `Code` 投递、未知按下仍被过滤、失焦补发的多个修饰键释放按顺序逐个清除修饰位（不会把已上报的修饰位重新带回）、只有 shifted 层有字符时的快捷键回退。评审收尾又补充：leave 清理其命名窗口（即使 enter 已先到、焦点已移走，也只清理离开的窗口而不动当前焦点）、IME 收到的是按键抬起前的原始修饰状态（与 X11 一致，单独 Shift 释放仍带 Shift）、latched 的 Level3 同样被快捷键回退剔除、未跟踪的 AltGr/Mode_switch 释放不当作 Alt、X11 在真实 FocusIn 时清空按键跟踪（避免其他窗口释放的键留下陈旧项；pointer/virtual detail 的 FocusIn 不清空）、X11 `shortcutText` 与 Wayland 一样回退到只有 shifted 层的符号、IME 消费的键在 Wayland 上的重复事件与 X11 服务端自动重复一致地送达引擎。最后一轮还收拢了跨后端快捷键规则（共用 `shortcutFromLevels`，并计入 locked Shift）、让失焦通知在 deactivated/leave/能力移除三条路径间只触发一次、能力移除也会通知 IME/AT-SPI/`OnFocusLost`、补发的合成释放按 scancode 排序、keymap 的 modifier_map 只解析一次；F7 因此关闭。再一轮补充：X11 在真实 FocusIn 时用 `xcb_query_keymap` 重建按键跟踪（淘汰已抬起的键，补入进入焦点前就按住的修饰键；grab 结束的 FocusIn 也重建），Wayland 与 X11 在 keymap 重载后都按新布局重算仍按住键的修饰位（AltGr 变成 Alt 等），X11 快捷键回退同样剔除 AltGr 层，leave/teardown 共用同一段释放序列。剩余的小问题（每次按下都计算会被丢弃的 `keymap.text`、`shortcutText` 的临时切片分配）按评审分级记录，不影响正确性，留待后续优化。
+
+限制：本机运行 Fcitx5 5.1.12（Wayland 会话，`org.freedesktop.IBus` 由 PID 2066 提供）。Fcitx5 把 `~/.config/ibus/bus/*` 中的 `IBUS_ADDRESS` 留空，viva 的默认 `ibus.Dial()` 因此不会连接它，真实窗口仍走无 IME 路径。手工探针把 `IBUS_ADDRESS` 指向会话总线后，`CreateInputContext`、`FocusIn` 和 `ProcessKeyEvent` 均得到应答（Ctrl+S 返回 `handled=false`），证明兼容接口可用，但未注入到 viva 的真实窗口。西里尔/德语布局仍只由 fake xkb 覆盖；真实桌面结论按 §4.5 记录为未执行。
 
 ## 5. Task 8 先行片段
 
@@ -184,9 +222,9 @@ Weston 用上方 scale 命令的环境变量运行同一 `-run`。代表结果�
 - **NVIDIA（nvidia_icd，RTX 5070 Ti Laptop）+ validation**：KWin 虚拟后端 `PASS (0.74s)`，`initial 320x240, maximized 1024x740, restored 320x240, remapped 320x240, maximized remap 320x240, submissions 9`；Weston 虚拟后端 `PASS (0.67s)`，`initial 320x240, maximized 1024x736, restored 320x240, remapped 320x240, maximized remap 1024x736, submissions 6`；两种情况下 loader 输出都确认实例/设备层插入，没有 `VUID-`/`Validation Error`。
 - **lavapipe**：`PASS`，见 4.2。
 - **Intel（intel_icd，RPL-S）+ KWin 虚拟后端**：首次呈现失败，compositor 报 `[destroyed object]: error 7: importing the supplied dmabufs failed`，客户端把它作为 `Run` 错误返回并完成清理；关闭 validation 后同样复现。同一 ICD 的 `vkcube --wsi wayland` 在真实会话中启动并创建了设备，12 秒内没有报错；但会话锁定，无法确认它是否真正呈现，因此不能用它证明真实 KWin 能导入 Intel dmabuf。该失败目前只确认发生在 KWin 虚拟后端的导入路径，尚未确立为客户端缺陷，根因未隔离；本地不做静默回退。
-- **真实 KDE 会话**：会话当前锁定（`LockedHint=yes`，`kscreenlocker_greet` 运行）。临时会话模式探针能连接 `wayland-0`，在 125% 缩放下完成首次映射并提交首帧（320x240 逻辑 → 400x300 设备，客户端提交计数 1，未收到协议错误）；随后 maximize 停在 `framePending=true`，锁屏下 KWin 不为不可见 surface 发送 frame callback（推断），resize 事务无法完成，探针已回退。IBus 守护进程也未运行。
+- **真实 KDE 会话**：Task 8 执行期间会话锁定（`LockedHint=yes`，`kscreenlocker_greet` 运行）；本轮复核时会话已解锁（`LockedHint=no`）。当时的临时会话模式探针能连接 `wayland-0`，在 125% 缩放下完成首次映射并提交首帧（320x240 逻辑 → 400x300 设备，客户端提交计数 1，未收到协议错误）；随后 maximize 停在 `framePending=true`，锁屏下 KWin 不为不可见 surface 发送 frame callback（推断），resize 事务无法完成，探针已回退。当时没有 ibus-daemon；本轮发现 Fcitx5 5.1.12 在运行，但其 IBus 兼容接口位于会话总线，见 §4.6。
 
-未执行：GNOME、Sway/wlroots、运行时多输出热插拔、device loss 注入、IBus/拖放/AT-SPI、session bus/portal 真实重启。scale、多输出启动、事件交错和性能测量见 4.4；真实桌面验收需要解锁的真实会话或一台可控制的测试机。
+未执行：GNOME、Sway/wlroots、运行时多输出热插拔、device loss 注入、真实 ibus-daemon/窗口级 IME 注入、拖放/AT-SPI、session bus/portal 真实重启。scale、多输出启动、事件交错和性能测量见 4.4；真实桌面验收需要解锁的真实会话或一台可控制的测试机。
 
 ## 6. 后续记录方式
 

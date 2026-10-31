@@ -148,6 +148,11 @@ type waylandWindow struct {
 	fullscreen    bool
 	resizing      bool
 	activated     bool
+	// focusLostSent says the window's IME, AT-SPI object and application have
+	// heard that the keyboard left for the current focus span. A blur reaches
+	// us as a toplevel deactivation, a wl_keyboard.leave or a seat capability
+	// removal; whichever arrives first tells them, the rest stay quiet.
+	focusLostSent bool
 	closed        atomic.Bool
 
 	pointerX, pointerY float32
@@ -491,21 +496,20 @@ func (win *waylandWindow) handleXdgToplevelConfigure(width, height int32, states
 	win.resizing = resizing
 	if win.activated != activated {
 		win.activated = activated
-		if !activated {
+		if activated {
+			// A new focus span: the next blur is news again.
+			win.focusLostSent = false
+		} else {
 			if win.state != nil && win.state.config.WindowMode == platform.WindowPanel {
 				win.Hide()
 			}
-			if win.state != nil && win.state.config.OnFocusLost != nil {
-				frame, err := win.state.config.OnFocusLost()
-				if err == nil && win.state.router.present != nil {
-					err = win.state.router.present(frame)
-				}
-				if err != nil {
-					if win.app != nil {
-						win.app.fail(err)
-					}
-					return
-				}
+			focusError := notifyFocusLost(win)
+			if win.app != nil {
+				win.app.fail(focusError)
+			}
+			// A failed callback tears the window down.
+			if win.closed.Load() {
+				return
 			}
 		}
 	}
@@ -1191,12 +1195,12 @@ func (app *waylandApplication) openWindow(config platform.Config) (*waylandWindo
 	}
 	state.applyFrame = applyFrame
 	state.router = eventRouter{
-		config:  config,
-		text:    textInput,
-		pressed: new([256]bool),
-		scale:   win.displayScale,
-		clicks:  &input.ClickCounter{Interval: 500 * time.Millisecond, Distance: 4},
-		present: win.presentInputFrame,
+		config:       config,
+		text:         textInput,
+		scale:        win.displayScale,
+		modifierKeys: newModifierTracker(),
+		clicks:       &input.ClickCounter{Interval: 500 * time.Millisecond, Distance: 4},
+		present:      win.presentInputFrame,
 	}
 	if (config.DynamicTextInput || config.TextInput != nil) && app != nil {
 		if ime = app.newIME(win, textInput, state.router); ime != nil {
