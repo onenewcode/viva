@@ -35,6 +35,8 @@ can run its programs.
 - [adr-0064-gtk3-shell-architecture.md](adr-0064-gtk3-shell-architecture.md) — ADR
   0064: architectural decision analysis on adopting the GTK 3 shell backend on
   Linux.
+- [pr-79-extractable-contributions-for-main.md](pr-79-extractable-contributions-for-main.md) —
+  roadmap of extractable high-value contributions from PR #79 for main.
 - [benchmarks/](benchmarks/) — every measurement, with the machine, the build
   mode, and the method recorded alongside the numbers.
 - [benchmarks/2026-10-25-performance-audit-darwin-arm64.md](benchmarks/2026-10-25-performance-audit-darwin-arm64.md)
